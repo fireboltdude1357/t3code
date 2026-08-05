@@ -37,6 +37,7 @@ const clientSettings: ClientSettings = {
   fontSizeTerminal: 12,
   fontSmoothing: true,
   glassOpacity: 80,
+  onboardingCompletedAt: null,
   planModeEnabled: false,
   showSkillsInSlashMenu: false,
   providerModelPreferences: {},
