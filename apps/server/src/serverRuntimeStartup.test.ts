@@ -178,6 +178,8 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
     assert.deepStrictEqual(targets, {
       bootstrapProjectId,
       bootstrapThreadId,
+      bootstrapProjectCreated: false,
+      bootstrapThreadCreated: false,
     });
     assert.deepStrictEqual(yield* Ref.get(dispatchCalls), []);
   });
@@ -222,6 +224,8 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
 
     assert.equal(typeof targets.bootstrapProjectId, "string");
     assert.equal(typeof targets.bootstrapThreadId, "string");
+    assert.equal(targets.bootstrapProjectCreated, true);
+    assert.equal(targets.bootstrapThreadCreated, true);
     assert.deepStrictEqual(yield* Ref.get(dispatchCalls), ["project.create", "thread.create"]);
   }),
 );
