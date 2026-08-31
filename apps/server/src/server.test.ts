@@ -80,6 +80,7 @@ const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationThreadDetailSnapshot),
 );
+const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function* <A>(
   queue: Queue.Queue<A>,
@@ -4574,6 +4575,103 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.deepEqual(response.issues, []);
       assert.deepEqual(response.keybindings, [resolved]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps agent session import project failures structured over websocket rpc", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const projectId = ProjectId.make("missing-import-project");
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const error = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.agentSessionsImport]({ projectId }).pipe(Effect.flip),
+        ),
+      );
+
+      assert.equal(error._tag, "AgentSessionImportProjectNotFoundError");
+      if (error._tag === "AgentSessionImportProjectNotFoundError") {
+        assert.equal(error.projectId, projectId);
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("returns scanner skip counts over websocket rpc", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const codexHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-agent-import-rpc-codex-",
+      });
+      const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-agent-import-rpc-workspace-",
+      });
+      const transcriptDirectory = path.join(codexHome, "sessions", "2026", "08", "31");
+      const transcriptPath = path.join(transcriptDirectory, "rollout-skipped.jsonl");
+      yield* fileSystem.makeDirectory(transcriptDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(
+        transcriptPath,
+        encodeTestJson({
+          timestamp: "2026-08-31T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "rpc-skipped-session", cwd: workspaceRoot },
+        }),
+      );
+      yield* fileSystem.utimes(transcriptPath, 0, 0);
+
+      const projectId = ProjectId.make("agent-import-rpc-project");
+      const project = {
+        id: projectId,
+        title: "Agent import RPC",
+        workspaceRoot,
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-08-31T12:00:00.000Z",
+        updatedAt: "2026-08-31T12:00:00.000Z",
+      } as const;
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              providerInstances: {
+                [ProviderInstanceId.make("codex")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  config: { homePath: codexHome },
+                },
+                [ProviderInstanceId.make("claudeAgent")]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  enabled: false,
+                  config: {},
+                },
+              },
+            }),
+          },
+          projectionSnapshotQuery: {
+            getProjectShellById: (requestedProjectId) =>
+              Effect.succeed(
+                requestedProjectId === projectId ? Option.some(project) : Option.none(),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const scan = yield* client[WS_METHODS.agentSessionsScan]({});
+            assert.deepEqual(
+              scan.candidates.map((candidate) => candidate.path),
+              [workspaceRoot],
+            );
+            return yield* client[WS_METHODS.agentSessionsImport]({ projectId });
+          }),
+        ),
+      );
+
+      assert.deepEqual(result, { importedCount: 0, skippedCount: 1 });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

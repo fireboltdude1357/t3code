@@ -230,6 +230,10 @@
     "./claudeCompaction": {
       "types": "./src/claudeCompaction.ts",
       "import": "./src/claudeCompaction.ts"
+    },
+    "./dateTime": {
+      "types": "./src/dateTime.ts",
+      "import": "./src/dateTime.ts"
     }
   },
   "scripts": {
