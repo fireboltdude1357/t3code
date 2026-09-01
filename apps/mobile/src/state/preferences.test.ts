@@ -62,6 +62,41 @@ function makePreferencesState(
 }
 
 describe("mobile preferences state", () => {
+  it.effect("keeps the Luna voice host in device preferences", () =>
+    Effect.gen(function* () {
+      const initialHost = { lunaHostUrl: "https://linux-one:9456", lunaHostToken: "token-one" };
+      const nextHost = { lunaHostUrl: "https://linux-two:9456" };
+      const savePatch = vi.fn((patch: Partial<Preferences>) => Effect.succeed(patch));
+      const state = makePreferencesState({
+        load: Effect.succeed(initialHost),
+        savePatch,
+      });
+      const registry = AtomRegistry.make();
+      const unmountPreferences = registry.mount(state.preferencesAtom);
+      const unmountUpdate = registry.mount(state.updatePreferencesAtom);
+
+      expect(
+        yield* AtomRegistry.getResult(registry, state.preferencesAtom, {
+          suspendOnWaiting: true,
+        }),
+      ).toEqual(initialHost);
+
+      registry.set(state.updatePreferencesAtom, nextHost);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => {
+          expect(savePatch).toHaveBeenCalledWith(nextHost);
+          expect(Option.getOrThrow(AsyncResult.value(registry.get(state.preferencesAtom)))).toEqual(
+            { ...initialHost, ...nextHost },
+          );
+        }),
+      );
+
+      unmountUpdate();
+      unmountPreferences();
+      registry.dispose();
+    }),
+  );
+
   it.effect("shares one preference load across consumers", () =>
     Effect.gen(function* () {
       const load = vi.fn(() => Promise.resolve<Preferences>({ baseFontSize: 17 }));

@@ -170,6 +170,7 @@ import {
 } from "../../state/assets";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { usePreparedConnection } from "../../state/session";
+import { useLunaHost } from "../../state/voice-sidecar-host";
 import * as Option from "effect/Option";
 import {
   basename,
@@ -1335,6 +1336,7 @@ function renderFeedEntry(
     readonly workRowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
     readonly workGroupScrollPositions: Map<string, ThreadWorkGroupScrollPosition>;
     readonly terminalAssistantMessageIds: ReadonlySet<string>;
+    readonly voiceSidecarAvailable: boolean;
     readonly unsettledTurnId: TurnId | null;
     readonly onCopyWorkRow: (rowId: string, value: string) => void;
     readonly onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
@@ -1343,6 +1345,7 @@ function renderFeedEntry(
     readonly onPressPreview: (source: FilePreviewSource) => void;
     readonly onPressVideo: (attachment: ChatFileAttachment, sourceIdentifier: string) => void;
     readonly markdownLinkHandlers: MarkdownLinkHandlers;
+    readonly onOpenVoiceSidecar: (messageId: MessageId) => void;
     readonly renderMarkdownImage: MarkdownImageRenderer;
     readonly renderViewedImage: MarkdownImageRenderer;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
@@ -1638,6 +1641,22 @@ function renderFeedEntry(
               buttonSize={28}
               iconSize={13}
             />
+            {props.voiceSidecarAvailable ? (
+              <Pressable
+                accessibilityLabel="Talk with Luna about this response"
+                accessibilityRole="button"
+                className="size-7 items-center justify-center rounded-full active:bg-subtle"
+                hitSlop={4}
+                onPress={() => props.onOpenVoiceSidecar(message.id)}
+              >
+                <SymbolView
+                  name={{ ios: "waveform", android: "auto_awesome" }}
+                  size={14}
+                  tintColor={iconSubtleColor}
+                  type="monochrome"
+                />
+              </Pressable>
+            ) : null}
             <Text className="font-t3-medium text-xs tabular-nums text-adaptive-neutral-600-400">
               {timestampLabel}
             </Text>
@@ -1942,6 +1961,8 @@ function ThreadFeedPlaceholder(props: {
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
+  const lunaHost = useLunaHost();
+  const voiceSidecarAvailable = lunaHost.isReady && lunaHost.enabled;
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
@@ -2177,6 +2198,17 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       },
     }),
     [onMarkdownLinkPress, props.workspaceRoot, shareFileChip],
+  );
+  const onOpenVoiceSidecar = useCallback(
+    (sourceMessageId: MessageId) => {
+      void Haptics.selectionAsync();
+      navigation.navigate("ThreadVoiceSidecar", {
+        environmentId: String(props.environmentId),
+        threadId: String(props.threadId),
+        sourceMessageId: String(sourceMessageId),
+      });
+    },
+    [navigation, props.environmentId, props.threadId],
   );
   const renderMarkdownImage = useCallback<MarkdownImageRenderer>(
     (image) => {
@@ -2708,6 +2740,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             workRowSizing,
             workGroupScrollPositions,
             terminalAssistantMessageIds,
+            voiceSidecarAvailable,
             unsettledTurnId,
             onCopyWorkRow,
             onToggleWorkGroup,
@@ -2716,6 +2749,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onPressPreview,
             onPressVideo,
             markdownLinkHandlers,
+            onOpenVoiceSidecar,
             renderMarkdownImage,
             renderViewedImage,
             iconSubtleColor,
@@ -2742,6 +2776,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       workRowSizing,
       workGroupScrollPositions,
       terminalAssistantMessageIds,
+      voiceSidecarAvailable,
       unsettledTurnId,
       iconSubtleColor,
       screenColor,
@@ -2756,6 +2791,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       markdownLinkHandlers,
       onPressPreview,
       onPressVideo,
+      onOpenVoiceSidecar,
       onToggleTurnFold,
       onToggleWorkGroup,
       onToggleWorkRow,

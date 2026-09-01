@@ -26,6 +26,7 @@ import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKey
 import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentComposerSheet";
 import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
+import { VoiceSidecarSheet } from "./features/voice-sidecar/VoiceSidecarSheet";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
@@ -59,6 +60,7 @@ import { SettingsProjectGroupingRouteScreen } from "./features/settings/Settings
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
+import { SettingsVoiceRouteScreen } from "./features/settings/SettingsVoiceRouteScreen";
 import { ShowcaseCaptureCoordinator } from "./features/showcase/ShowcaseCaptureCoordinator";
 import {
   SettingsLegalDocumentCloseHeaderButton,
@@ -177,6 +179,13 @@ const SettingsContentStack = createNativeStackNavigator({
       linking: "appearance",
       options: {
         title: "Appearance",
+      },
+    }),
+    SettingsVoice: createNativeStackScreen({
+      screen: SettingsVoiceRouteScreen,
+      linking: "voice",
+      options: {
+        title: "Voice & Luna",
       },
     }),
     SettingsProjectGrouping: createNativeStackScreen({
@@ -338,6 +347,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "SettingsLegal",
   "SettingsSheet",
   "ThreadReviewComment",
+  "ThreadVoiceSidecar",
   "ThreadSettingsSheet",
 ]);
 
@@ -493,6 +503,21 @@ export const RootStack = createNativeStackNavigator({
           : FORM_SHEET_PRESENTATION_OPTIONS),
         sheetAllowedDetents: Platform.OS === "android" ? undefined : [0.55, 0.92],
         sheetGrabberVisible: Platform.OS !== "android",
+      },
+    }),
+    ThreadVoiceSidecar: createNativeStackScreen({
+      screen: VoiceSidecarSheet,
+      linking: `${THREAD_LINKING_PREFIX}/voice/:sourceMessageId`,
+      options: {
+        gestureEnabled: true,
+        headerShown: false,
+        ...(Platform.OS === "android"
+          ? { presentation: "fullScreenModal" as const }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [0.65, 0.95],
+              sheetGrabberVisible: true,
+            }),
       },
     }),
     ThreadFiles: createNativeStackScreen({
