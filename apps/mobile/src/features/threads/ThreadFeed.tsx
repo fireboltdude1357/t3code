@@ -2200,32 +2200,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
   const markdownStyles = useMarkdownStyles(onMarkdownLinkPress, renderMarkdownImage);
   const reviewCommentColors = useReviewCommentColors();
-  // LegendList does not invalidate visible rows when only the renderItem closure changes.
-  // Keep row-local interaction props in extraData so disclosures and copy feedback repaint.
-  const listAppearanceData = useMemo(
-    () => ({
-      copiedRowId,
-      expandedWorkRows,
-      workRowSizing,
-      iconSubtleColor,
-      markdownStyles,
-      reviewCommentColors,
-      themeAppearance,
-      userBubbleColor,
-      viewportWidth,
-    }),
-    [
-      copiedRowId,
-      expandedWorkRows,
-      workRowSizing,
-      iconSubtleColor,
-      markdownStyles,
-      reviewCommentColors,
-      themeAppearance,
-      userBubbleColor,
-      viewportWidth,
-    ],
-  );
   const reportHeaderMaterialVisibility = useCallback(
     (visible: boolean) => {
       if (headerMaterialVisibleRef.current === visible) {
@@ -2410,6 +2384,39 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     (props.latestTurn.completedAt === null || props.latestTurn.state === "running")
       ? props.latestTurn.turnId
       : null;
+  // LegendList does not invalidate visible rows when only the renderItem closure changes.
+  // Keep row-local interaction props in extraData so disclosures, copy feedback, and the
+  // assistant meta row (copy + Luna buttons on turn settle) repaint.
+  const listAppearanceData = useMemo(
+    () => ({
+      copiedRowId,
+      expandedWorkRows,
+      workRowSizing,
+      iconSubtleColor,
+      markdownStyles,
+      reviewCommentColors,
+      terminalAssistantMessageIds,
+      themeAppearance,
+      unsettledTurnId,
+      userBubbleColor,
+      viewportWidth,
+      voiceSidecarAvailable,
+    }),
+    [
+      copiedRowId,
+      expandedWorkRows,
+      workRowSizing,
+      iconSubtleColor,
+      markdownStyles,
+      reviewCommentColors,
+      terminalAssistantMessageIds,
+      themeAppearance,
+      unsettledTurnId,
+      userBubbleColor,
+      viewportWidth,
+      voiceSidecarAvailable,
+    ],
+  );
 
   useEffect(() => {
     const previous = previousLatestTurnRef.current;
