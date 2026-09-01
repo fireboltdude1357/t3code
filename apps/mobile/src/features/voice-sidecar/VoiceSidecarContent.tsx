@@ -47,6 +47,8 @@ export interface VoiceSidecarContentProps {
   readonly snapshot: LunaSnapshot;
   readonly pendingAction: string | null;
   readonly error: string | null;
+  /** True when this device transcribes recordings itself (iOS 26 dictation). */
+  readonly localTranscriptionAvailable: boolean;
   readonly onClose: () => void;
   readonly getRecordingUrl: (messageId: string) => string;
   readonly onAskRecording: (capture: VoiceSidecarRecordingCapture) => Promise<void>;
@@ -286,8 +288,10 @@ function RoadView(props: VoiceSidecarPageProps) {
   const [text, setText] = useState("");
   const latestAssistant = latestCompleteAssistantMessage(session.messages);
   const waitingLabel = "Luna is answering";
+  const transcriptionReady =
+    session.availability.transcription === "ready" || props.localTranscriptionAvailable;
   const recorder = useVoiceSidecarRecorder({
-    disabled: props.pendingAction !== null || session.availability.transcription !== "ready",
+    disabled: props.pendingAction !== null || !transcriptionReady,
     onCapture: props.onAskRecording,
   });
   const recordingActive = recorder.state.phase !== "idle" && recorder.state.phase !== "error";
@@ -313,14 +317,16 @@ function RoadView(props: VoiceSidecarPageProps) {
       contentContainerClassName="gap-5 px-5 py-5"
     >
       {session.availability.luna !== "ready" ||
-      session.availability.transcription !== "ready" ||
+      !transcriptionReady ||
       session.availability.synthesis !== "ready" ? (
         <View className="gap-2 rounded-[20px] border border-border bg-card px-4 py-3">
           <Text className="font-t3-bold text-sm text-foreground">Service status</Text>
           <Text className="text-sm text-foreground-muted">
             Luna: {serviceStatusLabel(session.availability.luna)} · Transcription:{" "}
-            {serviceStatusLabel(session.availability.transcription)} · Kokoro:{" "}
-            {serviceStatusLabel(session.availability.synthesis)}
+            {props.localTranscriptionAvailable
+              ? "On device"
+              : serviceStatusLabel(session.availability.transcription)}{" "}
+            · Kokoro: {serviceStatusLabel(session.availability.synthesis)}
           </Text>
         </View>
       ) : null}
@@ -389,7 +395,7 @@ function RoadView(props: VoiceSidecarPageProps) {
             busy ||
             recorder.state.phase === "preparing" ||
             recorder.state.phase === "submitting" ||
-            session.availability.transcription !== "ready"
+            !transcriptionReady
           }
           className={
             recorder.state.phase === "recording"
@@ -424,12 +430,14 @@ function RoadView(props: VoiceSidecarPageProps) {
           )}
         </Pressable>
         <Text className="text-center text-sm text-foreground-muted">
-          {session.availability.transcription !== "ready"
+          {!transcriptionReady
             ? "Voice needs an OpenAI API key. Add one in Settings → Voice & Luna."
             : recorder.state.phase === "recording"
               ? `Recording ${Math.floor(recorder.elapsedSeconds / 60)}:${String(recorder.elapsedSeconds % 60).padStart(2, "0")}`
               : recorder.state.phase === "submitting"
-                ? "Sending for transcription"
+                ? props.localTranscriptionAvailable
+                  ? "Transcribing on device"
+                  : "Sending for transcription"
                 : "Tap to ask Luna by voice"}
         </Text>
         {recorder.state.phase === "error" ? (
