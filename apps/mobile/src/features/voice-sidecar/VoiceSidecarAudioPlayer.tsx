@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
+import { ignoreReleasedNativeObject } from "./releasedNativeObject";
 
 async function prepareForegroundPlayback(): Promise<void> {
   await setAudioModeAsync({
@@ -36,7 +37,9 @@ export const VoiceSidecarAudioPlayer = memo(function VoiceSidecarAudioPlayer(pro
   const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   const stop = useCallback(() => {
-    player.pause();
+    // This runs from the unmount cleanup and from the coordinator, both of
+    // which can outlive the native player.
+    ignoreReleasedNativeObject(() => player.pause());
     props.coordinator.release(stop);
   }, [player, props.coordinator]);
 
