@@ -289,12 +289,28 @@ function ThreadRouteContent(
       selectedThread
         ? {
             ...selectedThread,
+            // The feed's turn-settle gate (copy/Luna buttons, turn folds) must
+            // ride the same subscription as the feed content. selectedThread
+            // prefers the shell, which syncs separately from the thread detail:
+            // after a background reconnect the detail feed can settle while the
+            // shell's latestTurn stays stale until remount, hiding the buttons.
+            // Same detail-first priority as useThreadComposerState.
+            latestTurn:
+              selectedThreadDetail !== null
+                ? selectedThreadDetail.latestTurn
+                : selectedThread.latestTurn,
             modelSelection: composer.modelSelection ?? selectedThread.modelSelection,
             runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
             interactionMode: composer.interactionMode ?? selectedThread.interactionMode,
           }
         : null,
-    [composer.interactionMode, composer.modelSelection, composer.runtimeMode, selectedThread],
+    [
+      composer.interactionMode,
+      composer.modelSelection,
+      composer.runtimeMode,
+      selectedThread,
+      selectedThreadDetail,
+    ],
   );
 
   /* ─── Native header theming ──────────────────────────────────────── */
