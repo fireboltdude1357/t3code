@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
 import type { VoiceSidecarRecordingCapture } from "./lunaHostApi";
+import { ignoreReleasedNativeObject } from "./releasedNativeObject";
 
 const MAX_RECORDING_SECONDS = 5 * 60;
 const RECORDING_OPTIONS = {
@@ -156,7 +157,7 @@ export function useVoiceSidecarRecorder(input: {
       recordingUriRef.current = null;
       void discardInterruptedVoiceSidecarRecording({
         status,
-        recordingUris: [recordingUri, recorder.uri],
+        recordingUris: [recordingUri, ignoreReleasedNativeObject(() => recorder.uri) ?? null],
         stop: async () => {
           if (recorder.getStatus().isRecording) await recorder.stop();
         },
@@ -179,7 +180,9 @@ export function useVoiceSidecarRecorder(input: {
     } catch {
       // Recorder teardown is best-effort. The local file is still removed below.
     }
-    const uri = recorder.uri ?? recordingUriRef.current;
+    // On unmount the hook's recorder is already released; an unguarded native
+    // read here would reject and skip the session release below.
+    const uri = ignoreReleasedNativeObject(() => recorder.uri) ?? recordingUriRef.current;
     recordingUriRef.current = null;
     removeRecording(uri);
     await releaseSession();
