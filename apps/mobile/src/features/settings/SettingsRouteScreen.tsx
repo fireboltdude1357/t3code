@@ -17,6 +17,7 @@ import {
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
+import { VoiceSettingsEntry } from "./VoiceSettingsEntry";
 
 export function SettingsRouteScreen() {
   const navigation = useNavigation();
@@ -87,6 +88,7 @@ function ConfiguredSettingsRouteScreen() {
             target="SettingsEnvironments"
           />
           <SettingsRow icon="bell.badge" label="Notifications" target="SettingsNotifications" />
+          <VoiceSettingsEntry />
         </SettingsSection>
 
         <SettingsIndexSections />
@@ -119,6 +121,7 @@ function LocalSettingsRouteScreen() {
             valuePosition="trailing"
             target="SettingsEnvironments"
           />
+          <VoiceSettingsEntry />
         </SettingsSection>
 
         <SettingsIndexSections />
