@@ -21,6 +21,7 @@ const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
 // Android layers are rendered by scripts/export-android-icons.ts from the Icon Composer sources.
 // The wordmark sits inside the adaptive safe zone; the variant artwork is a full-bleed background.
 const androidAdaptiveForeground = "./assets/android-icon-foreground.png";
+const voiceInputMicrophonePermission = "Allow T3 Code to use your microphone for voice input.";
 
 if (
   isIosPersonalTeamBuild &&
@@ -381,8 +382,8 @@ const config: ExpoConfig = {
     [
       "expo-audio",
       {
-        microphonePermission: "Allow T3 Code to use your microphone for voice input.",
-        recordAudioAndroid: false,
+        microphonePermission: voiceInputMicrophonePermission,
+        recordAudioAndroid: true,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
       },
@@ -391,12 +392,18 @@ const config: ExpoConfig = {
       "expo-camera",
       {
         cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
-        microphonePermission: false,
+        microphonePermission: voiceInputMicrophonePermission,
         barcodeScannerEnabled: true,
-        recordAudioAndroid: false,
+        recordAudioAndroid: true,
       },
     ],
-    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
+    [
+      "expo-image-picker",
+      {
+        photosPermission: false,
+        microphonePermission: voiceInputMicrophonePermission,
+      },
+    ],
     [
       "expo-splash-screen",
       {
