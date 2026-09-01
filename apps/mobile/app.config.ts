@@ -21,6 +21,7 @@ const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
 // Universal exports already contain their own rounded-square silhouette. Using one as an adaptive
 // foreground makes Android draw an icon shape inside the launcher's mask.
 const androidAdaptiveForeground = "./assets/android-icon-foreground.png";
+const voiceInputMicrophonePermission = "Allow T3 Code to use your microphone for voice input.";
 
 if (
   isIosPersonalTeamBuild &&
@@ -324,8 +325,8 @@ const config: ExpoConfig = {
     [
       "expo-audio",
       {
-        microphonePermission: "Allow T3 Code to use your microphone for voice input.",
-        recordAudioAndroid: false,
+        microphonePermission: voiceInputMicrophonePermission,
+        recordAudioAndroid: true,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
       },
@@ -334,12 +335,18 @@ const config: ExpoConfig = {
       "expo-camera",
       {
         cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
-        microphonePermission: false,
+        microphonePermission: voiceInputMicrophonePermission,
         barcodeScannerEnabled: true,
-        recordAudioAndroid: false,
+        recordAudioAndroid: true,
       },
     ],
-    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
+    [
+      "expo-image-picker",
+      {
+        photosPermission: false,
+        microphonePermission: voiceInputMicrophonePermission,
+      },
+    ],
     [
       "expo-splash-screen",
       {

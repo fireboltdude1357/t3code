@@ -60,6 +60,7 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
+import { VoiceSettingsEntry } from "./VoiceSettingsEntry";
 import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
@@ -137,6 +138,7 @@ function LocalSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <VoiceSettingsEntry />
         </SettingsSection>
 
         <GeneralSettingsSection />
@@ -485,6 +487,7 @@ function ConfiguredSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <VoiceSettingsEntry />
           <SettingsSwitchRow
             icon="bell.badge"
             label="Device Notifications"
