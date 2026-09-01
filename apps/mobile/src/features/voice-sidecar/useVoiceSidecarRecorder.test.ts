@@ -21,6 +21,7 @@ vi.mock("react-native", () => ({
   AppState: { addEventListener: () => ({ remove: () => undefined }) },
 }));
 
+import { ignoreReleasedNativeObject } from "./releasedNativeObject";
 import { discardInterruptedVoiceSidecarRecording } from "./useVoiceSidecarRecorder";
 
 const quietStatus = {
@@ -104,5 +105,21 @@ describe("discardInterruptedVoiceSidecarRecording", () => {
     expect(finishedMessage).toBe("Voice recording ended unexpectedly.");
     expect(finishedStop).not.toHaveBeenCalled();
     expect(finishedRemove).toHaveBeenCalledWith("file:///early.m4a");
+  });
+});
+
+describe("ignoreReleasedNativeObject", () => {
+  it("returns the value from a live native call", () => {
+    expect(ignoreReleasedNativeObject(() => "file:///recording.m4a")).toBe("file:///recording.m4a");
+  });
+
+  it("swallows the released shared object throw so cleanup continues", () => {
+    expect(
+      ignoreReleasedNativeObject(() => {
+        throw new Error(
+          "Unable to find the native shared object associated with given JavaScript object",
+        );
+      }),
+    ).toBeUndefined();
   });
 });
