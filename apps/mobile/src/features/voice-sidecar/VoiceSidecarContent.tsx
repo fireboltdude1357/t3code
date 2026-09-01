@@ -856,7 +856,11 @@ export const VoiceSidecarContent = memo(function VoiceSidecarContent(
   }, [page, playbackCoordinator, props]);
 
   return (
-    <View className="flex-1 bg-sheet">
+    // collapsable={false} keeps this wrapper in the native tree. If it gets
+    // flattened, RNS's formSheet scroll-view frame correction re-frames the
+    // page ScrollView over the header whenever the sheet re-lays-out (e.g. on
+    // the detent change when scrolling expands the sheet).
+    <View collapsable={false} className="flex-1 bg-sheet">
       <SidecarHeader page={page} onClose={props.onClose} onChangePage={setPage} />
       {props.error ? (
         <View className="border-b border-danger-border bg-danger px-4 py-2">

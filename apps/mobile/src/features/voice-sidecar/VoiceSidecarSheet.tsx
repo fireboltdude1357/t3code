@@ -196,6 +196,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
   if (!snapshot || client === null || sessionId === null) {
     return (
       <View
+        collapsable={false}
         className="flex-1 items-center justify-center gap-3 bg-sheet px-6"
         style={{ paddingTop: Platform.OS === "android" ? insets.top : 0 }}
       >
@@ -236,7 +237,11 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
       : null;
 
   return (
-    <View className="flex-1" style={{ paddingTop: Platform.OS === "android" ? insets.top : 0 }}>
+    <View
+      collapsable={false}
+      className="flex-1"
+      style={{ paddingTop: Platform.OS === "android" ? insets.top : 0 }}
+    >
       <VoiceSidecarContent
         snapshot={snapshot}
         pendingAction={pendingAction}
