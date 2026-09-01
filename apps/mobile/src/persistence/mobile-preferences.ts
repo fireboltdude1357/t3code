@@ -52,6 +52,12 @@ export interface Preferences {
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
+  /** Base URL of the standalone Luna voice host (not a T3 environment). */
+  readonly lunaHostUrl?: string;
+  /** Bearer token printed by the Luna voice host on startup. */
+  readonly lunaHostToken?: string;
+  /** Hides the Luna button without forgetting the host. Defaults to enabled. */
+  readonly lunaEnabled?: boolean;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
@@ -115,6 +121,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
+    lunaHostUrl?: string;
+    lunaHostToken?: string;
+    lunaEnabled?: boolean;
   } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
@@ -207,6 +216,15 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListWorkingShelfExpanded === "boolean") {
     preferences.threadListWorkingShelfExpanded = parsed.threadListWorkingShelfExpanded;
+  }
+  if (typeof parsed.lunaHostUrl === "string" && parsed.lunaHostUrl.trim().length > 0) {
+    preferences.lunaHostUrl = parsed.lunaHostUrl.trim();
+  }
+  if (typeof parsed.lunaHostToken === "string" && parsed.lunaHostToken.trim().length > 0) {
+    preferences.lunaHostToken = parsed.lunaHostToken.trim();
+  }
+  if (typeof parsed.lunaEnabled === "boolean") {
+    preferences.lunaEnabled = parsed.lunaEnabled;
   }
   return preferences;
 }
