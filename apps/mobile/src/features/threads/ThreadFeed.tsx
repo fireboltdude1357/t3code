@@ -192,6 +192,7 @@ import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { usePreparedConnection } from "../../state/session";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { composerDocumentAttachmentRecord } from "../../lib/composerContext";
+import { useLunaHost } from "../../state/voice-sidecar-host";
 import * as Option from "effect/Option";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
@@ -1498,6 +1499,7 @@ function renderFeedEntry(
     readonly workRowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
     readonly workGroupScrollPositions: Map<string, ThreadWorkGroupScrollPosition>;
     readonly terminalAssistantMessageIds: ReadonlySet<string>;
+    readonly voiceSidecarAvailable: boolean;
     readonly unsettledTurnId: RunId | null;
     readonly failedRunIds: ReadonlySet<RunId>;
     readonly onCopyWorkRow: (rowId: string, value: string) => void;
@@ -1507,6 +1509,7 @@ function renderFeedEntry(
     readonly onPressPreview: (source: FilePreviewSource) => void;
     readonly onPressVideo: (attachment: ChatFileAttachment, sourceIdentifier: string) => void;
     readonly markdownLinkHandlers: MarkdownLinkHandlers;
+    readonly onOpenVoiceSidecar: (messageId: MessageId) => void;
     readonly renderMarkdownImage: MarkdownImageRenderer;
     readonly renderViewedImage: MarkdownImageRenderer;
     readonly renderReasoning: (text: string) => ReactNode;
@@ -1888,6 +1891,22 @@ function renderFeedEntry(
               buttonSize={28}
               iconSize={13}
             />
+            {props.voiceSidecarAvailable ? (
+              <Pressable
+                accessibilityLabel="Talk with Luna about this response"
+                accessibilityRole="button"
+                className="size-7 items-center justify-center rounded-full active:bg-subtle"
+                hitSlop={4}
+                onPress={() => props.onOpenVoiceSidecar(message.id)}
+              >
+                <SymbolView
+                  name={{ ios: "waveform", android: "auto_awesome" }}
+                  size={14}
+                  tintColor={iconSubtleColor}
+                  type="monochrome"
+                />
+              </Pressable>
+            ) : null}
             <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
               {timestampLabel}
             </Text>
@@ -2108,6 +2127,8 @@ function ThreadFeedPlaceholder(props: {
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
+  const lunaHost = useLunaHost();
+  const voiceSidecarAvailable = lunaHost.isReady && lunaHost.enabled;
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
@@ -2343,6 +2364,17 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       },
     }),
     [onMarkdownLinkPress, props.workspaceRoot, shareFileChip],
+  );
+  const onOpenVoiceSidecar = useCallback(
+    (sourceMessageId: MessageId) => {
+      void Haptics.selectionAsync();
+      navigation.navigate("ThreadVoiceSidecar", {
+        environmentId: String(props.environmentId),
+        threadId: String(props.threadId),
+        sourceMessageId: String(sourceMessageId),
+      });
+    },
+    [navigation, props.environmentId, props.threadId],
   );
   const renderMarkdownImage = useCallback<MarkdownImageRenderer>(
     (image) => {
@@ -2909,6 +2941,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             workRowSizing,
             workGroupScrollPositions,
             terminalAssistantMessageIds,
+            voiceSidecarAvailable,
             unsettledTurnId,
             failedRunIds,
             onCopyWorkRow,
@@ -2918,6 +2951,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onPressPreview,
             onPressVideo,
             markdownLinkHandlers,
+            onOpenVoiceSidecar,
             renderMarkdownImage,
             renderViewedImage,
             renderReasoning,
@@ -2955,6 +2989,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       workRowSizing,
       workGroupScrollPositions,
       terminalAssistantMessageIds,
+      voiceSidecarAvailable,
       unsettledTurnId,
       failedRunIds,
       iconSubtleColor,
@@ -2970,6 +3005,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       markdownLinkHandlers,
       onPressPreview,
       onPressVideo,
+      onOpenVoiceSidecar,
       onToggleTurnFold,
       onToggleWorkGroup,
       onToggleWorkRow,
