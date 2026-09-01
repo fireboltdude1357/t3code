@@ -17,6 +17,8 @@ import {
   type VoiceSidecarRecordingCapture,
 } from "./lunaHostApi";
 import { VoiceSidecarContent } from "./VoiceSidecarContent";
+import { applyDictionaryCorrections, selectDictationTerms } from "./dictationVocabulary";
+import { localDictationAvailable, transcribeWithLocalDictation } from "./lunaDictation";
 import {
   buildVoiceSidecarHandoffMessage,
   resolveCompletedAssistantSourceText,
@@ -57,6 +59,19 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
   const [pendingAction, setPendingAction] = useState<string | null>("open");
   const [localError, setLocalError] = useState<string | null>(null);
   const [openAttempt, setOpenAttempt] = useState(0);
+  const [localDictation, setLocalDictation] = useState(false);
+  const snapshotRef = useRef<LunaSnapshot | null>(null);
+  snapshotRef.current = snapshot;
+
+  useEffect(() => {
+    let active = true;
+    void localDictationAvailable().then((available) => {
+      if (active) setLocalDictation(available);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
   const openedIdentityRef = useRef<string | null>(null);
   const identity = `${sourceEnvironmentId}:${sourceThreadId}:${sourceMessageId}:${client?.baseUrl ?? "no-host"}`;
 
@@ -178,8 +193,33 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
       setPendingAction("send recording");
       setLocalError(null);
       try {
-        await client.askRecording(sessionId, uuidv4(), capture);
-        setSnapshot(await client.getSnapshot(sessionId));
+        // Transcribe on-device when possible: no audio upload, no API cost,
+        // dictionary terms biasing recognition directly. The host's
+        // gpt-transcribe path stays as the fallback.
+        const dictionary = snapshotRef.current?.dictionary.entries ?? [];
+        let localText: string | null = null;
+        if (localDictation) {
+          try {
+            const raw = await transcribeWithLocalDictation(
+              capture.uri,
+              selectDictationTerms(dictionary),
+            );
+            localText = applyDictionaryCorrections(raw, dictionary).trim();
+          } catch (error) {
+            const hostReady = snapshotRef.current?.session.availability.transcription === "ready";
+            if (!hostReady) throw error;
+            localText = null; // Fall back to the host upload below.
+          }
+        }
+        if (localText !== null && localText.length === 0) {
+          throw new Error("Nothing was heard in the recording.");
+        }
+        if (localText !== null) {
+          setSnapshot(await client.askText(sessionId, uuidv4(), localText));
+        } else {
+          await client.askRecording(sessionId, uuidv4(), capture);
+          setSnapshot(await client.getSnapshot(sessionId));
+        }
       } catch (error) {
         const message = messageOf(error, "Could not send the recording.");
         setLocalError(message);
@@ -188,7 +228,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
         setPendingAction(null);
       }
     },
-    [client, sessionId],
+    [client, localDictation, sessionId],
   );
 
   const close = useCallback(() => navigation.goBack(), [navigation]);
@@ -246,6 +286,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
         snapshot={snapshot}
         pendingAction={pendingAction}
         error={localError ?? sessionError}
+        localTranscriptionAvailable={localDictation}
         onClose={close}
         getRecordingUrl={(messageId) => client.recordingUrl(sessionId, messageId)}
         onAskRecording={askRecording}
