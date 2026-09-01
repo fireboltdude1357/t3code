@@ -424,11 +424,13 @@ function RoadView(props: VoiceSidecarPageProps) {
           )}
         </Pressable>
         <Text className="text-center text-sm text-foreground-muted">
-          {recorder.state.phase === "recording"
-            ? `Recording ${Math.floor(recorder.elapsedSeconds / 60)}:${String(recorder.elapsedSeconds % 60).padStart(2, "0")}`
-            : recorder.state.phase === "submitting"
-              ? "Sending for transcription"
-              : "Tap to ask Luna by voice"}
+          {session.availability.transcription !== "ready"
+            ? "Voice needs an OpenAI API key. Add one in Settings → Voice & Luna."
+            : recorder.state.phase === "recording"
+              ? `Recording ${Math.floor(recorder.elapsedSeconds / 60)}:${String(recorder.elapsedSeconds % 60).padStart(2, "0")}`
+              : recorder.state.phase === "submitting"
+                ? "Sending for transcription"
+                : "Tap to ask Luna by voice"}
         </Text>
         {recorder.state.phase === "error" ? (
           <Pressable onPress={recorder.dismissError}>
