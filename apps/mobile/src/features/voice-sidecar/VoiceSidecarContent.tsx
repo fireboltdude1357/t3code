@@ -49,6 +49,8 @@ export interface VoiceSidecarContentProps {
   readonly error: string | null;
   /** True when this device transcribes recordings itself (iOS 26 dictation). */
   readonly localTranscriptionAvailable: boolean;
+  /** Why the last recording fell back to the host upload, if it did. */
+  readonly localTranscriptionNotice: string | null;
   readonly onClose: () => void;
   readonly getRecordingUrl: (messageId: string) => string;
   readonly onAskRecording: (capture: VoiceSidecarRecordingCapture) => Promise<void>;
@@ -318,7 +320,8 @@ function RoadView(props: VoiceSidecarPageProps) {
     >
       {session.availability.luna !== "ready" ||
       !transcriptionReady ||
-      session.availability.synthesis !== "ready" ? (
+      session.availability.synthesis !== "ready" ||
+      props.localTranscriptionNotice !== null ? (
         <View className="gap-2 rounded-[20px] border border-border bg-card px-4 py-3">
           <Text className="font-t3-bold text-sm text-foreground">Service status</Text>
           <Text className="text-sm text-foreground-muted">
@@ -328,6 +331,11 @@ function RoadView(props: VoiceSidecarPageProps) {
               : serviceStatusLabel(session.availability.transcription)}{" "}
             · Kokoro: {serviceStatusLabel(session.availability.synthesis)}
           </Text>
+          {props.localTranscriptionNotice !== null ? (
+            <Text className="text-sm text-foreground-muted">
+              Last recording used the host instead: {props.localTranscriptionNotice}
+            </Text>
+          ) : null}
         </View>
       ) : null}
 
