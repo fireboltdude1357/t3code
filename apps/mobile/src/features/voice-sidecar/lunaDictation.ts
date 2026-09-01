@@ -3,13 +3,15 @@ import { Platform } from "react-native";
 
 /**
  * Bridge to the LunaDictation native module (modules/luna-dictation), which
- * runs Apple's on-device DictationTranscriber with contextual-string biasing.
- * Resolves to null on Android, on iOS below 26, and in binaries built without
- * the module, so callers fall back to host-side transcription.
+ * runs Apple's on-device SpeechTranscriber with the Luna dictionary offered as
+ * contextual strings. Resolves to null on Android, on iOS below 26, and in
+ * binaries built without the module, so callers fall back to host-side
+ * transcription.
  */
 
 interface LunaDictationNativeModule {
   isAvailable(locale: string): Promise<boolean>;
+  prepare(locale: string): Promise<boolean>;
   transcribe(uri: string, locale: string, contextualStrings: readonly string[]): Promise<string>;
 }
 
@@ -30,6 +32,16 @@ export function localDictationAvailable(): Promise<boolean> {
   const resolved = availability ?? native.isAvailable(deviceLocale()).catch(() => false);
   availability = resolved;
   return resolved;
+}
+
+/**
+ * Warms the model assets so the first recording does not pay for a download.
+ * Shares assets with the composer mic, so this is usually instant. Failures
+ * are ignored; transcribe surfaces its own errors.
+ */
+export function prepareLocalDictation(): void {
+  if (native === null) return;
+  void native.prepare(deviceLocale()).catch(() => undefined);
 }
 
 /** Transcribes a finished recording on-device, biased toward the given terms. */

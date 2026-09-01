@@ -2,10 +2,13 @@ import AVFoundation
 import ExpoModulesCore
 import Speech
 
-/// On-device dictation for the Luna voice sidecar. Uses the iOS 26
-/// `DictationTranscriber` so the Luna dictionary can bias recognition through
-/// `AnalysisContext.contextualStrings`; the newer `SpeechTranscriber` engine
-/// offers no vocabulary hook. Transcription is batch: the sidecar records to a
+/// On-device transcription for the Luna voice sidecar. Runs the same iOS 26
+/// `SpeechTranscriber` engine as the composer mic (its model assets are shared,
+/// so `prepare` is usually a no-op) and hands the Luna dictionary to the
+/// analyzer through `AnalysisContext.contextualStrings`. Apple documents that
+/// biasing for `DictationTranscriber`; whether `SpeechTranscriber` honors it is
+/// undocumented, and setting it costs nothing either way. Corrections are
+/// applied in JS afterwards. Transcription is batch: the sidecar records to a
 /// file, then hands the file here.
 public class LunaDictationModule: Module {
   public func definition() -> ModuleDefinition {
@@ -13,7 +16,29 @@ public class LunaDictationModule: Module {
 
     AsyncFunction("isAvailable") { (locale: String) async -> Bool in
       guard #available(iOS 26.0, *) else { return false }
-      return await LunaDictation.supportedLocale(matching: locale) != nil
+      guard SpeechTranscriber.isAvailable else { return false }
+      return await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale)) != nil
+    }
+
+    // Downloads model assets if needed so the first recording does not pay for
+    // them. The sidecar calls this when the sheet opens.
+    AsyncFunction("prepare") { (locale: String) async throws -> Bool in
+      guard #available(iOS 26.0, *) else {
+        throw DictationUnavailableException()
+      }
+      let transcriber = try await LunaDictation.makeTranscriber(locale: locale)
+      let status = await AssetInventory.status(forModules: [transcriber])
+      switch status {
+      case .installed:
+        return true
+      case .supported, .downloading:
+        if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+          try await request.downloadAndInstall()
+        }
+        return true
+      default:
+        throw DictationUnavailableException()
+      }
     }
 
     AsyncFunction("transcribe") { (uri: String, locale: String, contextualStrings: [String]) async throws -> String in
@@ -31,28 +56,31 @@ public class LunaDictationModule: Module {
 
 final class DictationUnavailableException: Exception {
   override var reason: String {
-    "On-device dictation needs iOS 26 and a supported device language."
+    "On-device transcription needs iOS 26 and a supported device language."
   }
 }
 
 final class DictationAudioFileException: Exception {
   override var reason: String {
-    "The recording could not be opened for on-device dictation."
+    "The recording could not be opened for on-device transcription."
   }
 }
 
 @available(iOS 26.0, *)
 enum LunaDictation {
-  static func supportedLocale(matching identifier: String) async -> Locale? {
-    let requested = Locale(identifier: identifier)
-    let supported = await DictationTranscriber.supportedLocales
-    if let exact = supported.first(where: {
-      $0.identifier(.bcp47) == requested.identifier(.bcp47)
-    }) {
-      return exact
+  static func makeTranscriber(locale: String) async throws -> SpeechTranscriber {
+    guard
+      let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale))
+    else {
+      throw DictationUnavailableException()
     }
-    let language = requested.language.languageCode?.identifier
-    return supported.first { $0.language.languageCode?.identifier == language }
+    let preset = SpeechTranscriber.Preset.transcription
+    return SpeechTranscriber(
+      locale: resolved,
+      transcriptionOptions: preset.transcriptionOptions,
+      reportingOptions: preset.reportingOptions,
+      attributeOptions: preset.attributeOptions
+    )
   }
 
   static func transcribeFile(
@@ -60,9 +88,6 @@ enum LunaDictation {
     locale: String,
     contextualStrings: [String]
   ) async throws -> String {
-    guard let resolved = await supportedLocale(matching: locale) else {
-      throw DictationUnavailableException()
-    }
     guard
       let url = URL(string: uri), url.isFileURL,
       let file = try? AVAudioFile(forReading: url)
@@ -70,12 +95,8 @@ enum LunaDictation {
       throw DictationAudioFileException()
     }
 
-    let transcriber = DictationTranscriber(locale: resolved, preset: .shortDictation)
-    if let installation = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-      try await installation.downloadAndInstall()
-    }
-
-    let analyzer = SpeechAnalyzer(modules: [transcriber], options: nil)
+    let transcriber = try await makeTranscriber(locale: locale)
+    let analyzer = SpeechAnalyzer(modules: [transcriber])
     if !contextualStrings.isEmpty {
       let context = AnalysisContext()
       context.contextualStrings = [.general: contextualStrings]
@@ -84,7 +105,7 @@ enum LunaDictation {
 
     // Collect results while the analyzer consumes the file; the sequence ends
     // once analysis finishes below.
-    let collector = Task {
+    let collector = Task { () throws -> [String] in
       var pieces: [String] = []
       for try await result in transcriber.results where result.isFinal {
         pieces.append(String(result.text.characters))
@@ -100,6 +121,8 @@ enum LunaDictation {
       }
     } catch {
       collector.cancel()
+      await analyzer.cancelAndFinishNow()
+      _ = try? await collector.value
       throw error
     }
 
