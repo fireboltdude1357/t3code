@@ -2472,43 +2472,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
   const reviewCommentColors = useReviewCommentColors();
   const unsettledTurnId = threadFeedRunIsUnsettled(props.latestRun) ? props.latestRun.runId : null;
-  // LegendList does not invalidate visible rows when only the renderItem closure changes.
-  // Include turn completion so unchanged message rows reveal their footer and spacing
-  // even when the final message update arrives before the turn settles.
-  const listAppearanceData = useMemo(
-    () => ({
-      worktreeSetup: props.worktreeSetup,
-      setupWorkingStartedAt: props.setupWorkingStartedAt,
-      dispatchingMessageId: props.dispatchingMessageId,
-      unsettledTurnId,
-      copiedRowId,
-      expandedWorkGroups,
-      expandedWorkRows,
-      workRowSizing,
-      iconSubtleColor,
-      markdownStyles,
-      reviewCommentColors,
-      themeAppearance,
-      userBubbleColor,
-      viewportWidth,
-    }),
-    [
-      props.worktreeSetup,
-      props.setupWorkingStartedAt,
-      props.dispatchingMessageId,
-      unsettledTurnId,
-      copiedRowId,
-      expandedWorkGroups,
-      expandedWorkRows,
-      workRowSizing,
-      iconSubtleColor,
-      markdownStyles,
-      reviewCommentColors,
-      themeAppearance,
-      userBubbleColor,
-      viewportWidth,
-    ],
-  );
   const reportHeaderMaterialVisibility = useCallback(
     (visible: boolean) => {
       if (headerMaterialVisibleRef.current === visible) {
@@ -2699,6 +2662,49 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }
     return new Set(terminalIdsByTurn.values());
   }, [props.feed]);
+  // LegendList does not invalidate visible rows when only the renderItem closure changes.
+  // Keep row-local interaction props in extraData so disclosures, copy feedback, and the
+  // assistant meta row (copy + Luna buttons on turn settle) repaint, even when the final
+  // message update arrives before the turn settles.
+  const listAppearanceData = useMemo(
+    () => ({
+      worktreeSetup: props.worktreeSetup,
+      setupWorkingStartedAt: props.setupWorkingStartedAt,
+      dispatchingMessageId: props.dispatchingMessageId,
+      copiedRowId,
+      expandedWorkGroups,
+      expandedWorkRows,
+      workRowSizing,
+      iconSubtleColor,
+      markdownStyles,
+      reviewCommentColors,
+      terminalAssistantMessageIds,
+      themeAppearance,
+      unsettledTurnId,
+      userBubbleColor,
+      viewportWidth,
+      voiceSidecarAvailable,
+    }),
+    [
+      props.worktreeSetup,
+      props.setupWorkingStartedAt,
+      props.dispatchingMessageId,
+      copiedRowId,
+      expandedWorkGroups,
+      expandedWorkRows,
+      workRowSizing,
+      iconSubtleColor,
+      markdownStyles,
+      reviewCommentColors,
+      terminalAssistantMessageIds,
+      themeAppearance,
+      unsettledTurnId,
+      userBubbleColor,
+      viewportWidth,
+      voiceSidecarAvailable,
+    ],
+  );
+
   useEffect(() => {
     const previous = previousLatestTurnRef.current;
     previousLatestTurnRef.current = props.latestRun;
