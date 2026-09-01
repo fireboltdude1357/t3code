@@ -18,7 +18,11 @@ import {
 } from "./lunaHostApi";
 import { VoiceSidecarContent } from "./VoiceSidecarContent";
 import { applyDictionaryCorrections, selectDictationTerms } from "./dictationVocabulary";
-import { localDictationAvailable, transcribeWithLocalDictation } from "./lunaDictation";
+import {
+  localDictationAvailable,
+  prepareLocalDictation,
+  transcribeWithLocalDictation,
+} from "./lunaDictation";
 import {
   buildVoiceSidecarHandoffMessage,
   resolveCompletedAssistantSourceText,
@@ -60,13 +64,17 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
   const [localError, setLocalError] = useState<string | null>(null);
   const [openAttempt, setOpenAttempt] = useState(0);
   const [localDictation, setLocalDictation] = useState(false);
+  const [localDictationNotice, setLocalDictationNotice] = useState<string | null>(null);
   const snapshotRef = useRef<LunaSnapshot | null>(null);
   snapshotRef.current = snapshot;
 
   useEffect(() => {
     let active = true;
     void localDictationAvailable().then((available) => {
-      if (active) setLocalDictation(available);
+      if (!active) return;
+      setLocalDictation(available);
+      // Warm the model while the user reads the synopsis, before any recording.
+      if (available) prepareLocalDictation();
     });
     return () => {
       active = false;
@@ -205,10 +213,14 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
               selectDictationTerms(dictionary),
             );
             localText = applyDictionaryCorrections(raw, dictionary).trim();
+            setLocalDictationNotice(null);
           } catch (error) {
+            // Fall back to the host upload, but say so: a silent fallback
+            // reads as "on-device is slow" and hides the actual failure.
+            setLocalDictationNotice(messageOf(error, "On-device transcription failed."));
             const hostReady = snapshotRef.current?.session.availability.transcription === "ready";
             if (!hostReady) throw error;
-            localText = null; // Fall back to the host upload below.
+            localText = null;
           }
         }
         if (localText !== null && localText.length === 0) {
@@ -287,6 +299,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
         pendingAction={pendingAction}
         error={localError ?? sessionError}
         localTranscriptionAvailable={localDictation}
+        localTranscriptionNotice={localDictationNotice}
         onClose={close}
         getRecordingUrl={(messageId) => client.recordingUrl(sessionId, messageId)}
         onAskRecording={askRecording}
