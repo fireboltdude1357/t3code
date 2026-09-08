@@ -1,6 +1,9 @@
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import * as Haptics from "expo-haptics";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import IconMicrophone from "@tabler/icons-react-native/IconMicrophone";
+import IconPlayerPauseFilled from "@tabler/icons-react-native/IconPlayerPauseFilled";
 import { withUniwind } from "uniwind";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
@@ -18,16 +21,23 @@ import {
   type VoiceSidecarPlaybackCoordinator,
 } from "./VoiceSidecarAudioPlayer";
 import type { VoiceSidecarSpeechState } from "./voiceSidecarSpeech";
+import { ignoreReleasedNativeObject } from "./releasedNativeObject";
 import { useVoiceSidecarRecorder } from "./useVoiceSidecarRecorder";
+import { prepareForegroundPlayback } from "./voiceSidecarAudioMode";
 import {
   dictionaryEntryLabel,
+  formatClock,
+  handsfreeStatus,
+  handsfreeTapAction,
   latestCompleteAssistantMessage,
+  resolveHandsfreePhase,
   sentenceCountLabel,
   serviceStatusLabel,
 } from "./voiceSidecarPresentation";
 
-type SidecarPage = "road" | "history" | "dictionary";
+type SidecarPage = "handsfree" | "history" | "dictionary" | "settings";
 const ThemedMicrophone = withUniwind(IconMicrophone);
+const ThemedPause = withUniwind(IconPlayerPauseFilled);
 type DictionaryDraft =
   | { readonly mode: "term"; readonly entryId?: string; readonly term: string }
   | {
@@ -46,6 +56,8 @@ export interface LunaDictionaryEntryDraft {
 export interface VoiceSidecarContentProps {
   readonly snapshot: LunaSnapshot;
   readonly pendingAction: string | null;
+  /** True while a question (voice or text) is on its way to Luna. */
+  readonly asking: boolean;
   readonly error: string | null;
   /** True when this device transcribes recordings itself (iOS 26 dictation). */
   readonly localTranscriptionAvailable: boolean;
@@ -67,6 +79,8 @@ export interface VoiceSidecarContentProps {
   readonly onRequestSpeech: (messageId: string) => Promise<void>;
   readonly onSpeechAutoPlayed: (messageId: string) => void;
   readonly onSendHandoff: (content: VoiceSidecarHandoffContent) => Promise<void>;
+  /** Plays the error tone for failures the sheet's error banner does not see. */
+  readonly playErrorCue: () => void;
 }
 
 type VoiceSidecarPageProps = VoiceSidecarContentProps & {
@@ -227,7 +241,7 @@ function SidecarHeader(props: {
   readonly onChangePage: (page: SidecarPage) => void;
 }) {
   return (
-    <View className="border-b border-border bg-sheet px-4 pb-3 pt-2">
+    <View className="border-b border-border bg-sheet px-4 pb-3 pt-6">
       <View className="flex-row items-center justify-between">
         <Pressable
           accessibilityLabel="Close Luna"
@@ -253,9 +267,10 @@ function SidecarHeader(props: {
       <View className="mt-3 flex-row rounded-[16px] bg-subtle p-1">
         {(
           [
-            ["road", "Road"],
+            ["handsfree", "Handsfree"],
             ["history", "History"],
             ["dictionary", "Dictionary"],
+            ["settings", "Settings"],
           ] as const
         ).map(([value, label]) => (
           <Pressable
@@ -285,7 +300,177 @@ function SidecarHeader(props: {
   );
 }
 
-function RoadView(props: VoiceSidecarPageProps) {
+/**
+ * Eyes-off mode. The whole page is one button: tap to record, tap to send,
+ * tap to pause Luna mid-sentence. The latest answer plays here as soon as its
+ * audio is ready.
+ */
+function HandsfreeView(props: VoiceSidecarPageProps) {
+  const session = props.snapshot.session;
+  const latestAssistant = latestCompleteAssistantMessage(session.messages);
+  const latestId = latestAssistant?.id ?? null;
+  const speech = latestId === null ? undefined : props.speechByMessageId[latestId];
+  const speechUri = speech?.status === "ready" ? speech.uri : null;
+  const transcriptionReady =
+    session.availability.transcription === "ready" || props.localTranscriptionAvailable;
+  const recorder = useVoiceSidecarRecorder({
+    disabled: props.pendingAction !== null || !transcriptionReady,
+    onCapture: props.onAskRecording,
+  });
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+
+  // Each answer gets its own player; the previous one is released with it.
+  const player = useAudioPlayer(speechUri, { updateInterval: 250 });
+  const status = useAudioPlayerStatus(player);
+  const finished =
+    status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration);
+  const pausedMidway = speechUri !== null && !status.playing && status.currentTime > 0 && !finished;
+  const coordinator = props.playbackCoordinator;
+
+  const pause = useCallback(
+    function pause() {
+      ignoreReleasedNativeObject(() => player.pause());
+      coordinator.release(pause);
+    },
+    [coordinator, player],
+  );
+  const play = useCallback(async () => {
+    if (speechUri === null) return;
+    coordinator.claim(pause);
+    setPlaybackError(null);
+    try {
+      await prepareForegroundPlayback();
+      if (finished) await player.seekTo(0);
+      player.play();
+    } catch (error) {
+      pause();
+      setPlaybackError(error instanceof Error ? error.message : "Could not play Luna's answer.");
+    }
+  }, [coordinator, finished, pause, player, speechUri]);
+
+  const autoPlayedUriRef = useRef<string | null>(null);
+  const { onSpeechAutoPlayed, playErrorCue } = props;
+  useEffect(() => {
+    if (latestId === null || speechUri === null || !speech?.shouldAutoPlay) return;
+    if (autoPlayedUriRef.current === speechUri) return;
+    autoPlayedUriRef.current = speechUri;
+    onSpeechAutoPlayed(latestId);
+    void play();
+  }, [latestId, onSpeechAutoPlayed, play, speech?.shouldAutoPlay, speechUri]);
+  useEffect(() => () => pause(), [pause]);
+
+  const recorderError = recorder.state.phase === "error" ? recorder.state.error : null;
+  useEffect(() => {
+    if (recorderError !== null) playErrorCue();
+  }, [playErrorCue, recorderError]);
+  useEffect(() => {
+    if (playbackError !== null) playErrorCue();
+  }, [playErrorCue, playbackError]);
+
+  const phase = resolveHandsfreePhase({
+    transcriptionReady,
+    recorderPhase: recorder.state.phase,
+    asking: props.asking,
+    sessionStatus: session.status,
+    speechStatus: speech?.status,
+    playing: status.playing,
+    pausedMidway,
+  });
+  const onTap = useCallback(() => {
+    const action = handsfreeTapAction(phase);
+    if (action === "none") return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    switch (action) {
+      case "pause":
+        pause();
+        return;
+      case "send":
+        void recorder.stop();
+        return;
+      case "record":
+        coordinator.stopActive();
+        pause();
+        void recorder.start();
+        return;
+    }
+  }, [coordinator, pause, phase, recorder]);
+
+  const { title, hint } = handsfreeStatus(phase, recorder.elapsedSeconds);
+  const working = phase === "transcribing" || phase === "thinking" || phase === "preparing-voice";
+  const circleClassName =
+    phase === "listening"
+      ? "size-40 items-center justify-center rounded-full bg-primary"
+      : working
+        ? "size-40 items-center justify-center rounded-full bg-subtle"
+        : phase === "unavailable"
+          ? "size-40 items-center justify-center rounded-full border border-border bg-card opacity-40"
+          : "size-40 items-center justify-center rounded-full border border-border bg-card";
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      className="flex-1 items-center justify-center gap-8 px-8 pb-10 active:opacity-90"
+      onPress={onTap}
+    >
+      <View className={circleClassName}>
+        {working ? (
+          <ActivityIndicator size="large" colorClassName="accent-icon-muted" />
+        ) : phase === "listening" ? (
+          <SymbolView
+            name="arrow.up"
+            size={44}
+            tintColorClassName="accent-primary-foreground"
+            type="monochrome"
+          />
+        ) : phase === "speaking" ? (
+          Platform.OS === "android" ? (
+            <ThemedPause size={44} colorClassName="accent-icon" />
+          ) : (
+            <SymbolView
+              name="pause.fill"
+              size={44}
+              tintColorClassName="accent-icon"
+              type="monochrome"
+            />
+          )
+        ) : Platform.OS === "android" ? (
+          <ThemedMicrophone size={44} colorClassName="accent-icon" />
+        ) : (
+          <SymbolView name="mic" size={44} tintColorClassName="accent-icon" type="monochrome" />
+        )}
+      </View>
+      <View className="items-center gap-2">
+        <Text className="text-center text-3xl font-t3-bold text-foreground">{title}</Text>
+        {hint !== null ? (
+          <Text className="text-center text-base text-foreground-muted">{hint}</Text>
+        ) : null}
+        {recorderError !== null || playbackError !== null ? (
+          <Text className="text-center text-sm text-danger-foreground">
+            {recorderError ?? playbackError}
+          </Text>
+        ) : null}
+      </View>
+      {latestAssistant?.text ? (
+        <Text
+          numberOfLines={6}
+          className="text-center text-lg leading-relaxed text-foreground-muted"
+        >
+          {latestAssistant.text}
+        </Text>
+      ) : null}
+      {phase === "paused" || (phase === "idle" && speechUri !== null) ? (
+        <ActionButton
+          label={phase === "paused" ? "Resume" : "Replay"}
+          icon="play"
+          onPress={() => runUiAction(play)}
+        />
+      ) : null}
+    </Pressable>
+  );
+}
+
+function SettingsView(props: VoiceSidecarPageProps) {
   const session = props.snapshot.session;
   const [text, setText] = useState("");
   const latestAssistant = latestCompleteAssistantMessage(session.messages);
@@ -441,7 +626,7 @@ function RoadView(props: VoiceSidecarPageProps) {
           {!transcriptionReady
             ? "Voice needs an OpenAI API key. Add one in Settings → Voice & Luna."
             : recorder.state.phase === "recording"
-              ? `Recording ${Math.floor(recorder.elapsedSeconds / 60)}:${String(recorder.elapsedSeconds % 60).padStart(2, "0")}`
+              ? `Recording ${formatClock(recorder.elapsedSeconds)}`
               : recorder.state.phase === "submitting"
                 ? props.localTranscriptionAvailable
                   ? "Transcribing on device"
@@ -842,7 +1027,7 @@ function DictionaryView(props: VoiceSidecarPageProps) {
 export const VoiceSidecarContent = memo(function VoiceSidecarContent(
   props: VoiceSidecarContentProps,
 ) {
-  const [page, setPage] = useState<SidecarPage>("road");
+  const [page, setPage] = useState<SidecarPage>("handsfree");
   const activePlaybackRef = useRef<(() => void) | null>(null);
   const playbackCoordinator = useMemo<VoiceSidecarPlaybackCoordinator>(
     () => ({
@@ -864,12 +1049,14 @@ export const VoiceSidecarContent = memo(function VoiceSidecarContent(
   );
   const body = useMemo(() => {
     switch (page) {
-      case "road":
-        return <RoadView {...props} playbackCoordinator={playbackCoordinator} />;
+      case "handsfree":
+        return <HandsfreeView {...props} playbackCoordinator={playbackCoordinator} />;
       case "history":
         return <HistoryView {...props} playbackCoordinator={playbackCoordinator} />;
       case "dictionary":
         return <DictionaryView {...props} playbackCoordinator={playbackCoordinator} />;
+      case "settings":
+        return <SettingsView {...props} playbackCoordinator={playbackCoordinator} />;
     }
   }, [page, playbackCoordinator, props]);
 
