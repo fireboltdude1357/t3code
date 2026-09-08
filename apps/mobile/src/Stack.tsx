@@ -758,7 +758,9 @@ const RootStackConfig = createWorkspaceStackNavigator({
           ? { presentation: "fullScreenModal" as const }
           : {
               ...FORM_SHEET_PRESENTATION_OPTIONS,
+              // Open tall: the handsfree page is a full-height tap target.
               sheetAllowedDetents: [0.65, 0.95],
+              sheetInitialDetentIndex: 1,
               sheetGrabberVisible: true,
             }),
       },
