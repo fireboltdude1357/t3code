@@ -18,6 +18,7 @@ import {
 } from "./lunaHostApi";
 import { VoiceSidecarContent } from "./VoiceSidecarContent";
 import { applyDictionaryCorrections, selectDictationTerms } from "./dictationVocabulary";
+import { useLunaCues } from "./lunaCues";
 import {
   localDictationAvailable,
   prepareLocalDictation,
@@ -29,6 +30,7 @@ import {
   resolveVoiceSidecarHandoffText,
   type VoiceSidecarHandoffContent,
 } from "./voiceSidecarHandoff";
+import { latestCompleteAssistantMessage } from "./voiceSidecarPresentation";
 import { useVoiceSidecarSpeech } from "./voiceSidecarSpeech";
 
 type VoiceSidecarSheetProps = StaticScreenProps<{
@@ -61,6 +63,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
 
   const [snapshot, setSnapshot] = useState<LunaSnapshot | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>("open");
+  const [asking, setAsking] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [openAttempt, setOpenAttempt] = useState(0);
   const [localDictation, setLocalDictation] = useState(false);
@@ -176,6 +179,19 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
     enabled: snapshot?.session.availability.synthesis === "ready",
   });
 
+  const sessionError =
+    snapshot?.session.status === "error"
+      ? (snapshot.session.lastError ?? "Luna hit an error.")
+      : null;
+  const latestAssistantId = latestCompleteAssistantMessage(snapshot?.session.messages ?? [])?.id;
+  const latestSpeech =
+    latestAssistantId === undefined ? undefined : speech.speechByMessageId[latestAssistantId];
+  const cues = useLunaCues({
+    processing:
+      pendingAction === "open" || asking || waiting === true || latestSpeech?.status === "loading",
+    errorKey: localError ?? sessionError ?? latestSpeech?.error ?? null,
+  });
+
   const runCommand = useCallback(
     async (label: string, command: () => Promise<LunaSnapshot>): Promise<void> => {
       setPendingAction(label);
@@ -199,6 +215,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
         throw new Error("The Luna voice host is not connected.");
       }
       setPendingAction("send recording");
+      setAsking(true);
       setLocalError(null);
       try {
         // Transcribe on-device when possible: no audio upload, no API cost,
@@ -237,6 +254,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
         setLocalError(message);
         throw new Error(message);
       } finally {
+        setAsking(false);
         setPendingAction(null);
       }
     },
@@ -283,11 +301,6 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
     );
   }
 
-  const sessionError =
-    snapshot.session.status === "error"
-      ? (snapshot.session.lastError ?? "Luna hit an error.")
-      : null;
-
   return (
     <View
       collapsable={false}
@@ -297,15 +310,21 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
       <VoiceSidecarContent
         snapshot={snapshot}
         pendingAction={pendingAction}
+        asking={asking}
         error={localError ?? sessionError}
         localTranscriptionAvailable={localDictation}
         localTranscriptionNotice={localDictationNotice}
         onClose={close}
         getRecordingUrl={(messageId) => client.recordingUrl(sessionId, messageId)}
         onAskRecording={askRecording}
-        onAskText={(text) =>
-          runCommand("ask Luna", () => client.askText(sessionId, uuidv4(), text))
-        }
+        onAskText={async (text) => {
+          setAsking(true);
+          try {
+            await runCommand("ask Luna", () => client.askText(sessionId, uuidv4(), text));
+          } finally {
+            setAsking(false);
+          }
+        }}
         onSetPreferences={(preferences: LunaSessionPreferences) =>
           runCommand("update Luna preferences", () =>
             client.setPreferences(sessionId, uuidv4(), preferences),
@@ -339,6 +358,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
             dictionary: await client.syncWispr(),
           }))
         }
+        playErrorCue={cues.playError}
         speechByMessageId={speech.speechByMessageId}
         onRequestSpeech={(messageId) => speech.requestSpeech(messageId, true)}
         onSpeechAutoPlayed={speech.consumeAutoPlay}

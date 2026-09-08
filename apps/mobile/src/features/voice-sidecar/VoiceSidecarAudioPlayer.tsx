@@ -1,19 +1,11 @@
-import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { ignoreReleasedNativeObject } from "./releasedNativeObject";
-
-async function prepareForegroundPlayback(): Promise<void> {
-  await setAudioModeAsync({
-    allowsRecording: false,
-    interruptionMode: "doNotMix",
-    playsInSilentMode: true,
-    shouldPlayInBackground: false,
-  });
-}
+import { prepareForegroundPlayback } from "./voiceSidecarAudioMode";
 
 export interface VoiceSidecarPlaybackCoordinator {
   readonly claim: (stop: () => void) => void;
