@@ -1,6 +1,7 @@
 import type {
   LunaDictionaryEntry,
   LunaMessage,
+  LunaMessageKind,
   LunaServiceStatus,
   LunaSession,
 } from "./lunaHostApi";
@@ -17,6 +18,31 @@ export function latestCompleteAssistantMessage(
 
 export function dictionaryEntryLabel(entry: LunaDictionaryEntry): string {
   return entry.kind === "term" ? entry.phrase : `${entry.phrase} → ${entry.replacement ?? ""}`;
+}
+
+export function messageKindLabel(kind: LunaMessageKind | undefined): string {
+  return kind === "next-prompt" ? "Next prompt" : "Luna";
+}
+
+export type VoiceCommand =
+  | { readonly _tag: "replay" }
+  | { readonly _tag: "next-prompt" }
+  | { readonly _tag: "ask"; readonly text: string };
+
+const REPLAY_PATTERN =
+  /^(?:luna[,.]?\s+)?(?:(?:please\s+)?(?:replay|repeat)(?:\s+(?:that|it|the last (?:message|answer|one)))?|say (?:that|it) again|play (?:that|it) again|one more time|again)(?:[,.]?\s*please)?[.!]?$/iu;
+const NEXT_PROMPT_PATTERN =
+  /^(?:luna[,.]?\s+)?(?:(?:please\s+)?(?:draft|write|create|make|generate|prepare)\s+(?:me\s+)?(?:the|a|my)?\s*(?:next\s+)?prompt(?:\s+for\s+(?:the\s+)?(?:workflow|thread|agent))?|(?:what(?:'s| is) the |give me the )?next prompt)(?:[,.]?\s*please)?[.!]?$/iu;
+
+/**
+ * Short spoken commands are handled on the phone instead of being sent to
+ * Luna. Anything longer, or anything that does not match, is a question.
+ */
+export function classifyVoiceCommand(transcript: string): VoiceCommand {
+  const text = transcript.trim();
+  if (REPLAY_PATTERN.test(text)) return { _tag: "replay" };
+  if (NEXT_PROMPT_PATTERN.test(text)) return { _tag: "next-prompt" };
+  return { _tag: "ask", text };
 }
 
 export function serviceStatusLabel(status: LunaServiceStatus): string {
@@ -36,6 +62,11 @@ export type HandsfreePhase =
   | "preparing-voice"
   | "speaking"
   | "paused";
+
+/** Accessibility label for the wordless handsfree page. */
+export function handsfreeLabel(phase: HandsfreePhase): string {
+  return handsfreeStatus(phase, 0).title;
+}
 
 /**
  * Collapses recorder, host, speech, and player state into the one phase the
