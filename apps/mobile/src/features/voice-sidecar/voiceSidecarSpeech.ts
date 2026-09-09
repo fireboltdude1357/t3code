@@ -40,6 +40,21 @@ export function voiceSpeechFileExtension(mimeType: string): string {
   }
 }
 
+/**
+ * Downloaded speech and the answers already heard, per session, for the life
+ * of the app run. Reopening the sidecar plays nothing on its own: only answers
+ * that landed after the last look get auto-played, and everything already
+ * downloaded is ready for replay without another round trip.
+ */
+interface SessionSpeechCache {
+  readonly files: Map<string, string>;
+  readonly heard: Set<string>;
+}
+
+const MAX_CACHED_SESSIONS = 4;
+const speechCache = new Map<string, SessionSpeechCache>();
+let speechDirectoryReady: Promise<void> | null = null;
+
 async function removeCachedSpeech(uri: string): Promise<void> {
   try {
     const { File } = await import("expo-file-system");
@@ -50,14 +65,49 @@ async function removeCachedSpeech(uri: string): Promise<void> {
   }
 }
 
-async function cacheSpeech(bytes: Uint8Array, mimeType: string): Promise<string> {
-  const { Directory, File, Paths } = await import("expo-file-system");
+/** Files from earlier app runs are unreachable from the in-memory cache, so start clean. */
+async function speechDirectory() {
+  const { Directory, Paths } = await import("expo-file-system");
   const directory = new Directory(Paths.cache, "voice-sidecar-speech");
-  directory.create({ idempotent: true, intermediates: true });
-  const file = new File(directory, `luna-${uuidv4()}.${voiceSpeechFileExtension(mimeType)}`);
+  speechDirectoryReady ??= (async () => {
+    try {
+      if (directory.exists) directory.delete();
+    } catch (error) {
+      console.warn("[voice-sidecar] could not clear stale speech", error);
+    }
+    directory.create({ idempotent: true, intermediates: true });
+  })();
+  await speechDirectoryReady;
+  return directory;
+}
+
+async function cacheSpeech(bytes: Uint8Array, mimeType: string): Promise<string> {
+  const { File } = await import("expo-file-system");
+  const file = new File(
+    await speechDirectory(),
+    `luna-${uuidv4()}.${voiceSpeechFileExtension(mimeType)}`,
+  );
   file.create({ overwrite: true });
   file.write(bytes);
   return file.uri;
+}
+
+function sessionCache(sessionId: string): SessionSpeechCache {
+  const existing = speechCache.get(sessionId);
+  if (existing) {
+    speechCache.delete(sessionId);
+    speechCache.set(sessionId, existing);
+    return existing;
+  }
+  const created: SessionSpeechCache = { files: new Map(), heard: new Set() };
+  speechCache.set(sessionId, created);
+  while (speechCache.size > MAX_CACHED_SESSIONS) {
+    const oldest = speechCache.keys().next().value;
+    if (oldest === undefined) break;
+    for (const uri of speechCache.get(oldest)?.files.values() ?? []) void removeCachedSpeech(uri);
+    speechCache.delete(oldest);
+  }
+  return created;
 }
 
 function completedAssistantMessageIds(messages: ReadonlyArray<LunaMessage>): ReadonlyArray<string> {
@@ -68,7 +118,8 @@ function completedAssistantMessageIds(messages: ReadonlyArray<LunaMessage>): Rea
 
 /**
  * Downloads Luna speech from the voice host (which synthesizes through Kokoro
- * on first request), caches it locally, and auto-plays newly arrived answers.
+ * when the answer lands), keeps it in the per-session cache, and flags answers
+ * that arrived since the last look for auto-play.
  */
 export function useVoiceSidecarSpeech(input: {
   readonly client: LunaHostClient | null;
@@ -80,11 +131,8 @@ export function useVoiceSidecarSpeech(input: {
     Readonly<Record<string, VoiceSidecarSpeechState>>
   >({});
   const stateRef = useRef(speechByMessageId);
-  const cachedFilesRef = useRef(new Map<string, string>());
   const requestsRef = useRef(new Map<string, AbortController>());
-  const observedCompleteIdsRef = useRef(new Set<string>());
   const initializedSessionRef = useRef<string | null>(null);
-  const activeSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     stateRef.current = speechByMessageId;
@@ -107,8 +155,13 @@ export function useVoiceSidecarSpeech(input: {
   const requestSpeech = useCallback(
     async (messageId: string, autoPlay = true): Promise<void> => {
       if (!input.enabled || input.sessionId === null || input.client === null) return;
+      const cache = sessionCache(input.sessionId);
+      if (autoPlay) cache.heard.add(messageId);
       const current = stateRef.current[messageId];
-      if (current?.status === "loading") return;
+      if (current?.status === "loading") {
+        if (autoPlay) updateSpeech(messageId, (value) => ({ ...value, shouldAutoPlay: true }));
+        return;
+      }
       if (current?.status === "ready" && current.uri) {
         updateSpeech(messageId, (value) => ({ ...value, shouldAutoPlay: autoPlay }));
         return;
@@ -121,7 +174,7 @@ export function useVoiceSidecarSpeech(input: {
         status: "loading",
         uri: null,
         error: null,
-        shouldAutoPlay: false,
+        shouldAutoPlay: autoPlay,
       }));
 
       try {
@@ -132,14 +185,15 @@ export function useVoiceSidecarSpeech(input: {
           await removeCachedSpeech(uri);
           return;
         }
-        const previousUri = cachedFilesRef.current.get(messageId);
-        cachedFilesRef.current.set(messageId, uri);
+        const previousUri = cache.files.get(messageId);
+        cache.files.set(messageId, uri);
         if (previousUri && previousUri !== uri) void removeCachedSpeech(previousUri);
-        updateSpeech(messageId, () => ({
+        updateSpeech(messageId, (value) => ({
           status: "ready",
           uri,
           error: null,
-          shouldAutoPlay: autoPlay,
+          // A replay asked for while loading still wins.
+          shouldAutoPlay: value.shouldAutoPlay,
         }));
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -169,32 +223,32 @@ export function useVoiceSidecarSpeech(input: {
   );
 
   useEffect(() => {
-    if (activeSessionRef.current === input.sessionId) return;
-    for (const request of requestsRef.current.values()) request.abort();
-    requestsRef.current.clear();
-    for (const uri of cachedFilesRef.current.values()) void removeCachedSpeech(uri);
-    cachedFilesRef.current.clear();
-    observedCompleteIdsRef.current.clear();
-    initializedSessionRef.current = null;
-    activeSessionRef.current = input.sessionId;
-    setSpeechByMessageId({});
-    stateRef.current = {};
-  }, [input.sessionId]);
-
-  useEffect(() => {
     if (!input.enabled || input.sessionId === null || input.client === null) return;
+    const cache = sessionCache(input.sessionId);
     const completeIds = completedAssistantMessageIds(input.messages);
     if (initializedSessionRef.current !== input.sessionId) {
       initializedSessionRef.current = input.sessionId;
-      observedCompleteIdsRef.current = new Set(completeIds);
-      const latestId = completeIds.at(-1);
-      if (latestId) void requestSpeech(latestId, true);
-      return;
+      for (const request of requestsRef.current.values()) request.abort();
+      requestsRef.current.clear();
+      // Restore what is already on disk so replay needs no network.
+      const restored: Record<string, VoiceSidecarSpeechState> = {};
+      for (const [messageId, uri] of cache.files) {
+        restored[messageId] = { status: "ready", uri, error: null, shouldAutoPlay: false };
+      }
+      stateRef.current = restored;
+      setSpeechByMessageId(restored);
+      // First look at this session in this app run: nothing already here is
+      // new, so mark it heard and just warm the latest answer for replay.
+      if (cache.heard.size === 0 && cache.files.size === 0) {
+        for (const messageId of completeIds) cache.heard.add(messageId);
+        const latestId = completeIds.at(-1);
+        if (latestId) void requestSpeech(latestId, false);
+        return;
+      }
     }
 
     for (const messageId of completeIds) {
-      if (observedCompleteIdsRef.current.has(messageId)) continue;
-      observedCompleteIdsRef.current.add(messageId);
+      if (cache.heard.has(messageId)) continue;
       void requestSpeech(messageId, true);
     }
   }, [input.client, input.enabled, input.messages, input.sessionId, requestSpeech]);
@@ -203,8 +257,6 @@ export function useVoiceSidecarSpeech(input: {
     return () => {
       for (const request of requestsRef.current.values()) request.abort();
       requestsRef.current.clear();
-      for (const uri of cachedFilesRef.current.values()) void removeCachedSpeech(uri);
-      cachedFilesRef.current.clear();
     };
   }, []);
 

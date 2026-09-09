@@ -20,6 +20,12 @@ import { VoiceSidecarContent } from "./VoiceSidecarContent";
 import { applyDictionaryCorrections, selectDictationTerms } from "./dictationVocabulary";
 import { useLunaCues } from "./lunaCues";
 import {
+  forgetCachedSession,
+  readCachedSession,
+  sessionCacheKey,
+  writeCachedSession,
+} from "./voiceSidecarSessionCache";
+import {
   localDictationAvailable,
   prepareLocalDictation,
   transcribeWithLocalDictation,
@@ -30,7 +36,11 @@ import {
   resolveVoiceSidecarHandoffText,
   type VoiceSidecarHandoffContent,
 } from "./voiceSidecarHandoff";
-import { latestCompleteAssistantMessage } from "./voiceSidecarPresentation";
+import {
+  classifyVoiceCommand,
+  latestCompleteAssistantMessage,
+  type VoiceCommand,
+} from "./voiceSidecarPresentation";
 import { useVoiceSidecarSpeech } from "./voiceSidecarSpeech";
 
 type VoiceSidecarSheetProps = StaticScreenProps<{
@@ -84,12 +94,48 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
     };
   }, []);
   const openedIdentityRef = useRef<string | null>(null);
-  const identity = `${sourceEnvironmentId}:${sourceThreadId}:${sourceMessageId}:${client?.baseUrl ?? "no-host"}`;
+  const identity = sessionCacheKey({
+    environmentId: sourceEnvironmentId,
+    threadId: sourceThreadId,
+    messageId: sourceMessageId,
+    hostUrl: client?.baseUrl ?? "no-host",
+  });
+
+  // Every snapshot this sheet sees is remembered, so coming back to the same
+  // response resumes at once instead of waiting on the host.
+  useEffect(() => {
+    if (snapshot !== null) writeCachedSession(identity, snapshot);
+  }, [identity, snapshot]);
 
   useEffect(() => {
-    if (!lunaHost.isReady || Option.isNone(sourceThreadState.data)) return;
+    if (!lunaHost.isReady) return;
     const attemptIdentity = `${identity}:${openAttempt}`;
     if (openedIdentityRef.current === attemptIdentity) return;
+    const cached = client === null ? null : readCachedSession(identity);
+    if (cached !== null && client !== null) {
+      // Resume: render the last known state now, refresh quietly, and only
+      // fall back to a full open when the host no longer knows the session.
+      openedIdentityRef.current = attemptIdentity;
+      setSnapshot(cached);
+      setLocalError(null);
+      setPendingAction(null);
+      let cancelled = false;
+      client
+        .getSnapshot(cached.session.id)
+        .then((fresh) => {
+          if (!cancelled) setSnapshot(fresh);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          forgetCachedSession(identity);
+          openedIdentityRef.current = null;
+          setOpenAttempt((attempt) => attempt + 1);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (Option.isNone(sourceThreadState.data)) return;
     openedIdentityRef.current = attemptIdentity;
     setSnapshot(null);
     setLocalError(null);
@@ -209,6 +255,44 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
     [],
   );
 
+  const replayLatest = useCallback(() => {
+    const latest = latestCompleteAssistantMessage(snapshotRef.current?.session.messages ?? []);
+    if (latest === null) throw new Error("There is nothing to replay yet.");
+    void speech.requestSpeech(latest.id, true);
+  }, [speech]);
+
+  const draftNextPrompt = useCallback(async () => {
+    if (client === null || sessionId === null) {
+      throw new Error("The Luna voice host is not connected.");
+    }
+    setAsking(true);
+    try {
+      await runCommand("draft the next prompt", () => client.draftNextPrompt(sessionId, uuidv4()));
+    } finally {
+      setAsking(false);
+    }
+  }, [client, runCommand, sessionId]);
+
+  const runVoiceCommand = useCallback(
+    async (command: VoiceCommand) => {
+      if (client === null || sessionId === null) {
+        throw new Error("The Luna voice host is not connected.");
+      }
+      switch (command._tag) {
+        case "replay":
+          replayLatest();
+          return;
+        case "next-prompt":
+          setSnapshot(await client.draftNextPrompt(sessionId, uuidv4()));
+          return;
+        case "ask":
+          setSnapshot(await client.askText(sessionId, uuidv4(), command.text));
+          return;
+      }
+    },
+    [client, replayLatest, sessionId],
+  );
+
   const askRecording = useCallback(
     async (capture: VoiceSidecarRecordingCapture) => {
       if (client === null || sessionId === null) {
@@ -220,16 +304,17 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
       try {
         // Transcribe on-device when possible: no audio upload, no API cost,
         // dictionary terms biasing recognition directly. The host's
-        // gpt-transcribe path stays as the fallback.
+        // gpt-transcribe path stays as the fallback. Either way the words
+        // come back here first, so "replay" never reaches Luna as a question.
         const dictionary = snapshotRef.current?.dictionary.entries ?? [];
-        let localText: string | null = null;
+        let text: string | null = null;
         if (localDictation) {
           try {
             const raw = await transcribeWithLocalDictation(
               capture.uri,
               selectDictationTerms(dictionary),
             );
-            localText = applyDictionaryCorrections(raw, dictionary).trim();
+            text = applyDictionaryCorrections(raw, dictionary).trim();
             setLocalDictationNotice(null);
           } catch (error) {
             // Fall back to the host upload, but say so: a silent fallback
@@ -237,18 +322,15 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
             setLocalDictationNotice(messageOf(error, "On-device transcription failed."));
             const hostReady = snapshotRef.current?.session.availability.transcription === "ready";
             if (!hostReady) throw error;
-            localText = null;
           }
         }
-        if (localText !== null && localText.length === 0) {
+        if (text === null) {
+          text = (await client.transcribeRecording(sessionId, capture)).text.trim();
+        }
+        if (text.length === 0) {
           throw new Error("Nothing was heard in the recording.");
         }
-        if (localText !== null) {
-          setSnapshot(await client.askText(sessionId, uuidv4(), localText));
-        } else {
-          await client.askRecording(sessionId, uuidv4(), capture);
-          setSnapshot(await client.getSnapshot(sessionId));
-        }
+        await runVoiceCommand(classifyVoiceCommand(text));
       } catch (error) {
         const message = messageOf(error, "Could not send the recording.");
         setLocalError(message);
@@ -258,7 +340,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
         setPendingAction(null);
       }
     },
-    [client, localDictation, sessionId],
+    [client, localDictation, runVoiceCommand, sessionId],
   );
 
   const close = useCallback(() => navigation.goBack(), [navigation]);
@@ -325,6 +407,7 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
             setAsking(false);
           }
         }}
+        onDraftNextPrompt={draftNextPrompt}
         onSetPreferences={(preferences: LunaSessionPreferences) =>
           runCommand("update Luna preferences", () =>
             client.setPreferences(sessionId, uuidv4(), preferences),
