@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import type { LunaDictionaryEntry, LunaMessage } from "./lunaHostApi";
 import {
+  classifyVoiceCommand,
   dictionaryEntryLabel,
   handsfreeStatus,
   handsfreeTapAction,
@@ -41,6 +42,34 @@ describe("voice sidecar presentation", () => {
       ])?.id,
     ).toBe("latest");
     expect(latestCompleteAssistantMessage([message("question", "user")])).toBeNull();
+  });
+
+  it("treats short replay and next-prompt phrases as commands, everything else as a question", () => {
+    for (const phrase of [
+      "Replay",
+      "replay that.",
+      "Say that again",
+      "Luna, repeat the last message please",
+      "one more time",
+    ]) {
+      expect(classifyVoiceCommand(phrase)).toEqual({ _tag: "replay" });
+    }
+    for (const phrase of [
+      "Draft the next prompt",
+      "write the prompt for the workflow.",
+      "Luna, create my next prompt please",
+      "Next prompt",
+    ]) {
+      expect(classifyVoiceCommand(phrase)).toEqual({ _tag: "next-prompt" });
+    }
+    expect(classifyVoiceCommand("  Can you replay the reasoning behind option C?  ")).toEqual({
+      _tag: "ask",
+      text: "Can you replay the reasoning behind option C?",
+    });
+    expect(classifyVoiceCommand("Write the prompt so it also covers the tests")).toEqual({
+      _tag: "ask",
+      text: "Write the prompt so it also covers the tests",
+    });
   });
 
   it("labels dictionary entries by kind", () => {
