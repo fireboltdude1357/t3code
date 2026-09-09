@@ -27,9 +27,10 @@ import { prepareForegroundPlayback } from "./voiceSidecarAudioMode";
 import {
   dictionaryEntryLabel,
   formatClock,
-  handsfreeStatus,
+  handsfreeLabel,
   handsfreeTapAction,
   latestCompleteAssistantMessage,
+  messageKindLabel,
   resolveHandsfreePhase,
   sentenceCountLabel,
   serviceStatusLabel,
@@ -67,6 +68,8 @@ export interface VoiceSidecarContentProps {
   readonly getRecordingUrl: (messageId: string) => string;
   readonly onAskRecording: (capture: VoiceSidecarRecordingCapture) => Promise<void>;
   readonly onAskText: (text: string) => Promise<void>;
+  /** Asks Luna to write the next message for the source thread from the conversation so far. */
+  readonly onDraftNextPrompt: () => Promise<void>;
   readonly onSetPreferences: (preferences: LunaSessionPreferences) => Promise<void>;
   readonly onTeach: (messageId: string, correctedText: string) => Promise<void>;
   readonly onDeleteEntry: (entryId: string) => Promise<void>;
@@ -91,6 +94,11 @@ function runUiAction(action: () => Promise<void>): void {
   void action().catch(() => {
     // The sheet presents command failures in its error banner.
   });
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  const Clipboard = await import("expo-clipboard");
+  await Clipboard.setStringAsync(text);
 }
 
 function ActionButton(props: {
@@ -348,12 +356,11 @@ function HandsfreeView(props: VoiceSidecarPageProps) {
     }
   }, [coordinator, finished, pause, player, speechUri]);
 
-  const autoPlayedUriRef = useRef<string | null>(null);
+  // Consuming the flag first keeps a replay request from firing twice while
+  // the player status settles; the same flag also drives spoken "replay".
   const { onSpeechAutoPlayed, playErrorCue } = props;
   useEffect(() => {
     if (latestId === null || speechUri === null || !speech?.shouldAutoPlay) return;
-    if (autoPlayedUriRef.current === speechUri) return;
-    autoPlayedUriRef.current = speechUri;
     onSpeechAutoPlayed(latestId);
     void play();
   }, [latestId, onSpeechAutoPlayed, play, speech?.shouldAutoPlay, speechUri]);
@@ -395,22 +402,27 @@ function HandsfreeView(props: VoiceSidecarPageProps) {
     }
   }, [coordinator, pause, phase, recorder]);
 
-  const { title, hint } = handsfreeStatus(phase, recorder.elapsedSeconds);
+  // No words on this page: it is used while driving. Phase shows as the
+  // circle's fill and icon, errors as a red ring plus the error tone, and the
+  // details wait on the other pages.
+  const failed = recorderError !== null || playbackError !== null;
   const working = phase === "transcribing" || phase === "thinking" || phase === "preparing-voice";
   const circleClassName =
     phase === "listening"
-      ? "size-40 items-center justify-center rounded-full bg-primary"
+      ? "size-48 items-center justify-center rounded-full bg-primary"
       : working
-        ? "size-40 items-center justify-center rounded-full bg-subtle"
-        : phase === "unavailable"
-          ? "size-40 items-center justify-center rounded-full border border-border bg-card opacity-40"
-          : "size-40 items-center justify-center rounded-full border border-border bg-card";
+        ? "size-48 items-center justify-center rounded-full bg-subtle"
+        : failed
+          ? "size-48 items-center justify-center rounded-full border-4 border-danger-border bg-card"
+          : phase === "unavailable"
+            ? "size-48 items-center justify-center rounded-full border border-border bg-card opacity-40"
+            : "size-48 items-center justify-center rounded-full border border-border bg-card";
 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={title}
-      className="flex-1 items-center justify-center gap-8 px-8 pb-10 active:opacity-90"
+      accessibilityLabel={handsfreeLabel(phase)}
+      className="flex-1 items-center justify-center gap-10 px-8 pb-10 active:opacity-90"
       onPress={onTap}
     >
       <View className={circleClassName}>
@@ -419,52 +431,41 @@ function HandsfreeView(props: VoiceSidecarPageProps) {
         ) : phase === "listening" ? (
           <SymbolView
             name="arrow.up"
-            size={44}
+            size={56}
             tintColorClassName="accent-primary-foreground"
             type="monochrome"
           />
         ) : phase === "speaking" ? (
           Platform.OS === "android" ? (
-            <ThemedPause size={44} colorClassName="accent-icon" />
+            <ThemedPause size={56} colorClassName="accent-icon" />
           ) : (
             <SymbolView
               name="pause.fill"
-              size={44}
+              size={56}
               tintColorClassName="accent-icon"
               type="monochrome"
             />
           )
         ) : Platform.OS === "android" ? (
-          <ThemedMicrophone size={44} colorClassName="accent-icon" />
+          <ThemedMicrophone size={56} colorClassName="accent-icon" />
         ) : (
-          <SymbolView name="mic" size={44} tintColorClassName="accent-icon" type="monochrome" />
+          <SymbolView name="mic" size={56} tintColorClassName="accent-icon" type="monochrome" />
         )}
       </View>
-      <View className="items-center gap-2">
-        <Text className="text-center text-3xl font-t3-bold text-foreground">{title}</Text>
-        {hint !== null ? (
-          <Text className="text-center text-base text-foreground-muted">{hint}</Text>
-        ) : null}
-        {recorderError !== null || playbackError !== null ? (
-          <Text className="text-center text-sm text-danger-foreground">
-            {recorderError ?? playbackError}
-          </Text>
-        ) : null}
-      </View>
-      {latestAssistant?.text ? (
-        <Text
-          numberOfLines={6}
-          className="text-center text-lg leading-relaxed text-foreground-muted"
-        >
-          {latestAssistant.text}
-        </Text>
-      ) : null}
       {phase === "paused" || (phase === "idle" && speechUri !== null) ? (
-        <ActionButton
-          label={phase === "paused" ? "Resume" : "Replay"}
-          icon="play"
+        <Pressable
+          accessibilityLabel={phase === "paused" ? "Resume Luna" : "Replay Luna's last answer"}
+          accessibilityRole="button"
+          className="size-20 items-center justify-center rounded-full border border-border bg-card active:opacity-70"
           onPress={() => runUiAction(play)}
-        />
+        >
+          <SymbolView
+            name={phase === "paused" ? "play" : "arrow.clockwise"}
+            size={28}
+            tintColorClassName="accent-icon"
+            type="monochrome"
+          />
+        </Pressable>
       ) : null}
     </Pressable>
   );
@@ -526,7 +527,9 @@ function SettingsView(props: VoiceSidecarPageProps) {
 
       <View className="gap-3 rounded-[24px] border border-border bg-card px-5 py-5">
         <View className="flex-row items-center justify-between gap-3">
-          <Text className="text-xs font-t3-bold uppercase text-foreground-muted">Synopsis</Text>
+          <Text className="text-xs font-t3-bold uppercase text-foreground-muted">
+            {latestAssistant?.kind === "next-prompt" ? "Next prompt" : "Synopsis"}
+          </Text>
           {session.status === "waiting-for-luna" ? (
             <View className="flex-row items-center gap-2">
               <ActivityIndicator size="small" colorClassName="accent-icon-muted" />
@@ -671,6 +674,19 @@ function SettingsView(props: VoiceSidecarPageProps) {
           </View>
         </View>
       </View>
+
+      <View className="gap-3 rounded-[24px] border border-border bg-card p-4">
+        <Text className="text-sm leading-normal text-foreground-muted">
+          Luna turns this conversation into the next message for the main thread. You can also say
+          "draft the next prompt" on the Handsfree page. Copy it or send it from History.
+        </Text>
+        <ActionButton
+          label="Draft next prompt"
+          icon="square.and.pencil"
+          disabled={busy || !latestAssistant}
+          onPress={() => runUiAction(props.onDraftNextPrompt)}
+        />
+      </View>
     </ScrollView>
   );
 }
@@ -678,6 +694,7 @@ function SettingsView(props: VoiceSidecarPageProps) {
 function HistoryView(props: VoiceSidecarPageProps) {
   const [teachingMessage, setTeachingMessage] = useState<LunaMessage | null>(null);
   const [correctedText, setCorrectedText] = useState("");
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const busy = props.pendingAction !== null || props.snapshot.session.status === "waiting-for-luna";
 
   if (teachingMessage) {
@@ -765,7 +782,7 @@ function HistoryView(props: VoiceSidecarPageProps) {
         >
           <View className="flex-row items-center justify-between gap-3">
             <Text className="text-xs font-t3-bold uppercase text-foreground-muted">
-              {message.role === "assistant" ? "Luna" : "You"}
+              {message.role === "assistant" ? messageKindLabel(message.kind) : "You"}
             </Text>
             <Text className="text-xs text-foreground-muted">{message.status}</Text>
           </View>
@@ -794,17 +811,32 @@ function HistoryView(props: VoiceSidecarPageProps) {
             />
           ) : null}
           {message.role === "assistant" && message.status === "complete" ? (
-            <ActionButton
-              label="Send this to the main thread"
-              icon="arrow.up"
-              primary
-              disabled={busy}
-              onPress={() =>
-                runUiAction(() =>
-                  props.onSendHandoff({ _tag: "assistant-message", messageId: message.id }),
-                )
-              }
-            />
+            <View className="flex-row gap-2">
+              <ActionButton
+                label={copiedMessageId === message.id ? "Copied" : "Copy"}
+                icon={copiedMessageId === message.id ? "checkmark" : "doc.on.doc"}
+                disabled={busy}
+                onPress={() =>
+                  runUiAction(async () => {
+                    await copyToClipboard(message.text);
+                    setCopiedMessageId(message.id);
+                  })
+                }
+              />
+              <View className="flex-1">
+                <ActionButton
+                  label="Send to the main thread"
+                  icon="arrow.up"
+                  primary
+                  disabled={busy}
+                  onPress={() =>
+                    runUiAction(() =>
+                      props.onSendHandoff({ _tag: "assistant-message", messageId: message.id }),
+                    )
+                  }
+                />
+              </View>
+            </View>
           ) : null}
         </View>
       ))}
@@ -1067,7 +1099,7 @@ export const VoiceSidecarContent = memo(function VoiceSidecarContent(
     // the detent change when scrolling expands the sheet).
     <View collapsable={false} className="flex-1 bg-sheet">
       <SidecarHeader page={page} onClose={props.onClose} onChangePage={setPage} />
-      {props.error ? (
+      {props.error && page !== "handsfree" ? (
         <View className="border-b border-danger-border bg-danger px-4 py-2">
           <Text className="text-sm text-danger-foreground">{props.error}</Text>
         </View>

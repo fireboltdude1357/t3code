@@ -18,9 +18,14 @@ export interface LunaSessionPreferences {
 
 export type LunaServiceStatus = "ready" | "not-configured";
 
+/** A reply answers you; a next-prompt is a drafted message for the source thread's agent. */
+export type LunaMessageKind = "reply" | "next-prompt";
+
 export interface LunaMessage {
   readonly id: string;
   readonly role: "user" | "assistant";
+  /** Absent from hosts that predate next-prompt drafting; treat as a reply. */
+  readonly kind?: LunaMessageKind;
   readonly text: string;
   readonly status: "complete";
   readonly hasRecording: boolean;
@@ -180,21 +185,23 @@ export class LunaHostClient {
     });
   }
 
-  /** Uploads the recording and returns once transcription lands; Luna answers async. */
-  async askRecording(
+  /**
+   * Uploads the recording for host-side transcription and returns the words
+   * without asking Luna, so the caller can treat them as a command first.
+   */
+  async transcribeRecording(
     sessionId: string,
-    commandId: string,
     capture: VoiceSidecarRecordingCapture,
     language?: string,
   ): Promise<{ readonly text: string }> {
     const result = await new File(capture.uri).upload(
-      `${this.baseUrl}/v1/sessions/${sessionId}/ask-recording`,
+      `${this.baseUrl}/v1/sessions/${sessionId}/transcribe`,
       {
         httpMethod: "POST",
         uploadType: UploadType.MULTIPART,
         fieldName: "audio",
         mimeType: capture.mimeType,
-        parameters: { commandId, ...(language === undefined ? {} : { language }) },
+        parameters: language === undefined ? {} : { language },
         headers: { Authorization: `Bearer ${this.token}` },
       },
     );
@@ -209,6 +216,14 @@ export class LunaHostClient {
       throw new Error(message);
     }
     return JSON.parse(result.body) as { text: string };
+  }
+
+  /** Asks Luna to draft the next message for the source thread from the conversation so far. */
+  draftNextPrompt(sessionId: string, commandId: string): Promise<LunaSnapshot> {
+    return this.#request(`/v1/sessions/${sessionId}/next-prompt`, {
+      method: "POST",
+      body: JSON.stringify({ commandId }),
+    });
   }
 
   setPreferences(
