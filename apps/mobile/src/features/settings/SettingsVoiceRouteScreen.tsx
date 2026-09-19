@@ -282,7 +282,7 @@ export function SettingsVoiceRouteScreen() {
           </Text>
         </View>
 
-        <SettingsSection title="Voice host" card>
+        <SettingsSection title="Voice host">
           <EditableRow
             label="Host URL"
             subtitle="The tailnet HTTPS address of the Luna voice host."
@@ -344,7 +344,7 @@ export function SettingsVoiceRouteScreen() {
           </View>
         ) : hostConfig ? (
           <>
-            <SettingsSection title="Luna defaults" card>
+            <SettingsSection title="Luna defaults">
               <SegmentedRow<LunaReasoningEffort>
                 label="Reasoning"
                 value={hostConfig.defaults.reasoningEffort}
@@ -371,7 +371,7 @@ export function SettingsVoiceRouteScreen() {
               />
             </SettingsSection>
 
-            <SettingsSection title="Transcription" card>
+            <SettingsSection title="Transcription">
               <EditableRow
                 label="OpenAI API key"
                 subtitle="Stored on the voice host and used only for gpt-transcribe."
@@ -384,7 +384,7 @@ export function SettingsVoiceRouteScreen() {
               />
             </SettingsSection>
 
-            <SettingsSection title="Kokoro speech" card>
+            <SettingsSection title="Kokoro speech">
               <EditableRow
                 label="Endpoint URL"
                 subtitle="OpenAI-compatible /v1/audio/speech endpoint the host calls."
@@ -401,7 +401,7 @@ export function SettingsVoiceRouteScreen() {
               />
             </SettingsSection>
 
-            <SettingsSection title="Dictionary and recordings" card>
+            <SettingsSection title="Dictionary and recordings">
               <ToggleRow
                 label="Wispr Flow dictionary"
                 subtitle="Imports vocabulary and corrections over SSH. Snippets are skipped."
