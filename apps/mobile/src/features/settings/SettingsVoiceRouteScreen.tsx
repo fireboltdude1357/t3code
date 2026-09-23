@@ -310,7 +310,7 @@ export function SettingsVoiceRouteScreen() {
           />
           <ToggleRow
             label="Enable Luna"
-            subtitle="Shows the waveform button on completed responses."
+            subtitle="Shows the Luna button between the mic and send."
             value={preferences?.lunaEnabled ?? true}
             disabled={preferences === null || client === null}
             onValueChange={(lunaEnabled) => savePreferences({ lunaEnabled })}
