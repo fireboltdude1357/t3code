@@ -458,7 +458,6 @@ export function VoiceSidecarSheet(props: VoiceSidecarSheetProps) {
                 environmentId: sourceEnvironmentId,
                 threadId: sourceThreadId,
                 text,
-                thread: sourceThread,
                 metadata: makeQueuedMessageMetadata(),
               }),
             );
