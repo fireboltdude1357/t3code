@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
+import type { ThreadFeedEntry } from "../../lib/threadActivity";
 import type { QueuedThreadMessage } from "../../state/thread-outbox";
 
 /** The reply chosen for the source thread: a Luna answer or user-authored text. */
@@ -22,6 +23,24 @@ export function resolveCompletedAssistantSourceText(
   return source?.role === "assistant" && !source.streaming && source.text.trim().length > 0
     ? source.text
     : null;
+}
+
+/**
+ * The reply the composer's Luna button opens on: the newest finished assistant
+ * message in the thread feed, or null when there is nothing to talk about yet.
+ */
+export function resolveLatestLunaSourceMessageId(
+  feed: ReadonlyArray<ThreadFeedEntry>,
+): MessageId | null {
+  for (let index = feed.length - 1; index >= 0; index -= 1) {
+    const entry = feed[index];
+    if (entry?.type !== "message") continue;
+    const { message } = entry;
+    if (message.role === "assistant" && !message.streaming && message.text.trim().length > 0) {
+      return message.id;
+    }
+  }
+  return null;
 }
 
 export interface VoiceSidecarHandoffSnapshot {
