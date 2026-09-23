@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { EnvironmentId, MessageId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 
 import {
   buildVoiceSidecarHandoffMessage,
@@ -76,19 +76,11 @@ describe("voice sidecar handoff", () => {
     }
   });
 
-  it("builds an outbox message for the source thread with its current settings", () => {
+  it("builds an outbox message for the source thread that inherits its current settings", () => {
     const message = buildVoiceSidecarHandoffMessage({
       environmentId: EnvironmentId.make("source-environment"),
       threadId: ThreadId.make("source-thread"),
       text: "Send this answer.",
-      thread: {
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5.6-sol",
-        },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      },
       metadata: {
         commandId: "command-1",
         messageId: "message-1",
@@ -103,12 +95,6 @@ describe("voice sidecar handoff", () => {
       commandId: "command-1",
       text: "Send this answer.",
       attachments: [],
-      modelSelection: {
-        instanceId: ProviderInstanceId.make("codex"),
-        model: "gpt-5.6-sol",
-      },
-      runtimeMode: "full-access",
-      interactionMode: "default",
       createdAt: "2026-08-31T12:00:00.000Z",
     });
   });
