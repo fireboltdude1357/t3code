@@ -1,11 +1,38 @@
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 
+import type { ThreadFeedEntry } from "../../lib/threadActivity";
 import {
   buildVoiceSidecarHandoffMessage,
   resolveCompletedAssistantSourceText,
+  resolveLatestLunaSourceMessageId,
   resolveVoiceSidecarHandoffText,
 } from "./voiceSidecarHandoff";
+
+function feedMessage(
+  id: string,
+  role: "user" | "assistant",
+  text: string,
+  streaming = false,
+): ThreadFeedEntry {
+  return {
+    type: "message",
+    id,
+    createdAt: "2026-09-23T12:00:00.000Z",
+    message: {
+      id: MessageId.make(id),
+      role,
+      text,
+      attachments: [],
+      runId: null,
+      streaming,
+      visibility: "local",
+      sourceThreadId: ThreadId.make("thread"),
+      createdAt: "2026-09-23T12:00:00.000Z",
+      updatedAt: "2026-09-23T12:00:00.000Z",
+    },
+  };
+}
 
 const snapshot = {
   session: {
@@ -97,5 +124,18 @@ describe("voice sidecar handoff", () => {
       attachments: [],
       createdAt: "2026-08-31T12:00:00.000Z",
     });
+  });
+
+  it("opens the composer's Luna button on the newest finished assistant reply", () => {
+    expect(
+      resolveLatestLunaSourceMessageId([
+        feedMessage("older-answer", "assistant", "Older answer"),
+        feedMessage("latest-answer", "assistant", "Latest answer"),
+        feedMessage("empty-answer", "assistant", "   "),
+        feedMessage("question", "user", "Follow-up question"),
+        feedMessage("streaming-answer", "assistant", "Still writ", true),
+      ]),
+    ).toBe("latest-answer");
+    expect(resolveLatestLunaSourceMessageId([feedMessage("question", "user", "Hi")])).toBeNull();
   });
 });

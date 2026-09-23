@@ -145,6 +145,8 @@ import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
+import { resolveLatestLunaSourceMessageId } from "../voice-sidecar/voiceSidecarHandoff";
+import { useLunaHost } from "../../state/voice-sidecar-host";
 
 export interface ThreadDetailScreenProps {
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
@@ -352,6 +354,32 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       });
     },
     [navigation, props.environmentId, props.selectedThread.id],
+  );
+  const lunaHost = useLunaHost();
+  const lunaSourceMessageId = useMemo(
+    () => resolveLatestLunaSourceMessageId(props.selectedThreadFeed),
+    [props.selectedThreadFeed],
+  );
+  const openLuna = useMemo(
+    () =>
+      lunaHost.enabled && lunaSourceMessageId !== null
+        ? () => {
+            Keyboard.dismiss();
+            void Haptics.selectionAsync();
+            navigation.navigate("ThreadVoiceSidecar", {
+              environmentId: String(props.environmentId),
+              threadId: String(props.selectedThread.id),
+              sourceMessageId: String(lunaSourceMessageId),
+            });
+          }
+        : null,
+    [
+      lunaHost.enabled,
+      lunaSourceMessageId,
+      navigation,
+      props.environmentId,
+      props.selectedThread.id,
+    ],
   );
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -1418,6 +1446,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                         onNativePasteText={props.onNativePasteText}
                         onRemoveDraftImage={props.onRemoveDraftImage}
                         onStopThread={props.onStopThread}
+                        onOpenLuna={openLuna}
                         onSendMessage={handleSendMessage}
                         onShowUsageLimits={showUsageLimits}
                         canSwitchProvider={props.canSwitchThreadProvider}
