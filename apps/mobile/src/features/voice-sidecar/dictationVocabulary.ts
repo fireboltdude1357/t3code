@@ -43,9 +43,10 @@ export function applyDictionaryCorrections(
   text: string,
   entries: ReadonlyArray<LunaDictionaryEntry>,
 ): string {
+  // .sort() on a filtered copy, not .toSorted(): Hermes doesn't ship the ES2023 method.
   const corrections = entries
     .filter((entry) => entry.kind === "correction" && (entry.replacement ?? "").trim().length > 0)
-    .toSorted((a, b) => b.phrase.length - a.phrase.length);
+    .sort((a, b) => b.phrase.length - a.phrase.length);
   let result = text;
   for (const entry of corrections) {
     const escaped = escapeRegExp(entry.phrase.trim());
