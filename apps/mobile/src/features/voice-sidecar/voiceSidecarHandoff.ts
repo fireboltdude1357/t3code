@@ -3,7 +3,6 @@ import {
   MessageId,
   type EnvironmentId,
   type OrchestrationMessage,
-  type OrchestrationThread,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -60,11 +59,11 @@ export function resolveVoiceSidecarHandoffText(
   return text;
 }
 
+/** Leaves model and mode unset so the outbox drain sends with the thread's current settings. */
 export function buildVoiceSidecarHandoffMessage(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly text: string;
-  readonly thread: Pick<OrchestrationThread, "modelSelection" | "runtimeMode" | "interactionMode">;
   readonly metadata: Omit<TurnCommandMetadata, "threadId">;
 }): QueuedThreadMessage {
   return {
@@ -74,9 +73,6 @@ export function buildVoiceSidecarHandoffMessage(input: {
     commandId: CommandId.make(input.metadata.commandId),
     text: input.text,
     attachments: [],
-    modelSelection: input.thread.modelSelection,
-    runtimeMode: input.thread.runtimeMode,
-    interactionMode: input.thread.interactionMode,
     createdAt: input.metadata.createdAt,
   };
 }
