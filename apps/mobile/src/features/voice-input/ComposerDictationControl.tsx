@@ -417,3 +417,14 @@ export function ComposerDictationStartAction(props: {
     />
   );
 }
+
+/** Opens Luna on the thread's latest reply. Sits between the mic and send for one-handed reach. */
+export function ComposerLunaAction(props: { readonly onPress: () => void }) {
+  return (
+    <VoiceActionButton
+      accessibilityLabel="Talk with Luna about the latest response"
+      icon="waveform"
+      onPress={props.onPress}
+    />
+  );
+}
