@@ -28,8 +28,6 @@ function SubscriptionUsage(
   "widget";
   // The extension evaluates this function without the app's module scope.
   const family = environment.widgetFamily;
-  // Gallery snapshots can render an old timeline entry after it has expired.
-  const now = Math.max(environment.date.getTime(), Date.now());
   const accessory = family === "accessoryRectangular";
   const compact =
     family === "systemSmall" || accessory || environment.levelOfDetail === "simplified";
@@ -39,17 +37,16 @@ function SubscriptionUsage(
   const monochrome =
     environment.widgetRenderingMode !== "fullColor" || environment.isLuminanceReduced;
   const providers = props.providers ?? [
-    { name: "Codex", detail: "Open T3 to connect", windows: [], expiresAt: 0 },
-    { name: "Claude", detail: "Open T3 to connect", windows: [], expiresAt: 0 },
+    { name: "Codex", detail: "Open T3 to connect", windows: [] },
+    { name: "Claude", detail: "Open T3 to connect", windows: [] },
   ];
   const columns = providers.map((provider) => {
-    const stale = provider.windows.length > 0 && now >= provider.expiresAt;
     const period =
       environment.configuration?.[provider.name === "Claude" ? "claudePeriod" : "codexPeriod"] ??
       "auto";
-    const windows = stale
-      ? []
-      : provider.windows.filter((window) => period === "auto" || window.kind === period);
+    const windows = provider.windows.filter(
+      (window) => period === "auto" || window.kind === period,
+    );
     // Lock Screen widgets surface the tightest selected limit.
     const tightest = windows.reduce<(typeof windows)[number] | undefined>(
       (result, window) => (!result || window.remaining < result.remaining ? window : result),
@@ -72,9 +69,8 @@ function SubscriptionUsage(
                 ...windows.filter((window) => !compactWindows.includes(window)),
               ].slice(0, limit)
             : windows.slice(0, limit);
-    const detail = stale
-      ? "Open T3 to refresh"
-      : period !== "auto" && windows.length === 0 && provider.windows.length > 0
+    const detail =
+      period !== "auto" && windows.length === 0 && provider.windows.length > 0
         ? `No ${period} limit reported`
         : provider.detail;
     const barModifiers = [
@@ -119,7 +115,7 @@ function SubscriptionUsage(
             >
               {tightest
                 ? `${tightest.remaining}% left`
-                : period !== "auto" && !stale && provider.windows.length > 0
+                : period !== "auto" && provider.windows.length > 0
                   ? "N/A"
                   : "Open T3"}
             </Text>
@@ -212,7 +208,6 @@ function SubscriptionUsage(
           </VStack>
         ))}
         {!compact &&
-        !stale &&
         (period === "auto" ? (provider.totalWindows ?? windows.length) : windows.length) > limit ? (
           <Text
             modifiers={[
