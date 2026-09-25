@@ -1,6 +1,5 @@
 package expo.modules.t3subscriptionwidget
 
-import android.app.AlarmManager
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -20,25 +19,8 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
     ids.forEach { update(context, manager, it) }
   }
 
-  override fun onReceive(context: Context, intent: Intent) {
-    super.onReceive(context, intent)
-    if (intent.action == EXPIRE) updateAll(context)
-  }
-
-  override fun onDisabled(context: Context) {
-    context.getSystemService(AlarmManager::class.java).cancel(expiryIntent(context))
-  }
-
   companion object {
     const val PREFERENCES = "t3_subscription_widget"
-    private const val EXPIRE = "expo.modules.t3subscriptionwidget.EXPIRE"
-
-    private fun expiryIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
-      context,
-      0,
-      Intent(context, SubscriptionUsageWidget::class.java).setAction(EXPIRE),
-      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-    )
 
     fun updateAll(context: Context) {
       val manager = AppWidgetManager.getInstance(context)
@@ -53,14 +35,10 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
       val snapshot = runCatching { JSONObject(saved.orEmpty()) }.getOrNull()
       val openApp = openAppIntent(context, id, snapshot)
       val providers = snapshot?.optJSONArray("providers")
-      val now = System.currentTimeMillis()
-      var nextExpiry = Long.MAX_VALUE
       val groups = (0 until (providers?.length() ?: 0)).mapNotNull { index ->
         val provider = providers?.optJSONObject(index) ?: return@mapNotNull null
         val windows = provider.optJSONArray("windows")
-        val expiresAt = provider.optLong("expiresAt")
-        if (expiresAt > now && windows != null && windows.length() > 0) {
-          nextExpiry = minOf(nextExpiry, expiresAt)
+        if (windows != null && windows.length() > 0) {
           (0 until windows.length()).map { provider to windows.optJSONObject(it) }
         } else {
           listOf(provider to null)
@@ -109,12 +87,6 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
         context.getString(R.string.t3_subscription_widget_unknown_check)
       }
       views.setTextViewText(R.id.t3_widget_footer, checked)
-      val alarms = context.getSystemService(AlarmManager::class.java)
-      alarms.cancel(expiryIntent(context))
-      // Inexact and non-wakeup: the timestamp remains visible if Android delays expiry.
-      if (nextExpiry != Long.MAX_VALUE) {
-        alarms.set(AlarmManager.RTC, nextExpiry, expiryIntent(context))
-      }
       manager.updateAppWidget(id, views)
     }
 

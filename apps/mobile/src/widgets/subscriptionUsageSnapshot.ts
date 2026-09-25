@@ -12,14 +12,12 @@ export interface SubscriptionUsageSnapshot {
     name: string;
     detail: string;
     windows: Array<{ kind?: string; label: string; remaining: number; reset: string }>;
-    expiresAt: number;
     totalWindows: number;
   }>;
 }
 
-// Snapshots expire after 15 minutes; background refresh needs a
-// separate authenticated transport while the mobile app is suspended.
-const SNAPSHOT_MAX_AGE = 15 * 60_000;
+// The app only refreshes limits while it runs. Widgets keep showing the last
+// read with its "As of" time rather than blanking once it ages.
 export const WIDGET_REFRESH_INTERVAL = 5 * 60_000;
 
 /** Bound probes across config updates, reconnects, and foreground transitions. */
@@ -45,11 +43,10 @@ export function createWidgetRefresher<Id>(refresh: (id: Id) => Promise<unknown>)
 
 function subscriptionUsageProps(
   accounts: readonly LimitAccount[],
-  now: number,
   configuredDrivers: ReadonlySet<string>,
   maxWindowsPerProvider: number,
 ): SubscriptionUsageSnapshot {
-  const pools = collectLimitPools(accounts, now);
+  const pools = collectLimitPools(accounts, 0);
   const checked = accounts
     .filter((account) => account.driver === "codex" || account.driver === "claudeAgent")
     .map((account) => Date.parse(account.limits.checkedAt));
@@ -68,15 +65,8 @@ function subscriptionUsageProps(
             name,
             detail: "No limits available",
             windows: [],
-            expiresAt: 0,
             totalWindows: 0,
           };
-        const checkedAt = Math.min(...pool.accounts.map((a) => Date.parse(a.limits.checkedAt)));
-        const expiresAt = Math.min(
-          checkedAt + SNAPSHOT_MAX_AGE,
-          ...pool.windows.flatMap((window) => window.resets.map((reset) => reset.at)),
-        );
-        const fresh = Number.isFinite(expiresAt) && expiresAt > now;
         const sortedWindows = [...pool.windows].sort(
           (a, b) => a.remainingPercent - b.remainingPercent,
         );
@@ -93,28 +83,24 @@ function subscriptionUsageProps(
           .sort((a, b) => a.remainingPercent - b.remainingPercent);
         return {
           name,
-          detail: !fresh
-            ? "Open T3 to refresh"
-            : pool.accounts.length > 1
+          detail:
+            pool.accounts.length > 1
               ? `${pool.accounts.length} accounts · pooled`
               : "Subscription remaining",
-          expiresAt: fresh ? expiresAt : 0,
-          totalWindows: fresh ? pool.windows.length : 0,
-          windows: fresh
-            ? selectedWindows.map((window) => ({
-                kind: window.kind,
-                label: window.label,
-                remaining: Math.round(window.remainingPercent),
-                reset: window.resets[0]
-                  ? `Next reset ${new Date(window.resets[0].at).toLocaleString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}`
-                  : "Reset time unavailable",
-              }))
-            : [],
+          totalWindows: pool.windows.length,
+          windows: selectedWindows.map((window) => ({
+            kind: window.kind,
+            label: window.label,
+            remaining: Math.round(window.remainingPercent),
+            reset: window.resets[0]
+              ? `Next reset ${new Date(window.resets[0].at).toLocaleString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}`
+              : "Reset time unavailable",
+          })),
         };
       }),
   };
@@ -126,7 +112,6 @@ export function buildSubscriptionUsageSnapshot(
   url: string,
   maxWindowsPerProvider = 6,
 ): SubscriptionUsageSnapshot {
-  // Freshness is evaluated at publication/render time, not on unrelated config emissions.
   const configuredDrivers = new Set(
     [...presentations.values()].flatMap((presentation) =>
       (presentation.serverConfig?.providers ?? [])
@@ -143,7 +128,6 @@ export function buildSubscriptionUsageSnapshot(
   return {
     ...subscriptionUsageProps(
       collectLimitAccounts(presentations),
-      0,
       configuredDrivers,
       maxWindowsPerProvider,
     ),
@@ -151,19 +135,26 @@ export function buildSubscriptionUsageSnapshot(
   };
 }
 
-export function subscriptionUsageTimeline(snapshot: SubscriptionUsageSnapshot, now: number) {
-  const deadlines = [...new Set(snapshot.providers.map((p) => p.expiresAt))]
-    .filter((deadline) => deadline > now)
-    .sort((a, b) => a - b);
-  return [now, ...deadlines].map((date) => ({
-    date: new Date(date),
-    props: {
-      ...snapshot,
-      providers: snapshot.providers.map((provider) =>
-        provider.windows.length > 0 && provider.expiresAt <= date
-          ? { ...provider, detail: "Open T3 to refresh", windows: [], totalWindows: 0 }
-          : provider,
-      ),
-    },
-  }));
+/**
+ * Choose what the widget should show next. A provider whose limits are missing
+ * from `next` (still loading, disconnected, cold start) keeps the limits it last
+ * showed, and a snapshot with no limits at all is skipped so the widget never
+ * blanks. Returns undefined when nothing should be published.
+ */
+export function keepLastLimits(
+  previous: SubscriptionUsageSnapshot | undefined,
+  next: SubscriptionUsageSnapshot,
+): SubscriptionUsageSnapshot | undefined {
+  const providers = next.providers.map((provider) =>
+    provider.windows.length > 0
+      ? provider
+      : (previous?.providers.find(
+          (candidate) => candidate.name === provider.name && candidate.windows.length > 0,
+        ) ?? provider),
+  );
+  if (providers.every((provider) => provider.windows.length === 0)) return undefined;
+  const carried = providers.some((provider, index) => provider !== next.providers[index]);
+  // "As of" reflects the oldest limits on screen.
+  const checked = [next.checkedAt, carried ? (previous?.checkedAt ?? 0) : 0].filter((at) => at > 0);
+  return { ...next, checkedAt: checked.length > 0 ? Math.min(...checked) : 0, providers };
 }
