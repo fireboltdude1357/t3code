@@ -116,7 +116,13 @@ describe("subscription widget snapshots", () => {
     );
     expect(snapshot.checkedAt).toBe(0);
     expect(snapshot.providers).toEqual([
-      { name: "Codex", detail: "No limits available", windows: [], totalWindows: 0 },
+      {
+        name: "Codex",
+        detail: "No limits available",
+        windows: [],
+        totalWindows: 0,
+        checkedAt: 0,
+      },
     ]);
   });
   it("uses upstream deduplication for a native account also present in a proxy hub", () => {
@@ -230,6 +236,35 @@ describe("subscription widget snapshots", () => {
     expect(snapshot.checkedAt).toBe(0);
     expect(snapshot.providers[0]?.windows).toHaveLength(1);
     expect(JSON.stringify(snapshot)).not.toContain("null");
+  });
+  it("keeps the provider-wide weekly ahead of a tighter model-scoped weekly", () => {
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([
+        provider({
+          usageLimits: {
+            checkedAt,
+            windows: [
+              window,
+              { ...window, id: "seven_day", kind: "weekly", label: "Weekly", usedPercent: 30 },
+              {
+                ...window,
+                id: "seven_day_fable",
+                kind: "weekly",
+                label: "Weekly · Fable",
+                usedPercent: 90,
+              },
+            ],
+          },
+        }),
+      ]),
+      deepLink,
+      2,
+    );
+    expect(snapshot.providers[0]?.windows.map((window) => window.label)).toEqual([
+      "5 hours",
+      "Weekly",
+    ]);
+    expect(snapshot.providers[0]?.checkedAt).toBe(now);
   });
   it("uses the freshest copy of an account across environments before pooling", () => {
     const input = presentations();

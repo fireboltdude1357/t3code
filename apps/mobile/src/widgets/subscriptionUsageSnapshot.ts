@@ -13,6 +13,8 @@ export interface SubscriptionUsageSnapshot {
     detail: string;
     windows: Array<{ kind?: string; label: string; remaining: number; reset: string }>;
     totalWindows: number;
+    /** When these limits were read, or 0 when unknown. */
+    checkedAt: number;
   }>;
 }
 
@@ -66,7 +68,9 @@ function subscriptionUsageProps(
             detail: "No limits available",
             windows: [],
             totalWindows: 0,
+            checkedAt: 0,
           };
+        const checkedAt = Math.min(...pool.accounts.map((a) => Date.parse(a.limits.checkedAt)));
         const sortedWindows = [...pool.windows].sort(
           (a, b) => a.remainingPercent - b.remainingPercent,
         );
@@ -74,7 +78,9 @@ function subscriptionUsageProps(
         const selectedWindows = [
           ...new Set([
             sortedWindows.find((window) => window.kind === "session"),
-            sortedWindows.find((window) => window.kind === "weekly"),
+            sortedWindows.find(
+              (window) => window.kind === "weekly" && !window.label.includes(" · "),
+            ) ?? sortedWindows.find((window) => window.kind === "weekly"),
             ...sortedWindows,
           ]),
         ]
@@ -88,6 +94,7 @@ function subscriptionUsageProps(
               ? `${pool.accounts.length} accounts · pooled`
               : "Subscription remaining",
           totalWindows: pool.windows.length,
+          checkedAt: Number.isFinite(checkedAt) ? checkedAt : 0,
           windows: selectedWindows.map((window) => ({
             kind: window.kind,
             label: window.label,
