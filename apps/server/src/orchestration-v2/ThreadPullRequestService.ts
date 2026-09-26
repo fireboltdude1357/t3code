@@ -67,8 +67,13 @@ export const resolveProjectForPullRequestDiscovery = Effect.fn(
 )(function* (
   project: OrchestrationProjectShell,
   repositoryIdentities: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
+  options?: { readonly refresh?: boolean },
 ) {
-  const repositoryIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot);
+  // Identities stay cached for 15 minutes. A finished turn may have added the
+  // remote its pull request lives on, so post-turn discovery refreshes.
+  const repositoryIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
+    refresh: options?.refresh ?? false,
+  });
   return {
     project: { ...project, repositoryIdentity },
     repository: sourceControlRepositorySelector(repositoryIdentity),
@@ -173,7 +178,9 @@ export const make = Effect.gen(function* () {
           const project = projects.get(first.projectId);
           if (project === undefined) return finishBackfill(group);
           const { project: resolvedProject, repository } =
-            yield* resolveProjectForPullRequestDiscovery(project, repositoryIdentities);
+            yield* resolveProjectForPullRequestDiscovery(project, repositoryIdentities, {
+              refresh: request.refresh,
+            });
           if (first.branch !== null && repository === null) return finishBackfill(group);
           const worktreeExists =
             first.worktreePath !== null && (yield* fileSystem.exists(first.worktreePath));
