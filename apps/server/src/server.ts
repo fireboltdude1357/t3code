@@ -513,7 +513,11 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
       const service = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       yield* service.start();
     }),
-  ).pipe(Layer.provideMerge(PullRequestSyncReactor.layer), Layer.provide(PullRequestServiceLive)),
+  ).pipe(
+    Layer.provideMerge(PullRequestSyncReactor.layer),
+    Layer.provide(PullRequestServiceLive),
+    Layer.provide(ProjectionStoreV2.layer),
+  ),
   // Subscribes to `account.rate-limits.updated` so usage bars track live
   // telemetry instead of waiting for the next status probe.
   ProviderUsageLimitsIngestionLive,

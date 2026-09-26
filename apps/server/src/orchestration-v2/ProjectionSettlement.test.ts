@@ -298,6 +298,52 @@ for (const [name, testLayer] of [
   );
 }
 
+const pullRequestLink = (number: number) => ({
+  host: "github.com",
+  repository: "owner/repository",
+  number,
+  url: `https://github.com/owner/repository/pull/${number}`,
+  source: "manual" as const,
+  linkedAt: DateTime.formatIso(old),
+  snapshot: null,
+  stack: null,
+});
+
+for (const [name, testLayer] of [
+  ["sql", SqlLayer],
+  ["memory", layerMemory],
+] as const) {
+  it.effect(`${name}: lists only active threads with pull request links, oldest first`, () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStoreV2;
+      yield* createThread("no-links");
+      yield* createThread("empty-links", { pullRequests: [] });
+      yield* createThread("archived-link", {
+        archivedAt: old,
+        pullRequests: [pullRequestLink(1)],
+      });
+      const settled = yield* createThread("settled-link", {
+        settledOverride: "settled",
+        settledAt: old,
+        updatedAt: DateTime.subtract(now, { days: 12 }),
+        pullRequests: [pullRequestLink(2)],
+      });
+      const open = yield* createThread("open-link", {
+        pullRequests: [pullRequestLink(3), pullRequestLink(4)],
+      });
+
+      const threads = yield* store.getThreadsWithPullRequests();
+      assert.deepEqual(
+        threads.map((thread) => [thread.id, thread.settledOverride, thread.pullRequests?.length]),
+        [
+          [settled, "settled", 1],
+          [open, null, 2],
+        ],
+      );
+    }).pipe(Effect.provide(testLayer)),
+  );
+}
+
 it.effect(
   "reads settlement candidates and thread metadata without loading historical or archived payloads",
   () =>

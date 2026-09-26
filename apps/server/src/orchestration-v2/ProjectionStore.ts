@@ -149,6 +149,12 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   | "snoozedUntil"
 >;
 
+/** The thread fields pull request sync reads, for a thread with at least one link. */
+export type ProjectionThreadPullRequests = Pick<
+  OrchestrationV2AppThread,
+  "id" | "projectId" | "settledOverride" | "settledAt" | "pullRequests"
+>;
+
 /** Thread activity needed by settlement, without transcript or fork history. */
 export type ProjectionSettlementCandidate = Pick<
   OrchestrationV2ThreadShell,
@@ -329,6 +335,14 @@ export interface ProjectionStoreV2Shape {
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
   readonly getSettlementCandidates: () => Effect.Effect<
     ReadonlyArray<ProjectionSettlementCandidate>,
+    ProjectionStoreV2Error
+  >;
+  /**
+   * Active (not deleted, not archived) threads with at least one pull request
+   * link, in shell snapshot order. Skips run, message and item reads.
+   */
+  readonly getThreadsWithPullRequests: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadPullRequests>,
     ProjectionStoreV2Error
   >;
   readonly getTurnStartContext: (
@@ -5029,6 +5043,29 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
+    const getThreadsWithPullRequests: ProjectionStoreV2Shape["getThreadsWithPullRequests"] = () =>
+      Effect.gen(function* () {
+        const rows = yield* sql<PayloadRow>`
+          SELECT payload_json
+          FROM orchestration_v2_projection_threads
+          WHERE deleted_at IS NULL
+            AND json_extract(payload_json, '$.archivedAt') IS NULL
+            AND json_array_length(payload_json, '$.pullRequests') > 0
+          ORDER BY updated_at ASC, thread_id ASC
+        `;
+        return yield* Effect.forEach(rows, (row) =>
+          decodeThreadPayload(row.payload_json).pipe(
+            Effect.map((thread): ProjectionThreadPullRequests => ({
+              id: thread.id,
+              projectId: thread.projectId,
+              settledOverride: thread.settledOverride,
+              settledAt: thread.settledAt,
+              pullRequests: thread.pullRequests ?? [],
+            })),
+          ),
+        );
+      }).pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
+
     const shellThreadStateFromRow = (input: {
       readonly row: ShellThreadRow;
       readonly runOrdinalsByThreadId: ReadonlyMap<ThreadId, Map<RunId, number>>;
@@ -5292,6 +5329,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadShell,
       getThread,
       getSettlementCandidates,
+      getThreadsWithPullRequests,
       getThreadProjection,
       getTurnStartContext,
       getTurnStartHistory,
@@ -5413,6 +5451,31 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 left.id.localeCompare(right.id),
             );
         }),
+      getThreadsWithPullRequests: () =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            [...state.projections.values()]
+              .map(({ thread }) => thread)
+              .filter(
+                (thread) =>
+                  thread.deletedAt === null &&
+                  thread.archivedAt === null &&
+                  (thread.pullRequests ?? []).length > 0,
+              )
+              .toSorted(
+                (left, right) =>
+                  DateTime.toEpochMillis(left.updatedAt) -
+                    DateTime.toEpochMillis(right.updatedAt) || left.id.localeCompare(right.id),
+              )
+              .map((thread): ProjectionThreadPullRequests => ({
+                id: thread.id,
+                projectId: thread.projectId,
+                settledOverride: thread.settledOverride,
+                settledAt: thread.settledAt,
+                pullRequests: thread.pullRequests ?? [],
+              })),
+          ),
+        ),
       getLimitRecoveryCandidates: (options) =>
         Ref.get(replayState).pipe(
           Effect.map((state) =>
