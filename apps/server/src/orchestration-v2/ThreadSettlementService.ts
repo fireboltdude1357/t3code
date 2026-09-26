@@ -22,6 +22,7 @@ import * as GitManager from "../git/GitManager.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestratorV2 } from "./Orchestrator.ts";
 import { ProjectionStoreV2, type ProjectionSettlementCandidate } from "./ProjectionStore.ts";
@@ -257,6 +258,7 @@ export const make = Effect.gen(function* () {
   const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
+  const terminals = yield* TerminalManager.TerminalManager;
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
     mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,
@@ -506,8 +508,33 @@ export const make = Effect.gen(function* () {
     runSweep(null, threadId),
   );
 
+  // Settling closes the thread's shells that sit at an idle prompt, so they stop
+  // holding the worktree. A terminal running a command (a dev server, an
+  // editor) stays for the user to close.
+  const closeIdleTerminals = Effect.fn("ThreadSettlementServiceV2.closeIdleTerminals")(
+    function* (threadId: ThreadId) {
+      // A thread re-engaged before this event ran keeps its shells.
+      const thread = yield* projections.getThread(threadId);
+      if (thread.settledOverride !== "settled") return;
+      yield* terminals.closeIdle({ threadId });
+    },
+    (effect, threadId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("closing idle terminals after settlement failed", {
+                threadId,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      ),
+  );
+
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
+      case "thread.settled":
+        return closeIdleTerminals(event.threadId);
       case "thread.pull-request-synced":
       case "provider-session.detached":
         return worker.enqueue(event.threadId);
