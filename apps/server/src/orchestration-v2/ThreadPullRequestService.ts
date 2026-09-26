@@ -114,11 +114,26 @@ export const make = Effect.gen(function* () {
     }
   };
 
+  /**
+   * A sweep for one thread reads only that thread's shell, not every thread's.
+   * Finished runs and checkpoints queue one of these each.
+   */
+  const readThreadSnapshot = (threadId: ThreadId | null) =>
+    threadId === null
+      ? orchestrator.getShellSnapshot()
+      : Effect.gen(function* () {
+          // Read the sequence first. The thread is then at least this new, so a
+          // sync guarded by the sequence is rejected rather than missing a change.
+          const snapshotSequence = yield* orchestrator.getThreadEventSequence(threadId);
+          const thread = yield* orchestrator.getThreadShell(threadId);
+          return { snapshotSequence, threads: thread === null ? [] : [thread] };
+        });
+
   const synchronize = Effect.fn("ThreadPullRequestServiceV2.synchronize")(function* (
     request: RefreshRequest,
   ) {
     const [threadSnapshot, projectShells] = yield* Effect.all([
-      orchestrator.getShellSnapshot(),
+      readThreadSnapshot(request.threadId),
       snapshots.getProjectShellsWithoutEnrichment(),
     ]);
     const projects = new Map(projectShells.map((project) => [project.id, project]));
@@ -132,14 +147,15 @@ export const make = Effect.gen(function* () {
         }
       }
     }
+    // A single-thread read only shows whether its own thread is gone.
     const visibleThreadIds = new Set(threadSnapshot.threads.map((thread) => thread.id));
-    for (const threadId of pendingBackfill.keys()) {
+    const checkedIds = request.threadId === null ? [...pendingBackfill.keys()] : [request.threadId];
+    for (const threadId of checkedIds) {
       if (!visibleThreadIds.has(threadId)) pendingBackfill.delete(threadId);
     }
     const threads = threadSnapshot.threads.filter(
       (thread) =>
         thread.archivedAt === null &&
-        (request.threadId === null || thread.id === request.threadId) &&
         ((thread.settledOverride !== "settled" && thread.settledAt === null) ||
           request.threadId !== null ||
           pendingBackfill.has(thread.id)) &&

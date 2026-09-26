@@ -5,6 +5,7 @@ import {
   ProjectId,
   EventId,
   ProviderInstanceId,
+  ProviderSessionId,
   ThreadId,
   type OrchestrationProjectShell,
   type OrchestrationV2AppThread,
@@ -423,6 +424,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const snapshots = yield* Ref.make(options.snapshot);
   const snapshotReadCount = yield* Ref.make(0);
   const snapshotReads = yield* Queue.unbounded<number>();
+  const candidateReads = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
   const settings = yield* Ref.make(options.settings ?? DEFAULT_SERVER_SETTINGS);
   const settingsChanges = yield* PubSub.unbounded<ServerSettings>();
   const mergedPullRequests = yield* PubSub.unbounded<PullRequestMergeEvent>();
@@ -501,11 +503,16 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
         Ref.get(snapshots).pipe(Effect.map((snapshot) => snapshot.projects)),
     }),
     Layer.mock(ProjectionStoreV2)({
-      getSettlementCandidates: () =>
-        Ref.updateAndGet(snapshotReadCount, (count) => count + 1).pipe(
+      getSettlementCandidates: (threadId) =>
+        Ref.update(candidateReads, (reads) => [...reads, threadId]).pipe(
+          Effect.andThen(Ref.updateAndGet(snapshotReadCount, (count) => count + 1)),
           Effect.tap((count) => Queue.offer(snapshotReads, count)),
           Effect.andThen(Ref.get(snapshots)),
-          Effect.map((snapshot) => snapshot.threads),
+          Effect.map((snapshot) =>
+            threadId === undefined
+              ? snapshot.threads
+              : snapshot.threads.filter((thread) => thread.id === threadId),
+          ),
         ),
       getThread: (threadId) => {
         const thread = options.currentThreads?.find((candidate) => candidate.id === threadId);
@@ -544,6 +551,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     snapshots,
     snapshotReadCount,
     snapshotReads,
+    candidateReads,
     commands,
     branchCalls,
     summaryCalls,
@@ -1001,6 +1009,41 @@ describe("ThreadSettlementServiceV2 terminals", () => {
           // event only if the re-engaged thread was skipped.
           yield* fixture.publishEvent(settledEvent(marker));
           assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: marker.id });
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+});
+
+describe("ThreadSettlementServiceV2 single-thread sweeps", () => {
+  it.effect("a finished run reads only its own thread's settlement candidate", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const finished = makeThread("finished-run");
+        const other = makeThread("other-thread");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([finished, other]),
+          settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* Ref.set(fixture.candidateReads, []);
+          yield* fixture.publishEvent({
+            type: "provider-session.detached",
+            id: EventId.make("event:detached"),
+            threadId: finished.id,
+            occurredAt: DateTime.makeUnsafe(NOW),
+            payload: {
+              providerSessionId: ProviderSessionId.make("provider-session:finished"),
+              detachedAt: DateTime.makeUnsafe(NOW),
+            },
+          });
+          yield* Queue.take(fixture.snapshotReads);
+          yield* service.drain;
+          assert.deepStrictEqual(yield* Ref.get(fixture.candidateReads), [finished.id]);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),

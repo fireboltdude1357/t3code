@@ -1,9 +1,32 @@
-import { ProjectId, type OrchestrationProjectShell } from "@t3tools/contracts";
-import { describe, expect, it } from "@effect/vitest";
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-
 import {
+  EventId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationProjectShell,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2ThreadShell,
+} from "@t3tools/contracts";
+import { describe, expect, it } from "@effect/vitest";
+import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+
+import { GitManager } from "../git/GitManager.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
+import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import { ServerActivation } from "../serverActivation.ts";
+import { OrchestratorV2 } from "./Orchestrator.ts";
+import {
+  make,
   projectWorkspaceMatchesSnapshot,
   resolveProjectForPullRequestDiscovery,
 } from "./ThreadPullRequestService.ts";
@@ -69,4 +92,131 @@ describe("ThreadPullRequestServiceV2 project guard", () => {
 
     expect(projectWorkspaceMatchesSnapshot(currentProject, "/workspace/original")).toBe(true);
   });
+});
+
+describe("ThreadPullRequestServiceV2 reads", () => {
+  const NOW = DateTime.makeUnsafe("2026-09-20T00:00:00.000Z");
+  const threadShell = (id: string): OrchestrationV2ThreadShell => {
+    const threadId = ThreadId.make(id);
+    return {
+      id: threadId,
+      projectId: ProjectId.make("project-1"),
+      title: id,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+      forkedFrom: null,
+      createdBy: "user",
+      creationSource: "web",
+      activeRunId: null,
+      latestRunId: null,
+      status: "idle",
+      pendingRuntimeRequest: null,
+      latestVisibleMessage: null,
+      latestUserMessageAt: null,
+      hasActionableProposedPlan: false,
+      itemCount: 0,
+      visibleItemCount: 0,
+      createdAt: NOW,
+      updatedAt: NOW,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    };
+  };
+
+  it.effect("an event for one thread reads that thread's shell, not every thread's", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = threadShell("updated-thread");
+        const other = threadShell("other-thread");
+        const activation = yield* Deferred.make<void>();
+        const events = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
+        // Each read: the thread id for a one-thread read, null for a full read.
+        const reads = yield* Queue.unbounded<ThreadId | null>();
+        const dependencies = Layer.mergeAll(
+          Layer.mock(OrchestratorV2)({
+            streamDomainEvents: Stream.fromPubSub(events),
+            getShellSnapshot: () =>
+              Queue.offer(reads, null).pipe(
+                Effect.as({
+                  schemaVersion: 2,
+                  snapshotSequence: 1,
+                  threads: [thread, other],
+                  archivedThreads: [],
+                }),
+              ),
+            getThreadEventSequence: () => Effect.succeed(1),
+            getThreadShell: (threadId) =>
+              Queue.offer(reads, threadId).pipe(
+                Effect.as([thread, other].find((candidate) => candidate.id === threadId) ?? null),
+              ),
+          }),
+          Layer.mock(ProjectionSnapshotQuery)({
+            getProjectShellsWithoutEnrichment: () => Effect.succeed([]),
+          }),
+          Layer.mock(GitManager)({}),
+          Layer.mock(PullRequestService)({}),
+          Layer.mock(RepositoryIdentityResolver)({}),
+          Layer.succeed(ServerActivation, Deferred.await(activation)),
+          Layer.succeed(
+            Crypto.Crypto,
+            Crypto.make({
+              randomBytes: (size) => new Uint8Array(size).fill(1),
+              digest: (_algorithm, data) => Effect.succeed(data),
+            }),
+          ),
+          FileSystem.layerNoop({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* make;
+          yield* service.start();
+          yield* Deferred.succeed(activation, undefined);
+          // Startup backfill is a full read.
+          expect(yield* Queue.take(reads)).toBeNull();
+          yield* service.drain;
+          yield* PubSub.publish(events, {
+            type: "thread.metadata-updated",
+            id: EventId.make("event:metadata"),
+            threadId: thread.id,
+            occurredAt: NOW,
+            payload: {
+              createdBy: thread.createdBy,
+              creationSource: thread.creationSource,
+              id: thread.id,
+              projectId: thread.projectId,
+              title: thread.title,
+              providerInstanceId: thread.providerInstanceId,
+              modelSelection: thread.modelSelection,
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              branch: thread.branch,
+              worktreePath: thread.worktreePath,
+              activeProviderThreadId: thread.activeProviderThreadId,
+              lineage: thread.lineage,
+              forkedFrom: null,
+              createdAt: thread.createdAt,
+              updatedAt: thread.updatedAt,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+          });
+          expect(yield* Queue.take(reads)).toBe(thread.id);
+          yield* service.drain;
+          expect(yield* Queue.size(reads)).toBe(0);
+        }).pipe(Effect.provide(dependencies));
+      }),
+    ),
+  );
 });

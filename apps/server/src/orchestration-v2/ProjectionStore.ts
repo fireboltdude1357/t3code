@@ -333,10 +333,10 @@ export interface ProjectionStoreV2Shape {
     readonly autoResume: boolean;
     readonly snooze: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
-  readonly getSettlementCandidates: () => Effect.Effect<
-    ReadonlyArray<ProjectionSettlementCandidate>,
-    ProjectionStoreV2Error
-  >;
+  /** Every candidate, or only `threadId` when a sweep checks one thread. */
+  readonly getSettlementCandidates: (
+    threadId?: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
   /**
    * Active (not deleted, not archived) threads with at least one pull request
    * link, in shell snapshot order. Skips run, message and item reads.
@@ -4941,7 +4941,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         return { providerThreadsByThreadId, pendingTurnItemsByThreadId };
       });
 
-    const getSettlementCandidates: ProjectionStoreV2Shape["getSettlementCandidates"] = () =>
+    const getSettlementCandidates: ProjectionStoreV2Shape["getSettlementCandidates"] = (threadId) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
@@ -4969,7 +4969,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY latest.ordinal DESC, latest.run_id DESC
               LIMIT 1
             )
-            WHERE t.deleted_at IS NULL
+            WHERE t.deleted_at IS NULL${threadId === undefined ? sql`` : sql` AND t.thread_id = ${threadId}`}
               AND json_extract(t.payload_json, '$.archivedAt') IS NULL
               AND json_extract(t.payload_json, '$.settledOverride') IS NULL
               AND json_extract(t.payload_json, '$.pinnedAt') IS NULL
@@ -5430,12 +5430,13 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           }
           return projection.thread;
         }),
-      getSettlementCandidates: () =>
+      getSettlementCandidates: (threadId) =>
         Effect.gen(function* () {
           const projections = (yield* Ref.get(replayState)).projections;
           return [...projections.values()]
             .filter(
               ({ thread, runs, runtimeRequests }) =>
+                (threadId === undefined || thread.id === threadId) &&
                 thread.deletedAt === null &&
                 thread.archivedAt === null &&
                 thread.settledOverride === null &&

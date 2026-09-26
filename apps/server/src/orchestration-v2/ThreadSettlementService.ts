@@ -268,7 +268,9 @@ export const make = Effect.gen(function* () {
     if (!autoSettlementConfigured(settings)) {
       return;
     }
-    const threads = yield* projections.getSettlementCandidates();
+    // A sweep for one thread reads only that thread's candidate row.
+    const threads = yield* projections.getSettlementCandidates(threadId);
+    if (threads.length === 0) return;
     const projectShells = yield* snapshots.getProjectShellsWithoutEnrichment();
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const projects = new Map(projectShells.map((project) => [project.id, project]));
@@ -276,11 +278,7 @@ export const make = Effect.gen(function* () {
     // the merged pull request: most threads carry no link and settle from
     // their branch lookup, which would otherwise wait for the next minute's
     // sweep on a possibly stale cached answer.
-    const candidates = threads.filter(
-      (thread) =>
-        (threadId === undefined || thread.id === threadId) &&
-        isAutoSettlementCandidate(thread, nowMs),
-    );
+    const candidates = threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs));
 
     const settleThread = Effect.fn("ThreadSettlementServiceV2.settleThread")(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
