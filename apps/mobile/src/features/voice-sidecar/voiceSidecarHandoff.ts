@@ -1,10 +1,4 @@
-import {
-  CommandId,
-  MessageId,
-  type EnvironmentId,
-  type OrchestrationMessage,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { ThreadFeedEntry } from "../../lib/threadActivity";
@@ -16,7 +10,12 @@ export type VoiceSidecarHandoffContent =
   | { readonly _tag: "text"; readonly text: string };
 
 export function resolveCompletedAssistantSourceText(
-  messages: ReadonlyArray<Pick<OrchestrationMessage, "id" | "role" | "streaming" | "text">>,
+  messages: ReadonlyArray<{
+    readonly id: MessageId;
+    readonly role: string;
+    readonly streaming: boolean;
+    readonly text: string;
+  }>,
   sourceMessageId: MessageId,
 ): string | null {
   const source = messages.find((message) => message.id === sourceMessageId);
