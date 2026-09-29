@@ -4,7 +4,7 @@ import type {
   LunaMessageKind,
   LunaServiceStatus,
   LunaSession,
-} from "./lunaHostApi";
+} from "../../lib/lunaHostApi";
 
 export function latestCompleteAssistantMessage(
   messages: ReadonlyArray<LunaMessage>,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { uuidv4 } from "../../lib/uuid";
-import type { LunaHostClient, LunaMessage } from "./lunaHostApi";
+import type { LunaHostClient, LunaMessage } from "../../lib/lunaHostApi";
 
 export interface VoiceSidecarSpeechState {
   readonly status: "idle" | "loading" | "ready" | "error";

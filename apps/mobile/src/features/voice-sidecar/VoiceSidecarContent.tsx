@@ -14,7 +14,7 @@ import type {
   LunaSessionPreferences,
   LunaSnapshot,
   VoiceSidecarRecordingCapture,
-} from "./lunaHostApi";
+} from "../../lib/lunaHostApi";
 import type { VoiceSidecarHandoffContent } from "./voiceSidecarHandoff";
 import {
   VoiceSidecarAudioPlayer,

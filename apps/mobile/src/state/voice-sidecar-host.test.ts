@@ -4,7 +4,7 @@ import { vi } from "vite-plus/test";
 vi.mock("expo-file-system", () => ({ File: class {}, UploadType: { MULTIPART: "multipart" } }));
 vi.mock("./preferences", () => ({ mobilePreferencesAtom: {} }));
 
-import { normalizeLunaHostUrl } from "../features/voice-sidecar/lunaHostApi";
+import { normalizeLunaHostUrl } from "../lib/lunaHostApi";
 import { resolveLunaHost } from "./voice-sidecar-host";
 
 describe("normalizeLunaHostUrl", () => {

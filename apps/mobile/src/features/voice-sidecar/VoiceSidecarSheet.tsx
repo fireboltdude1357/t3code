@@ -15,7 +15,7 @@ import {
   type LunaSessionPreferences,
   type LunaSnapshot,
   type VoiceSidecarRecordingCapture,
-} from "./lunaHostApi";
+} from "../../lib/lunaHostApi";
 import { VoiceSidecarContent } from "./VoiceSidecarContent";
 import { applyDictionaryCorrections, selectDictationTerms } from "./dictationVocabulary";
 import { useLunaCues } from "./lunaCues";

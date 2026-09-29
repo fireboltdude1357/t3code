@@ -16,7 +16,7 @@ import type {
   LunaHostRedactedConfig,
   LunaReasoningEffort,
   LunaSynopsisSentences,
-} from "../voice-sidecar/lunaHostApi";
+} from "../../lib/lunaHostApi";
 import { SettingsSection } from "./components/SettingsSection";
 import { clampRecordingRetentionDays } from "./voiceSettingsPresentation";
 

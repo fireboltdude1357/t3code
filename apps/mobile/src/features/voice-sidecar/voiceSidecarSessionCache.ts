@@ -1,4 +1,4 @@
-import type { LunaSnapshot } from "./lunaHostApi";
+import type { LunaSnapshot } from "../../lib/lunaHostApi";
 
 /**
  * Last known snapshot per opened response, kept for the life of the app run.

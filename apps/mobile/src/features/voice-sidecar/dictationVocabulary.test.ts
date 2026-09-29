@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { applyDictionaryCorrections, selectDictationTerms } from "./dictationVocabulary";
-import type { LunaDictionaryEntry } from "./lunaHostApi";
+import type { LunaDictionaryEntry } from "../../lib/lunaHostApi";
 
 function entry(input: {
   readonly kind: "term" | "correction";
