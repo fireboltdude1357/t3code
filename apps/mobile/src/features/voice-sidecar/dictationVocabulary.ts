@@ -1,4 +1,4 @@
-import type { LunaDictionaryEntry } from "./lunaHostApi";
+import type { LunaDictionaryEntry } from "../../lib/lunaHostApi";
 
 /**
  * Turns the Luna dictionary into inputs for on-device dictation. Both helpers

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import type { LunaDictionaryEntry, LunaMessage } from "./lunaHostApi";
+import type { LunaDictionaryEntry, LunaMessage } from "../../lib/lunaHostApi";
 import {
   classifyVoiceCommand,
   dictionaryEntryLabel,

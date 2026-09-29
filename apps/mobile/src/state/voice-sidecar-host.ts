@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useMemo } from "react";
 
-import { LunaHostClient, normalizeLunaHostUrl } from "../features/voice-sidecar/lunaHostApi";
+import { LunaHostClient, normalizeLunaHostUrl } from "../lib/lunaHostApi";
 import { mobilePreferencesAtom } from "./preferences";
 
 export interface LunaHostPreferences {

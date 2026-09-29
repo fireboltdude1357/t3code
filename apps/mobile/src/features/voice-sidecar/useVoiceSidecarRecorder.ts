@@ -11,7 +11,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
-import type { VoiceSidecarRecordingCapture } from "./lunaHostApi";
+import type { VoiceSidecarRecordingCapture } from "../../lib/lunaHostApi";
 import { ignoreReleasedNativeObject } from "./releasedNativeObject";
 
 const MAX_RECORDING_SECONDS = 5 * 60;
