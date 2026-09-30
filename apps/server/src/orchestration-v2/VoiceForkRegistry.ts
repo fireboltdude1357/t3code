@@ -55,6 +55,30 @@ export const layer = Layer.effect(
 );
 
 /**
+ * With approvals off Codex denies every tool that asks, so a voice fork gets
+ * T3's read-only tools plus the one write it exists for: sending to its parent.
+ * Everything else (launching, organizing, editing threads) stays denied.
+ */
+const VOICE_FORK_T3_TOOLS = [
+  "t3_thread_send",
+  "t3_thread_read",
+  "t3_thread_list",
+  "t3_thread_search",
+  "t3_thread_configuration",
+  "t3_thread_transfers",
+  "t3_queue_list",
+  "t3_queue_read",
+  "t3_project_list",
+  "t3_project_read",
+  "t3_worktree_status",
+  "t3_worktree_list",
+  "t3_environment_read",
+  "task_status",
+  "list_thread_pull_requests",
+  "list_scheduled_tasks",
+];
+
+/**
  * Runs live voice forks read-only with approvals off. Nobody can answer an
  * approval during a call, and the voice model starts turns T3 does not track,
  * so an approval request would stall the fork. Codex keeps these turn settings
@@ -80,9 +104,7 @@ export const runtimePolicyLayer: Layer.Layer<
                 ...policy,
                 approvalPolicy: "never",
                 sandboxPolicy: { type: "readOnly" },
-                // With approvals off Codex denies any tool that asks, so the one
-                // tool the fork needs to finish its job is approved up front.
-                preapprovedT3McpTools: ["t3_thread_send"],
+                preapprovedT3McpTools: VOICE_FORK_T3_TOOLS,
               };
         }),
     });
