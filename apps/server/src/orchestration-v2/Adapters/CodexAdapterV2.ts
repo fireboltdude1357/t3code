@@ -6200,6 +6200,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     threadId,
                     outputModality: "audio",
                     version: "v3",
+                    // v3 accepts only juniper, maple, spruce, ember, vale, breeze,
+                    // arbor, sol and cove (the default).
+                    voice: "sol",
                     // Always WebRTC. The websocket transport can fall back to
                     // OpenAI API billing; this code path must never request it.
                     transport: { type: "webrtc", sdp: callInput.sdpOffer },
