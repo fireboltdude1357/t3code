@@ -15,12 +15,10 @@ import {
   type EnvironmentRpcFailure,
   type EnvironmentRpcStreamFailure,
   type EnvironmentRpcStreamValue,
-  type EnvironmentStreamCommandRpcTag,
   type EnvironmentSubscriptionRpcTag,
   type EnvironmentUnaryRpcTag,
   EnvironmentRpcUnavailableError,
   request,
-  runStream,
   subscribe,
 } from "../rpc/client.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
@@ -675,32 +673,6 @@ export function createEnvironmentRpcSubscriptionAtomFamily<
         : options.transform(stream);
     },
   });
-}
-
-/**
- * One-shot stream RPCs as atoms: mounting starts the stream once and unmounting
- * interrupts it. Unlike a subscription it never restarts after a reconnect, so a
- * dropped connection fails the atom instead of repeating the request. The atom
- * holds the latest event and stops waiting when the stream completes.
- */
-export function createEnvironmentRpcStreamAtomFamily<
-  R,
-  ER,
-  TTag extends EnvironmentStreamCommandRpcTag,
->(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | R, ER>,
-  options: { readonly label: string; readonly tag: TTag },
-) {
-  const family = Atom.family((key: string) => {
-    const target = parseEnvironmentRpcKey<EnvironmentRpcInput<TTag>>(key);
-    return runtime
-      .atom(runStreamInEnvironment(target.environmentId, runStream(options.tag, target.input)))
-      .pipe(Atom.setIdleTTL(0), Atom.withLabel(`${options.label}:${key}`));
-  });
-  return (target: {
-    readonly environmentId: EnvironmentIdType;
-    readonly input: EnvironmentRpcInput<TTag>;
-  }) => family(environmentRpcKey(target));
 }
 
 export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnaryRpcTag>(

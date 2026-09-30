@@ -184,7 +184,7 @@ export interface ThreadComposerProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  /** Present when the thread can be forked into a Codex voice call. */
+  /** Present when the voice orchestrator can be opened on this thread. */
   readonly onStartVoiceCall?: (() => void) | null;
   readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */

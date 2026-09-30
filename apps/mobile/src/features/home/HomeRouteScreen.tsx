@@ -7,7 +7,7 @@ import { Platform, useWindowDimensions } from "react-native";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
-import { useProjects, useNavigationThreadShells } from "../../state/entities";
+import { useNavigationThreadShells, useProjects, useServerConfigs } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -24,6 +24,7 @@ import { buildHomeProjectScopes } from "./homeThreadList";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
+import { startVoiceSession } from "../voice-session/voiceSessionController";
 
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
@@ -96,6 +97,27 @@ export function HomeRouteScreen() {
   const { options: listOptions, setSelectedEnvironmentId } =
     useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
+  const serverConfigs = useServerConfigs();
+  // The orchestrator runs in the filtered environment, else the first connected
+  // one. Either way the server has to advertise it; the button hides otherwise.
+  const voiceEnvironmentId =
+    environments.find(
+      (environment) =>
+        (selectedEnvironmentId === null || environment.environmentId === selectedEnvironmentId) &&
+        environment.connectionState === "connected" &&
+        serverConfigs.get(environment.environmentId)?.environment.capabilities.voiceSessions ===
+          true,
+    )?.environmentId ?? null;
+  const openVoiceSession = useMemo(
+    () =>
+      voiceEnvironmentId === null
+        ? null
+        : () => {
+            startVoiceSession({ environmentId: voiceEnvironmentId, focusThreadId: null });
+            navigation.navigate("VoiceSession");
+          },
+    [navigation, voiceEnvironmentId],
+  );
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const projectFilterOptions = useMemo(
     () =>
@@ -204,6 +226,7 @@ export function HomeRouteScreen() {
           }
           onSearchQueryChange={setSearchQuery}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
+          onOpenVoiceSession={openVoiceSession}
         />
 
         <HomeScreen

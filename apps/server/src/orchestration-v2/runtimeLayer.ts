@@ -46,8 +46,10 @@ import { layer as runtimeRequestServiceLayer } from "./RuntimeRequestService.ts"
 import { layerWithLegacyImporter as threadManagementServiceLayer } from "./ThreadManagementService.ts";
 import { layer as threadLaunchServiceLayer } from "./ThreadLaunchService.ts";
 import { layer as threadLifecycleServiceLayer } from "./ThreadLifecycleService.ts";
-import { layer as voiceCallServiceLayer } from "./VoiceCallService.ts";
-import * as VoiceForkRegistry from "./VoiceForkRegistry.ts";
+import { layer as voiceOrchestratorLayer } from "./voice/VoiceOrchestrator.ts";
+import { layer as voiceSessionServiceLayer } from "./voice/VoiceSessionService.ts";
+import * as VoiceSessionRegistry from "./voice/VoiceSessionRegistry.ts";
+import { layer as voiceStoreLayer } from "./voice/VoiceStore.ts";
 import { layer as threadForkServiceLayer } from "./ThreadForkService.ts";
 import { layer as turnItemPositionStoreLayer } from "./TurnItemPositionStore.ts";
 import { layer as scheduledTaskServiceLayer } from "../scheduledTasks/ScheduledTaskService.ts";
@@ -59,13 +61,13 @@ export const OrchestrationEventInfrastructureLayerLive = Layer.mergeAll(
 );
 
 // One registry reference, so layer memoization shares it between the runtime
-// policy and the voice call service.
-const voiceForkRegistryLayer = VoiceForkRegistry.layer;
-const runtimePolicyProvided = VoiceForkRegistry.runtimePolicyLayer.pipe(
+// policy and the voice session service.
+const voiceSessionRegistryLayer = VoiceSessionRegistry.layer;
+const runtimePolicyProvided = VoiceSessionRegistry.runtimePolicyLayer.pipe(
   Layer.provide(
     Layer.merge(
       RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer)),
-      voiceForkRegistryLayer,
+      voiceSessionRegistryLayer,
     ),
   ),
 );
@@ -252,12 +254,23 @@ const threadLaunchProvided = threadLaunchServiceLayer.pipe(
 const threadLifecycleProvided = threadLifecycleServiceLayer.pipe(
   Layer.provide(threadManagementProvided),
 );
-const voiceCallProvided = voiceCallServiceLayer.pipe(
+export const voiceStoreProvided = voiceStoreLayer;
+const voiceOrchestratorProvided = voiceOrchestratorLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      voiceSessionServiceLayer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            threadManagementProvided,
+            providerSessionManagerProvided,
+            voiceSessionRegistryLayer,
+          ),
+        ),
+      ),
       threadManagementProvided,
-      providerSessionManagerProvided,
-      voiceForkRegistryLayer,
+      voiceSessionRegistryLayer,
+      voiceStoreProvided,
+      ProjectServiceLayerLive,
     ),
   ),
 );
@@ -317,7 +330,8 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   ProjectServiceLayerLive,
   threadLaunchProvided,
   threadLifecycleProvided,
-  voiceCallProvided,
+  voiceOrchestratorProvided,
+  voiceStoreProvided,
   scheduledTaskProvided,
   UsageLimitRecoveryWorker.workerLive.pipe(
     Layer.provide(Layer.mergeAll(projectionStoreLayer, threadManagementProvided)),

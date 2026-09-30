@@ -495,6 +495,24 @@ export interface ProviderAdapterV2RealtimeCall {
   readonly ended: Effect.Effect<ProviderAdapterV2RealtimeCallEnd>;
   /** Stops the session. Safe to call after it already ended. */
   readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Adds text to the live conversation. `developer` text is context for the
+   * voice model, not something the user said.
+   */
+  readonly appendText: (input: {
+    readonly text: string;
+    readonly role: ProviderAdapterV2RealtimeTextRole;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Gives the voice model text to say aloud now, as its own words. */
+  readonly appendSpeech: (text: string) => Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
+export type ProviderAdapterV2RealtimeTextRole = "user" | "assistant" | "developer";
+
+/** A final transcript part of the spoken conversation. */
+export interface ProviderAdapterV2RealtimeTranscript {
+  readonly role: "user" | "assistant";
+  readonly text: string;
 }
 
 export interface ProviderAdapterV2SessionRuntime {
@@ -580,6 +598,19 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly sdpOffer: string;
     /** Instructions for the voice model. */
     readonly prompt: string;
+    /** Conversation history the session starts with (Codex caps this at 128 items). */
+    readonly initialItems?: ReadonlyArray<{
+      readonly role: ProviderAdapterV2RealtimeTextRole;
+      readonly text: string;
+    }>;
+    /** Developer instructions for the backing agent when the session starts. */
+    readonly agentStartInstructions?: string;
+    /** Called whenever either side is speaking (transcript deltas). */
+    readonly onActivity?: Effect.Effect<void>;
+    /** Called with each final transcript part while the session is live. */
+    readonly onTranscript?: (
+      transcript: ProviderAdapterV2RealtimeTranscript,
+    ) => Effect.Effect<void>;
   }) => Effect.Effect<ProviderAdapterV2RealtimeCall, ProviderAdapterV2Error>;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
