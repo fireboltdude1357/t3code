@@ -461,11 +461,11 @@ export function ComposerDictationStartAction(props: {
   );
 }
 
-/** Opens Luna on the thread's latest reply. Sits between the mic and send for one-handed reach. */
-export function ComposerLunaAction(props: { readonly onPress: () => void }) {
+/** Starts a realtime voice call with a Codex fork of the thread. Sits between the mic and send for one-handed reach. */
+export function ComposerVoiceCallAction(props: { readonly onPress: () => void }) {
   return (
     <VoiceActionButton
-      accessibilityLabel="Talk with Luna about the latest response"
+      accessibilityLabel="Talk to a Codex fork of this thread"
       icon="waveform"
       onPress={props.onPress}
     />
