@@ -268,7 +268,6 @@ const voiceOrchestratorProvided = voiceOrchestratorLayer.pipe(
         ),
       ),
       threadManagementProvided,
-      runtimeRequestServiceProvided,
       voiceSessionRegistryLayer,
       voiceStoreProvided,
       ProjectServiceLayerLive,

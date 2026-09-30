@@ -3924,6 +3924,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         yield* client.handleServerNotification("thread/realtime/transcript/delta", (payload) =>
           Ref.get(realtimeCalls).pipe(
             Effect.flatMap((calls) => calls.get(payload.threadId)?.onActivity ?? Effect.void),
+            // Handlers run in the protocol reader loop; a defect here would kill it.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("codex.realtime.activity-failed", { cause }),
+            ),
           ),
         );
         yield* client.handleServerNotification("thread/realtime/transcript/done", (payload) =>
@@ -3933,7 +3937,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             if (payload.role !== "user" && payload.role !== "assistant") return;
             if (payload.text.trim().length === 0) return;
             yield* call.onTranscript({ role: payload.role, text: payload.text });
-          }),
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("codex.realtime.transcript-failed", { cause }),
+            ),
+          ),
         );
         yield* client.handleServerNotification("thread/realtime/closed", (payload) =>
           endRealtimeCall(payload.threadId, { type: "closed", reason: payload.reason ?? null }),

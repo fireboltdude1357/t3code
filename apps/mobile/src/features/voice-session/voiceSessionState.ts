@@ -63,6 +63,8 @@ export type VoiceSessionAction =
    * failed, its peer could not be set up, or its audio connection failed.
    */
   | { readonly type: "generation-lost"; readonly attempt: number; readonly message: string | null }
+  /** A generation's audio actually connected; only this clears the failure count. */
+  | { readonly type: "audio-connected"; readonly attempt: number }
   | { readonly type: "microphone-denied" }
   | { readonly type: "toggle-mute" }
   /** A parsed JSON event from a generation's `oai-events` data channel. */
@@ -207,7 +209,6 @@ function applyServerEvent(
         generation: event.generation,
         sessionThreadId: event.sessionThreadId,
         focusThreadId: null,
-        failures: 0,
         message: null,
       };
     case "rotate":
@@ -261,6 +262,9 @@ export function voiceSessionReducer(
     case "server":
       if (!isVoiceSessionActive(state)) return state;
       return applyServerEvent(state, action.attempt, action.event);
+    case "audio-connected":
+      if (action.attempt !== state.liveAttempt || state.failures === 0) return state;
+      return { ...state, failures: 0 };
     case "generation-lost":
       if (!isVoiceSessionActive(state)) return state;
       return loseGeneration(state, action.attempt, action.message);

@@ -79,11 +79,30 @@ describe("voiceSessionReducer", () => {
       failures: 1,
       openDelayMs: RECONNECT_DELAYS_MS[0],
     });
-    expect(voiceSessionReducer(reconnecting, answer(2))).toMatchObject({
-      status: "live",
-      liveAttempt: 2,
+    // An answer alone doesn't clear the count: audio can still fail to connect.
+    const answered = voiceSessionReducer(reconnecting, answer(2));
+    expect(answered).toMatchObject({ status: "live", liveAttempt: 2, failures: 1 });
+    expect(voiceSessionReducer(answered, { type: "audio-connected", attempt: 2 })).toMatchObject({
       failures: 0,
     });
+  });
+
+  it("gives up when answers keep arriving but audio never connects", () => {
+    let state = run(start, answer(1));
+    for (let index = 0; index < RECONNECT_DELAYS_MS.length; index += 1) {
+      state = voiceSessionReducer(state, {
+        type: "generation-lost",
+        attempt: state.attempt,
+        message: null,
+      });
+      state = voiceSessionReducer(state, answer(state.attempt));
+    }
+    state = voiceSessionReducer(state, {
+      type: "generation-lost",
+      attempt: state.attempt,
+      message: "The call audio connection dropped.",
+    });
+    expect(state.status).toBe("failed");
   });
 
   it("gives up after the last reconnect fails", () => {

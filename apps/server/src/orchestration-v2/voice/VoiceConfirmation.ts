@@ -1,45 +1,50 @@
 import type { VoiceTranscriptEntry } from "./VoiceStore.ts";
 
-const MIN_READ_BACK_RECALL = 0.8;
+/** The read-back must also name the target thread, so a yes can't be redirected. */
+const MIN_TITLE_RECALL = 0.5;
+/** A yes is a short reply; anything longer is a conversation, not a confirmation. */
+const MAX_REPLY_WORDS = 10;
+/** Assistant entries after the read-back up to this long are acknowledgements. */
+const MAX_ACK_WORDS = 6;
 
-const AFFIRMATIVES = [
+/** Words that carry the yes. A reply needs at least one. */
+const YES_WORDS = new Set([
   "yes",
   "yeah",
   "yep",
   "yup",
   "sure",
-  "correct",
   "ok",
   "okay",
-  "perfect",
+  "correct",
   "confirm",
   "confirmed",
-  "send it",
-  "go ahead",
-  "do it",
-  "sounds good",
-  "please do",
-  "thats right",
-  "ship it",
-];
-
-// Any of these in the reply means the user is not simply saying yes.
-const OBJECTIONS = [
-  "no",
-  "nope",
-  "dont",
-  "do not",
-  "not yet",
-  "wait",
-  "hold on",
-  "hang on",
-  "change",
-  "actually",
-  "but",
-  "instead",
-  "cancel",
-  "stop",
-];
+  "send",
+  "go",
+  "do",
+  "ship",
+  "perfect",
+  "sounds",
+]);
+/**
+ * Every word of the reply must come from here, so "not sure", "I can't
+ * confirm" or "maybe yes tomorrow" never count: they contain a word outside it.
+ */
+const REPLY_VOCABULARY = new Set([
+  ...YES_WORDS,
+  "it",
+  "is",
+  "ahead",
+  "please",
+  "that",
+  "thats",
+  "right",
+  "good",
+  "thanks",
+  "thank",
+  "you",
+  "great",
+]);
 
 /** Lowercase words with punctuation and apostrophes removed ("Don't!" -> "dont"). */
 function words(text: string): string[] {
@@ -52,63 +57,86 @@ function words(text: string): string[] {
     .filter((word) => word !== "");
 }
 
-const hasPhrase = (padded: string, phrase: string) => padded.includes(` ${phrase} `);
-
-/** Share of the draft's words (counting repeats) that appear in the read-back. */
-function recall(draft: ReadonlyArray<string>, readBack: ReadonlyArray<string>): number {
+/** Share of `wanted` words (counting repeats) found anywhere in `text`. */
+function recall(wanted: ReadonlyArray<string>, text: ReadonlyArray<string>): number {
   const available = new Map<string, number>();
-  for (const word of readBack) available.set(word, (available.get(word) ?? 0) + 1);
+  for (const word of text) available.set(word, (available.get(word) ?? 0) + 1);
   let matched = 0;
-  for (const word of draft) {
+  for (const word of wanted) {
     const count = available.get(word) ?? 0;
     if (count > 0) {
       matched++;
       available.set(word, count - 1);
     }
   }
-  return matched / draft.length;
+  return matched / wanted.length;
+}
+
+/** Whether `needle` appears in `haystack` as one unbroken run of words. */
+function containsRun(haystack: ReadonlyArray<string>, needle: ReadonlyArray<string>): boolean {
+  for (let start = 0; start + needle.length <= haystack.length; start++) {
+    if (needle.every((word, offset) => haystack[start + offset] === word)) return true;
+  }
+  return false;
 }
 
 function isAffirmative(reply: string): boolean {
-  const padded = ` ${words(reply).join(" ")} `;
+  const replyWords = words(reply);
   return (
-    AFFIRMATIVES.some((phrase) => hasPhrase(padded, phrase)) &&
-    !OBJECTIONS.some((phrase) => hasPhrase(padded, phrase))
+    replyWords.length > 0 &&
+    replyWords.length <= MAX_REPLY_WORDS &&
+    replyWords.every((word) => REPLY_VOCABULARY.has(word)) &&
+    replyWords.some((word) => YES_WORDS.has(word))
   );
 }
 
 /**
- * The code-owned spoken-yes gate for voice sends. True only when the
- * assistant's latest read-back contains the draft closely enough and the
- * user's reply after it is a plain yes.
+ * The code-owned spoken-yes gate for voice sends. True only when an
+ * assistant entry reads back the whole draft, word for word and in order
+ * (and names `targetTitle` when given), and everything the user said after
+ * it is a short, plain yes.
  *
- * The read-back is the last run of consecutive assistant entries that the
- * user answered. A trailing assistant run with no reply yet is skipped when it
- * is an acknowledgement ("Sending it now." spoken alongside the tool call),
- * but a trailing read-back of the draft fails the gate. The reply is
- * every user entry after the read-back, joined, so "Yes. Wait, change it"
- * split across parts is still an objection.
+ * The voice model often talks over the yes ("Okay, sending that"), so
+ * assistant entries after the read-back are allowed when they are short
+ * acknowledgements. A longer one ends the window: it may be a new draft.
+ * A read-back the user hasn't answered yet fails.
  */
 export function isSpokenConfirmation(
   transcript: ReadonlyArray<VoiceTranscriptEntry>,
   draft: string,
+  targetTitle?: string,
 ): boolean {
   const draftWords = words(draft);
   if (draftWords.length === 0) return false;
+  const titleWords = targetTitle === undefined ? [] : words(targetTitle);
 
-  const readsBack = (entries: ReadonlyArray<VoiceTranscriptEntry>) =>
-    recall(draftWords, words(entries.map((entry) => entry.text).join(" "))) >= MIN_READ_BACK_RECALL;
+  // A read-back can arrive split across consecutive assistant entries, so
+  // each run of them is checked as one. The latest run with the draft wins.
+  let readBackEnd = -1;
+  let readBack: string[] = [];
+  for (let end = transcript.length - 1; end >= 0 && readBackEnd === -1; end--) {
+    if (transcript[end]?.role !== "assistant") continue;
+    let start = end;
+    while (start > 0 && transcript[start - 1]?.role === "assistant") start--;
+    const run = words(
+      transcript
+        .slice(start, end + 1)
+        .map((entry) => entry.text)
+        .join(" "),
+    );
+    if (containsRun(run, draftWords)) {
+      readBackEnd = end;
+      readBack = run;
+    }
+    end = start;
+  }
+  if (readBackEnd === -1) return false;
+  if (titleWords.length > 0 && recall(titleWords, readBack) < MIN_TITLE_RECALL) return false;
 
-  let end = transcript.length;
-  while (end > 0 && transcript[end - 1]?.role === "assistant") end--;
-  // An unanswered read-back of this draft means the user has not replied yet.
-  if (end < transcript.length && readsBack(transcript.slice(end))) return false;
-  let replyStart = end;
-  while (replyStart > 0 && transcript[replyStart - 1]?.role === "user") replyStart--;
-  let readBackStart = replyStart;
-  while (readBackStart > 0 && transcript[readBackStart - 1]?.role === "assistant") readBackStart--;
-  if (readBackStart === replyStart || replyStart === end) return false;
-
-  const reply = transcript.slice(replyStart, end).map((entry) => entry.text);
-  return readsBack(transcript.slice(readBackStart, replyStart)) && isAffirmative(reply.join(" "));
+  const reply: string[] = [];
+  for (const entry of transcript.slice(readBackEnd + 1)) {
+    if (entry.role === "user") reply.push(entry.text);
+    else if (words(entry.text).length > MAX_ACK_WORDS) return false;
+  }
+  return isAffirmative(reply.join(" "));
 }

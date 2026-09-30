@@ -174,6 +174,7 @@ async function runGeneration(
   const peer = await openVoiceSessionPeer({
     onRealtimeEvent: (event) => dispatch({ type: "realtime", attempt, event }),
     onConnectionFailed: () => lose(attempt, "The call audio connection dropped."),
+    onConnected: () => dispatch({ type: "audio-connected", attempt }),
   });
   if (generation.closed) {
     peer.close();

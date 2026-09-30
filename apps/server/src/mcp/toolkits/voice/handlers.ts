@@ -28,8 +28,11 @@ const MAX_MESSAGE_CHARS = 1_500;
 /** How far back the spoken yes for a send may be. */
 const CONFIRMATION_TRANSCRIPT_ENTRIES = 40;
 
+/** A spoken yes older than this no longer approves a send. */
+const CONFIRMATION_MAX_AGE_MS = 2 * 60_000;
+
 const NEEDS_SPOKEN_YES =
-  "Nothing was sent. Read the message back to the user word for word, wait for them to say yes, then call voice_send again with exactly that text.";
+  "Nothing was sent. Read the message back to the user word for word, naming the thread it goes to, wait for them to say yes, then call voice_send again with exactly that text.";
 
 const orchestrationError = (message: string) => () =>
   new OrchestratorMcpFailure({ code: "orchestration_error", message });
@@ -181,17 +184,26 @@ const make = Effect.gen(function* () {
     voice_send: (input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
-        const transcript = yield* store.recentTranscript(CONFIRMATION_TRANSCRIPT_ENTRIES);
-        const reply = transcript.findLast((entry) => entry.role === "user");
-        const replyKey =
-          reply === undefined
-            ? undefined
-            : `${reply.generation}:${DateTime.toEpochMillis(reply.at)}`;
-        const fresh = replyKey !== undefined && !(yield* Ref.get(usedYes)).has(replyKey);
-        if (!fresh || !isSpokenConfirmation(transcript, input.text))
-          return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES };
-        yield* Ref.update(usedYes, (used) => new Set(used).add(replyKey));
         const target = yield* requireThread(input.threadId);
+        // Only this call's words count, and only a recent yes. A new call is a
+        // new generation, so nothing said before a restart can approve a send.
+        const transcript = (yield* store.recentTranscript(CONFIRMATION_TRANSCRIPT_ENTRIES)).filter(
+          (entry) => entry.generation === session.generation,
+        );
+        const reply = transcript.findLast((entry) => entry.role === "user");
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        if (
+          reply === undefined ||
+          now - DateTime.toEpochMillis(reply.at) > CONFIRMATION_MAX_AGE_MS ||
+          !isSpokenConfirmation(transcript, input.text, target.title)
+        )
+          return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES };
+        // Check and claim in one step, so parallel calls can't share a yes.
+        const replyKey = `${reply.generation}:${DateTime.toEpochMillis(reply.at)}`;
+        const claimed = yield* Ref.modify(usedYes, (used) =>
+          used.has(replyKey) ? [false, used] : [true, new Set(used).add(replyKey)],
+        );
+        if (!claimed) return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES };
         const commandId = yield* newCommandId();
         const result = yield* threads
           .sendToThread({

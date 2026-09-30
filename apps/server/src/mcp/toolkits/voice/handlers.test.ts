@@ -174,7 +174,7 @@ describe("voice toolkit handlers", () => {
       const harness = yield* makeHarness({
         transcript: [
           said("user", "Tell the target thread to rebase onto main and rerun the tests."),
-          said("assistant", `I'll send: "${DRAFT}" Should I send it?`),
+          said("assistant", `I'll send to Target: "${DRAFT}" Should I send it?`),
           said("user", "Yes, send it."),
         ],
       });
