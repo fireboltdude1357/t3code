@@ -51,6 +51,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  /** t3-code MCP tools the provider may call without asking. Only Codex honours it. */
+  preapprovedT3McpTools: Schema.optional(Schema.Array(Schema.String)),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -481,6 +483,20 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
+/** Why a realtime call's transport stopped. */
+export type ProviderAdapterV2RealtimeCallEnd =
+  | { readonly type: "closed"; readonly reason: string | null }
+  | { readonly type: "error"; readonly message: string };
+
+/** A live realtime voice session started by `startRealtimeCall`. */
+export interface ProviderAdapterV2RealtimeCall {
+  readonly sdpAnswer: string;
+  /** Resolves once when the provider closes or fails the session. */
+  readonly ended: Effect.Effect<ProviderAdapterV2RealtimeCallEnd>;
+  /** Stops the session. Safe to call after it already ended. */
+  readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
 export interface ProviderAdapterV2SessionRuntime {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
@@ -555,6 +571,16 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly reason?: string;
   }) => Effect.Effect<{ readonly feedbackId: string }, ProviderAdapterV2Error>;
+  /**
+   * Starts a realtime voice session on a native thread (Codex GPT-Live over
+   * WebRTC). Absent means the driver has no realtime voice channel.
+   */
+  readonly startRealtimeCall?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly sdpOffer: string;
+    /** Instructions for the voice model. */
+    readonly prompt: string;
+  }) => Effect.Effect<ProviderAdapterV2RealtimeCall, ProviderAdapterV2Error>;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;

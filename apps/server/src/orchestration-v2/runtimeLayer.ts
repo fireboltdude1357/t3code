@@ -46,6 +46,8 @@ import { layer as runtimeRequestServiceLayer } from "./RuntimeRequestService.ts"
 import { layerWithLegacyImporter as threadManagementServiceLayer } from "./ThreadManagementService.ts";
 import { layer as threadLaunchServiceLayer } from "./ThreadLaunchService.ts";
 import { layer as threadLifecycleServiceLayer } from "./ThreadLifecycleService.ts";
+import { layer as voiceCallServiceLayer } from "./VoiceCallService.ts";
+import * as VoiceForkRegistry from "./VoiceForkRegistry.ts";
 import { layer as threadForkServiceLayer } from "./ThreadForkService.ts";
 import { layer as turnItemPositionStoreLayer } from "./TurnItemPositionStore.ts";
 import { layer as scheduledTaskServiceLayer } from "../scheduledTasks/ScheduledTaskService.ts";
@@ -56,8 +58,16 @@ export const OrchestrationEventInfrastructureLayerLive = Layer.mergeAll(
   OrchestrationCommandReceipts.OrchestrationCommandReceiptRepositoryLive,
 );
 
-const runtimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
-  Layer.provide(ProjectStore.layer),
+// One registry reference, so layer memoization shares it between the runtime
+// policy and the voice call service.
+const voiceForkRegistryLayer = VoiceForkRegistry.layer;
+const runtimePolicyProvided = VoiceForkRegistry.runtimePolicyLayer.pipe(
+  Layer.provide(
+    Layer.merge(
+      RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer)),
+      voiceForkRegistryLayer,
+    ),
+  ),
 );
 
 const eventStoreProvided = eventStoreLayer.pipe(
@@ -242,6 +252,15 @@ const threadLaunchProvided = threadLaunchServiceLayer.pipe(
 const threadLifecycleProvided = threadLifecycleServiceLayer.pipe(
   Layer.provide(threadManagementProvided),
 );
+const voiceCallProvided = voiceCallServiceLayer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      threadManagementProvided,
+      providerSessionManagerProvided,
+      voiceForkRegistryLayer,
+    ),
+  ),
+);
 const scheduledTaskProvided = scheduledTaskServiceLayer.pipe(
   Layer.provide(Layer.mergeAll(threadLaunchProvided, threadManagementProvided)),
 );
@@ -298,6 +317,7 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   ProjectServiceLayerLive,
   threadLaunchProvided,
   threadLifecycleProvided,
+  voiceCallProvided,
   scheduledTaskProvided,
   UsageLimitRecoveryWorker.workerLive.pipe(
     Layer.provide(Layer.mergeAll(projectionStoreLayer, threadManagementProvided)),
