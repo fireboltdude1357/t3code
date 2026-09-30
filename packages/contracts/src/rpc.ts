@@ -355,7 +355,12 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
-import { VoiceCallEvent, VoiceCallStartInput } from "./voiceCall.ts";
+import {
+  VoiceSessionEvent,
+  VoiceSessionOpenInput,
+  VoiceSessionRespondInput,
+  VoiceSessionRespondResult,
+} from "./voiceSession.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -488,7 +493,8 @@ export const WS_METHODS = {
   serverGetResourceTelemetryHistory: "server.getResourceTelemetryHistory",
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
   serverSignalProcess: "server.signalProcess",
-  voiceCallStart: "voiceCall.start",
+  voiceSessionOpen: "voiceSession.open",
+  voiceSessionRespond: "voiceSession.respond",
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
@@ -1779,11 +1785,17 @@ const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   stream: true,
 });
 
-const WsVoiceCallStartRpc = Rpc.make(WS_METHODS.voiceCallStart, {
-  payload: VoiceCallStartInput,
-  success: VoiceCallEvent,
+const WsVoiceSessionOpenRpc = Rpc.make(WS_METHODS.voiceSessionOpen, {
+  payload: VoiceSessionOpenInput,
+  success: VoiceSessionEvent,
   error: EnvironmentAuthorizationError,
   stream: true,
+});
+
+const WsVoiceSessionRespondRpc = Rpc.make(WS_METHODS.voiceSessionRespond, {
+  payload: VoiceSessionRespondInput,
+  success: VoiceSessionRespondResult,
+  error: EnvironmentAuthorizationError,
 });
 
 const WsSubscribeBackgroundPolicyRpc = Rpc.make(WS_METHODS.subscribeBackgroundPolicy, {
@@ -1811,7 +1823,8 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
 ) {}
 
 export const WsRpcGroup = RpcGroup.make(
-  WsVoiceCallStartRpc,
+  WsVoiceSessionOpenRpc,
+  WsVoiceSessionRespondRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

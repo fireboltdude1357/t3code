@@ -1,0 +1,115 @@
+import * as Schema from "effect/Schema";
+
+import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+
+/** SDP must pass through byte for byte, so it is never trimmed. */
+const Sdp = Schema.String.check(Schema.isNonEmpty());
+
+/**
+ * Opens one generation of the voice orchestrator: a realtime Codex session on a
+ * fresh session thread, seeded with a briefing built from the orchestrator's
+ * stored state. The phone owns the mic and speaker; audio flows between the
+ * device and OpenAI on the Codex subscription.
+ *
+ * There is one orchestrator per server. Opening while a generation is live
+ * replaces it, so rotation and reconnect are the same call with a new offer.
+ */
+export const VoiceSessionOpenInput = Schema.Struct({
+  sdpOffer: Sdp,
+  /** Thread the user opened the call from, briefed first. */
+  focusThreadId: Schema.optional(ThreadId),
+});
+export type VoiceSessionOpenInput = typeof VoiceSessionOpenInput.Type;
+
+/** Highest first: the order notices are spoken in a batch. */
+export const VoiceNoticeKind = Schema.Literals(["approval", "failed", "input", "completed"]);
+export type VoiceNoticeKind = typeof VoiceNoticeKind.Type;
+
+/** Something that happened in a thread, told to the user once. */
+export const VoiceNotice = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  kind: VoiceNoticeKind,
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+  /** One short sentence, written to be read aloud. */
+  text: Schema.String,
+  createdAt: Schema.DateTimeUtc,
+});
+export type VoiceNotice = typeof VoiceNotice.Type;
+
+/** Write actions that need an on-screen yes. */
+export const VoiceConfirmAction = Schema.Literals(["launch", "interrupt", "runtime_approval"]);
+export type VoiceConfirmAction = typeof VoiceConfirmAction.Type;
+
+/** An action held until the user taps Approve or Deny on the phone. */
+export const VoiceConfirmRequest = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  action: VoiceConfirmAction,
+  threadId: Schema.optional(ThreadId),
+  title: Schema.String,
+  detail: Schema.String,
+  expiresAt: Schema.DateTimeUtc,
+});
+export type VoiceConfirmRequest = typeof VoiceConfirmRequest.Type;
+
+/** Why a generation ended. `rotated` means a newer generation replaced it. */
+export const VoiceSessionEndReason = Schema.Literals(["hung_up", "rotated", "closed", "error"]);
+export type VoiceSessionEndReason = typeof VoiceSessionEndReason.Type;
+
+/**
+ * Events on the `voiceSession.open` stream. `answer` comes first and `ended`
+ * last. `rotate` asks the phone to open the next generation with a fresh offer
+ * before this one gets too long. Unsubscribing hangs up this generation.
+ */
+export const VoiceSessionEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("answer"),
+    generation: NonNegativeInt,
+    sessionThreadId: ThreadId,
+    sdpAnswer: Sdp,
+  }),
+  Schema.Struct({ type: Schema.Literal("notice"), notice: VoiceNotice }),
+  Schema.Struct({ type: Schema.Literal("confirm"), request: VoiceConfirmRequest }),
+  Schema.Struct({
+    type: Schema.Literal("confirm_resolved"),
+    requestId: TrimmedNonEmptyString,
+    approved: Schema.Boolean,
+  }),
+  Schema.Struct({ type: Schema.Literal("rotate") }),
+  Schema.Struct({
+    type: Schema.Literal("ended"),
+    reason: VoiceSessionEndReason,
+    message: Schema.optional(Schema.String),
+  }),
+]);
+export type VoiceSessionEvent = typeof VoiceSessionEvent.Type;
+
+/** The phone's answer to a `confirm` event. */
+export const VoiceSessionRespondInput = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  approved: Schema.Boolean,
+});
+export type VoiceSessionRespondInput = typeof VoiceSessionRespondInput.Type;
+
+export const VoiceSessionRespondResult = Schema.Struct({
+  /** False when the request already expired or was answered. */
+  accepted: Schema.Boolean,
+});
+export type VoiceSessionRespondResult = typeof VoiceSessionRespondResult.Type;
+
+/**
+ * An open topic the orchestrator should come back to. Code opens and closes
+ * `thread` items from run events; the voice agent opens and closes `topic`
+ * items through its tools.
+ */
+export const VoiceAgendaItem = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  kind: Schema.Literals(["thread", "topic"]),
+  threadId: Schema.NullOr(ThreadId),
+  title: Schema.String,
+  detail: Schema.String,
+  status: Schema.Literals(["open", "closed"]),
+  openedAt: Schema.DateTimeUtc,
+  closedAt: Schema.NullOr(Schema.DateTimeUtc),
+});
+export type VoiceAgendaItem = typeof VoiceAgendaItem.Type;

@@ -153,7 +153,9 @@ import {
   type ProviderAdapterV2Shape,
   type ProviderAdapterV2Event,
   type ProviderAdapterV2ForkThreadInput,
+  type ProviderAdapterV2RealtimeCall,
   type ProviderAdapterV2RealtimeCallEnd,
+  type ProviderAdapterV2RealtimeTranscript,
   type ProviderAdapterV2RollbackThreadInput,
   type ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2McpApps,
@@ -4390,6 +4392,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         interface RealtimeCallState {
           readonly answer: Deferred.Deferred<string, ProviderAdapterProtocolError>;
           readonly ended: Deferred.Deferred<ProviderAdapterV2RealtimeCallEnd>;
+          readonly onTranscript:
+            | ((transcript: ProviderAdapterV2RealtimeTranscript) => Effect.Effect<void>)
+            | undefined;
+          readonly onActivity: Effect.Effect<void> | undefined;
         }
         const realtimeCalls = yield* Ref.make(new Map<string, RealtimeCallState>());
         const endRealtimeCall = (nativeThreadId: string, end: ProviderAdapterV2RealtimeCallEnd) =>
@@ -4436,6 +4442,20 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               return;
             }
             yield* endRealtimeCall(payload.threadId, { type: "error", message: payload.message });
+          }),
+        );
+        yield* client.handleServerNotification("thread/realtime/transcript/delta", (payload) =>
+          Ref.get(realtimeCalls).pipe(
+            Effect.flatMap((calls) => calls.get(payload.threadId)?.onActivity ?? Effect.void),
+          ),
+        );
+        yield* client.handleServerNotification("thread/realtime/transcript/done", (payload) =>
+          Effect.gen(function* () {
+            const call = (yield* Ref.get(realtimeCalls)).get(payload.threadId);
+            if (call?.onTranscript === undefined) return;
+            if (payload.role !== "user" && payload.role !== "assistant") return;
+            if (payload.text.trim().length === 0) return;
+            yield* call.onTranscript({ role: payload.role, text: payload.text });
           }),
         );
         yield* client.handleServerNotification("thread/realtime/closed", (payload) =>
@@ -7241,6 +7261,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               const call: RealtimeCallState = {
                 answer: yield* Deferred.make<string, ProviderAdapterProtocolError>(),
                 ended: yield* Deferred.make<ProviderAdapterV2RealtimeCallEnd>(),
+                onTranscript: callInput.onTranscript,
+                onActivity: callInput.onActivity,
               };
               const registered = yield* Ref.modify(realtimeCalls, (current) => {
                 if (current.has(threadId)) return [false, current] as const;
@@ -7278,6 +7300,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     // OpenAI API billing; this code path must never request it.
                     transport: { type: "webrtc", sdp: callInput.sdpOffer },
                     prompt: callInput.prompt,
+                    ...(callInput.initialItems === undefined || callInput.initialItems.length === 0
+                      ? {}
+                      : { initialItems: callInput.initialItems }),
+                    ...(callInput.agentStartInstructions === undefined
+                      ? {}
+                      : { realtimeStartInstructions: callInput.agentStartInstructions }),
                   }),
                 ),
                 Effect.andThen(Deferred.await(call.answer).pipe(Effect.timeout("30 seconds"))),
@@ -7288,7 +7316,33 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 ),
                 Effect.onError(() => stop.pipe(Effect.ignore)),
               );
-              return { sdpAnswer, ended: Deferred.await(call.ended), stop };
+              const appendText: ProviderAdapterV2RealtimeCall["appendText"] = (append) =>
+                client.raw
+                  .request("thread/realtime/appendText", {
+                    threadId,
+                    text: append.text,
+                    role: append.role,
+                  })
+                  .pipe(
+                    Effect.asVoid,
+                    Effect.mapError((cause) =>
+                      toProtocolError("Failed to add text to the Codex voice call.", cause),
+                    ),
+                  );
+              const appendSpeech: ProviderAdapterV2RealtimeCall["appendSpeech"] = (text) =>
+                client.raw.request("thread/realtime/appendSpeech", { threadId, text }).pipe(
+                  Effect.asVoid,
+                  Effect.mapError((cause) =>
+                    toProtocolError("Failed to speak in the Codex voice call.", cause),
+                  ),
+                );
+              return {
+                sdpAnswer,
+                ended: Deferred.await(call.ended),
+                stop,
+                appendText,
+                appendSpeech,
+              };
             }),
           readThreadSnapshot: (threadInput) =>
             Effect.gen(function* () {

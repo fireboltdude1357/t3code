@@ -51,8 +51,10 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import * as VoiceCallService from "./VoiceCallService.ts";
-import * as VoiceForkRegistry from "./VoiceForkRegistry.ts";
+import * as VoiceOrchestrator from "./voice/VoiceOrchestrator.ts";
+import * as VoiceSessionService from "./voice/VoiceSessionService.ts";
+import * as VoiceSessionRegistry from "./voice/VoiceSessionRegistry.ts";
+import * as VoiceStore from "./voice/VoiceStore.ts";
 
 /** The shared application event log and its command receipts. */
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -61,13 +63,13 @@ export const layerEventInfrastructure = Layer.mergeAll(
 );
 
 // One registry reference, so layer memoization shares it between the runtime
-// policy and the voice call service.
-const layerVoiceForkRegistry = VoiceForkRegistry.layer;
-const layerRuntimePolicyProvided = VoiceForkRegistry.runtimePolicyLayer.pipe(
+// policy and the voice session service.
+const layerVoiceSessionRegistry = VoiceSessionRegistry.layer;
+const layerRuntimePolicyProvided = VoiceSessionRegistry.runtimePolicyLayer.pipe(
   Layer.provide(
     Layer.merge(
       RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer)),
-      layerVoiceForkRegistry,
+      layerVoiceSessionRegistry,
     ),
   ),
 );
@@ -276,12 +278,24 @@ const layerThreadLifecycleProvided = ThreadLifecycleService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
-const layerVoiceCallProvided = VoiceCallService.layer.pipe(
+export const layerVoiceStore = VoiceStore.layer;
+const layerVoiceOrchestratorProvided = VoiceOrchestrator.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      VoiceSessionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            layerThreadManagementProvided,
+            layerProviderSessionManagerProvided,
+            layerVoiceSessionRegistry,
+          ),
+        ),
+      ),
       layerThreadManagementProvided,
-      layerProviderSessionManagerProvided,
-      layerVoiceForkRegistry,
+      layerRuntimeRequestServiceProvided,
+      layerVoiceSessionRegistry,
+      layerVoiceStore,
+      layerProjectService,
     ),
   ),
 );
@@ -366,7 +380,8 @@ export const layerProduction = Layer.mergeAll(
   layerManagedProjectFoldersProvided,
   layerThreadLaunchProvided,
   layerThreadLifecycleProvided,
-  layerVoiceCallProvided,
+  layerVoiceOrchestratorProvided,
+  layerVoiceStore,
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
   UsageLimitRecoveryWorker.layer.pipe(

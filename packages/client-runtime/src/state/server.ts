@@ -28,7 +28,6 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentQueryAtomFamily,
   createEnvironmentRpcQueryAtomFamily,
-  createEnvironmentRpcStreamAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
   createRuntimeCommand,
@@ -1140,11 +1139,6 @@ export function createServerEnvironmentAtoms<R, E>(
     }),
     configProjection,
     welcome,
-    /** A realtime voice call on a fork of the thread. Unmounting the atom hangs up. */
-    voiceCall: createEnvironmentRpcStreamAtomFamily(runtime, {
-      label: "environment-data:server:voice-call",
-      tag: WS_METHODS.voiceCallStart,
-    }),
     legacyThreadMigration: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:legacy-thread-migration",
       tag: WS_METHODS.subscribeServerLifecycle,
