@@ -93,6 +93,7 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as VoiceCallService from "../orchestration-v2/VoiceCallService.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -864,6 +865,10 @@ const make = Effect.gen(function* () {
         )
       : Effect.succeed(project.defaultModelSelection);
   const secretRequests = yield* SecretRequests.SecretRequests;
+  // Optional so MCP test harnesses without the voice runtime keep working.
+  const voiceCalls = Option.getOrUndefined(
+    yield* Effect.serviceOption(VoiceCallService.VoiceCallService),
+  );
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -2378,8 +2383,16 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
         yield* assertLiveCallerForOtherThread(scope, parent, target);
-        yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
-        yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
+        // A read-only voice-call fork may deliver the user's confirmed message
+        // to the thread it was forked from, whatever that thread's modes are.
+        const isVoiceForkToParent =
+          voiceCalls !== undefined &&
+          scope.thread !== undefined &&
+          (yield* voiceCalls.isVoiceForkSendingToParent(scope.thread.threadId, input.threadId));
+        if (!isVoiceForkToParent) {
+          yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
+          yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
+        }
 
         const mode = input.mode ?? "auto";
         const key = yield* requestKey(input.clientRequestId);
@@ -2415,6 +2428,10 @@ const make = Effect.gen(function* () {
                   ),
             ),
           );
+        if (isVoiceForkToParent && voiceCalls !== undefined && scope.thread !== undefined) {
+          // The call's one job is done: hang up and archive the fork.
+          yield* voiceCalls.markSent(scope.thread.threadId);
+        }
         return {
           threadId: input.threadId,
           messageId,

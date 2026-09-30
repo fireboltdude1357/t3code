@@ -153,6 +153,7 @@ import {
   type ProviderAdapterV2Shape,
   type ProviderAdapterV2Event,
   type ProviderAdapterV2ForkThreadInput,
+  type ProviderAdapterV2RealtimeCallEnd,
   type ProviderAdapterV2RollbackThreadInput,
   type ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2McpApps,
@@ -676,6 +677,7 @@ type CodexTurnStartParamsWithCollaborationMode =
 const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffect(
   CodexTurnStartParamsWithCollaborationMode,
 );
+const isProviderAdapterProtocolError = Schema.is(ProviderAdapterProtocolError);
 const isProviderAdapterRuntimeRequestResponseError = Schema.is(
   ProviderAdapterRuntimeRequestResponseError,
 );
@@ -1341,6 +1343,16 @@ export function codexThreadRuntimeParams(input: {
                 http_headers: {
                   Authorization: mcpSession.authorizationHeader,
                 },
+                ...(input.runtimePolicy?.preapprovedT3McpTools?.length
+                  ? {
+                      tools: Object.fromEntries(
+                        input.runtimePolicy.preapprovedT3McpTools.map((tool) => [
+                          tool,
+                          { approval_mode: "approve" },
+                        ]),
+                      ),
+                    }
+                  : {}),
               },
             },
           }),
@@ -1521,8 +1533,12 @@ export const layerAppServerClientFactory: Layer.Layer<
       open: (input) =>
         Effect.gen(function* () {
           const scope = yield* Scope.Scope;
+          // Codex realtime (voice calls) falls back to OPENAI_API_KEY when it is
+          // set, which bills the OpenAI API instead of the user's Codex
+          // subscription. Never hand the key to the app-server.
+          const { OPENAI_API_KEY: _openAiApiKey, ...inheritedEnvironment } = input.environment;
           const environment = {
-            ...input.environment,
+            ...inheritedEnvironment,
             ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
           };
           const command = yield* makeCodexAppServerSpawnCommand({
@@ -4369,6 +4385,80 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           updateSubagentSelection(payload.threadId, payload.toModel),
         );
 
+        // Realtime voice calls keyed by native thread id. Codex replies to
+        // `thread/realtime/start` through notifications, routed here.
+        interface RealtimeCallState {
+          readonly answer: Deferred.Deferred<string, ProviderAdapterProtocolError>;
+          readonly ended: Deferred.Deferred<ProviderAdapterV2RealtimeCallEnd>;
+        }
+        const realtimeCalls = yield* Ref.make(new Map<string, RealtimeCallState>());
+        const endRealtimeCall = (nativeThreadId: string, end: ProviderAdapterV2RealtimeCallEnd) =>
+          Effect.gen(function* () {
+            const call = yield* Ref.modify(realtimeCalls, (current) => {
+              const existing = current.get(nativeThreadId);
+              if (existing === undefined) return [undefined, current] as const;
+              const updated = new Map(current);
+              updated.delete(nativeThreadId);
+              return [existing, updated] as const;
+            });
+            if (call === undefined) return;
+            yield* Deferred.fail(
+              call.answer,
+              toProtocolError(
+                end.type === "error"
+                  ? end.message
+                  : `Codex realtime closed before answering${end.reason ? `: ${end.reason}` : "."}`,
+              ),
+            );
+            yield* Deferred.succeed(call.ended, end);
+          });
+        yield* client.handleServerNotification("thread/realtime/sdp", (payload) =>
+          Ref.get(realtimeCalls).pipe(
+            Effect.flatMap((calls) => {
+              const call = calls.get(payload.threadId);
+              return call === undefined
+                ? Effect.void
+                : Deferred.succeed(call.answer, payload.sdp).pipe(Effect.asVoid);
+            }),
+          ),
+        );
+        // An error before the answer fails the start. After it, the session keeps
+        // running (a rejected client event is one example), so only `closed` ends it.
+        yield* client.handleServerNotification("thread/realtime/error", (payload) =>
+          Effect.gen(function* () {
+            const call = (yield* Ref.get(realtimeCalls)).get(payload.threadId);
+            if (call === undefined) return;
+            if (yield* Deferred.isDone(call.answer)) {
+              yield* Effect.logWarning("codex.realtime.error", {
+                threadId: payload.threadId,
+                message: payload.message,
+              });
+              return;
+            }
+            yield* endRealtimeCall(payload.threadId, { type: "error", message: payload.message });
+          }),
+        );
+        yield* client.handleServerNotification("thread/realtime/closed", (payload) =>
+          endRealtimeCall(payload.threadId, { type: "closed", reason: payload.reason ?? null }),
+        );
+        // A dead app-server sends no `closed`; end every call with the session.
+        yield* Scope.addFinalizer(
+          scope,
+          Ref.get(realtimeCalls).pipe(
+            Effect.flatMap((calls) =>
+              Effect.forEach(
+                [...calls.keys()],
+                (nativeThreadId) =>
+                  endRealtimeCall(nativeThreadId, {
+                    type: "error",
+                    message: "The Codex session ended.",
+                  }),
+                { discard: true },
+              ),
+            ),
+          ),
+        );
+
         yield* client.handleServerNotification("turn/started", (payload) =>
           Effect.gen(function* () {
             const context = (yield* Ref.get(activeTurns)).get(payload.turn.id);
@@ -6405,6 +6495,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           // against a long-delayed resume. Codex emits no resume-expected
           // signal to pin on.
           hasPendingBackgroundWork: Effect.gen(function* () {
+            // A live voice call hands work to this session between turns.
+            if ((yield* Ref.get(realtimeCalls)).size > 0) {
+              return true;
+            }
             for (const items of (yield* Ref.get(runningCommandItemsByTurn)).values()) {
               if (items.size > 0) {
                 return true;
@@ -7141,6 +7235,61 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ),
             ),
           mcpApps,
+          startRealtimeCall: (callInput) =>
+            Effect.gen(function* () {
+              const threadId = yield* getNativeThreadId(callInput.providerThread);
+              const call: RealtimeCallState = {
+                answer: yield* Deferred.make<string, ProviderAdapterProtocolError>(),
+                ended: yield* Deferred.make<ProviderAdapterV2RealtimeCallEnd>(),
+              };
+              const registered = yield* Ref.modify(realtimeCalls, (current) => {
+                if (current.has(threadId)) return [false, current] as const;
+                const updated = new Map(current);
+                updated.set(threadId, call);
+                return [true, updated] as const;
+              });
+              if (!registered) {
+                return yield* toProtocolError("A voice call is already active on this thread.");
+              }
+              const isLive = Ref.get(realtimeCalls).pipe(
+                Effect.map((calls) => calls.get(threadId) === call),
+              );
+              const stop = Effect.gen(function* () {
+                if (!(yield* isLive)) return;
+                yield* client.raw
+                  .request("thread/realtime/stop", { threadId })
+                  .pipe(
+                    Effect.ensuring(
+                      endRealtimeCall(threadId, { type: "closed", reason: "stopped" }),
+                    ),
+                  );
+              }).pipe(
+                Effect.mapError((cause) =>
+                  toProtocolError("Failed to stop the Codex voice call.", cause),
+                ),
+              );
+              const sdpAnswer = yield* ensureInitialized.pipe(
+                Effect.andThen(
+                  client.raw.request("thread/realtime/start", {
+                    threadId,
+                    outputModality: "audio",
+                    version: "v3",
+                    // Always WebRTC. The websocket transport can fall back to
+                    // OpenAI API billing; this code path must never request it.
+                    transport: { type: "webrtc", sdp: callInput.sdpOffer },
+                    prompt: callInput.prompt,
+                  }),
+                ),
+                Effect.andThen(Deferred.await(call.answer).pipe(Effect.timeout("30 seconds"))),
+                Effect.mapError((cause) =>
+                  isProviderAdapterProtocolError(cause)
+                    ? cause
+                    : toProtocolError("Failed to start the Codex voice call.", cause),
+                ),
+                Effect.onError(() => stop.pipe(Effect.ignore)),
+              );
+              return { sdpAnswer, ended: Deferred.await(call.ended), stop };
+            }),
           readThreadSnapshot: (threadInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(threadInput.providerThread);

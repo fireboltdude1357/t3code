@@ -51,6 +51,8 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as VoiceCallService from "./VoiceCallService.ts";
+import * as VoiceForkRegistry from "./VoiceForkRegistry.ts";
 
 /** The shared application event log and its command receipts. */
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -58,8 +60,16 @@ export const layerEventInfrastructure = Layer.mergeAll(
   OrchestrationCommandReceipts.layer,
 );
 
-const layerRuntimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
-  Layer.provide(ProjectStore.layer),
+// One registry reference, so layer memoization shares it between the runtime
+// policy and the voice call service.
+const layerVoiceForkRegistry = VoiceForkRegistry.layer;
+const layerRuntimePolicyProvided = VoiceForkRegistry.runtimePolicyLayer.pipe(
+  Layer.provide(
+    Layer.merge(
+      RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer)),
+      layerVoiceForkRegistry,
+    ),
+  ),
 );
 
 const layerEventStoreProvided = EventStore.layerFromOrchestrationEventStore.pipe(
@@ -266,6 +276,15 @@ const layerThreadLifecycleProvided = ThreadLifecycleService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
+const layerVoiceCallProvided = VoiceCallService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerThreadManagementProvided,
+      layerProviderSessionManagerProvided,
+      layerVoiceForkRegistry,
+    ),
+  ),
+);
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -347,6 +366,7 @@ export const layerProduction = Layer.mergeAll(
   layerManagedProjectFoldersProvided,
   layerThreadLaunchProvided,
   layerThreadLifecycleProvided,
+  layerVoiceCallProvided,
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
   UsageLimitRecoveryWorker.layer.pipe(
