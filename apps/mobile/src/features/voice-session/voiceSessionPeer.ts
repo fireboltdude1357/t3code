@@ -1,4 +1,3 @@
-import InCallManager from "react-native-incall-manager";
 import { mediaDevices, RTCPeerConnection, type MediaStream } from "react-native-webrtc";
 
 // The published typings omit the vendored event-target-shim, so listeners use the `on*` properties.
@@ -6,12 +5,15 @@ import { mediaDevices, RTCPeerConnection, type MediaStream } from "react-native-
 /** Long enough for host and STUN candidates on a normal network; the offer goes out either way. */
 const ICE_GATHERING_TIMEOUT_MS = 3_000;
 
-export interface VoiceCallPeer {
+/** One generation's WebRTC connection to OpenAI, with its own microphone track. */
+export interface VoiceSessionPeer {
   /** The complete local offer, sent to the server unmodified. */
   readonly offerSdp: string;
   readonly acceptAnswer: (sdp: string) => Promise<void>;
   readonly setMuted: (muted: boolean) => void;
-  /** Idempotent. Stops the microphone, closes the connection, and releases the audio session. */
+  /** False once the connection failed, dropped or closed. */
+  readonly isConnected: () => boolean;
+  /** Idempotent. Stops this peer's microphone track and closes the connection. */
   readonly close: () => void;
 }
 
@@ -31,17 +33,15 @@ function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
 }
 
 /**
- * Captures the microphone and prepares a WebRTC offer for a realtime voice call.
- * Remote audio plays on its own once the answer is accepted. The caller must
- * call `close` when the call ends; setup failures clean up before rejecting.
+ * Captures the microphone and prepares a WebRTC offer for one generation.
+ * Remote audio plays on its own once the answer is accepted. The audio session
+ * (speaker routing) belongs to the controller, so closing one peer during a
+ * rotation doesn't cut the next one. Setup failures clean up before rejecting.
  */
-export async function openVoiceCallPeer(handlers: {
+export async function openVoiceSessionPeer(handlers: {
   readonly onRealtimeEvent: (event: unknown) => void;
   readonly onConnectionFailed: () => void;
-}): Promise<VoiceCallPeer> {
-  // "video" media selects the speaker by default while still yielding to
-  // headphones and Bluetooth; "audio" would route the reply to the earpiece.
-  InCallManager.start({ media: "video" });
+}): Promise<VoiceSessionPeer> {
   let pc: RTCPeerConnection | null = null;
   let stream: MediaStream | null = null;
   let closed = false;
@@ -51,10 +51,10 @@ export async function openVoiceCallPeer(handlers: {
     stream?.getTracks().forEach((track) => track.stop());
     stream?.release();
     pc?.close();
-    InCallManager.stop();
   };
 
   try {
+    // OpenAI needs a real audio track in the offer; the mic track is that track.
     stream = await mediaDevices.getUserMedia({ audio: true });
     const connection = new RTCPeerConnection();
     pc = connection;
@@ -70,7 +70,7 @@ export async function openVoiceCallPeer(handlers: {
       }
     };
     connection.onconnectionstatechange = () => {
-      if (connection.connectionState === "failed") handlers.onConnectionFailed();
+      if (!closed && connection.connectionState === "failed") handlers.onConnectionFailed();
     };
 
     await connection.setLocalDescription(await connection.createOffer());
@@ -85,6 +85,11 @@ export async function openVoiceCallPeer(handlers: {
       setMuted: (muted) => {
         for (const track of localStream.getAudioTracks()) track.enabled = !muted;
       },
+      isConnected: () =>
+        !closed &&
+        connection.connectionState !== "failed" &&
+        connection.connectionState !== "disconnected" &&
+        connection.connectionState !== "closed",
       close,
     };
   } catch (error) {

@@ -24,6 +24,7 @@ import { buildHomeProjectScopes } from "./homeThreadList";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
+import { startVoiceSession } from "../voice-session/voiceSessionController";
 
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
@@ -96,6 +97,26 @@ export function HomeRouteScreen() {
   const { options: listOptions, setSelectedEnvironmentId } =
     useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
+  // The orchestrator runs in the filtered environment, else the first connected one.
+  const voiceEnvironmentId =
+    (selectedEnvironmentId === null
+      ? environments.find((environment) => environment.connectionState === "connected")
+      : environments.find(
+          (environment) =>
+            environment.environmentId === selectedEnvironmentId &&
+            environment.connectionState === "connected",
+        )
+    )?.environmentId ?? null;
+  const openVoiceSession = useMemo(
+    () =>
+      voiceEnvironmentId === null
+        ? null
+        : () => {
+            startVoiceSession({ environmentId: voiceEnvironmentId, focusThreadId: null });
+            navigation.navigate("VoiceSession");
+          },
+    [navigation, voiceEnvironmentId],
+  );
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const projectFilterOptions = useMemo(
     () =>
@@ -204,6 +225,7 @@ export function HomeRouteScreen() {
           }
           onSearchQueryChange={setSearchQuery}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
+          onOpenVoiceSession={openVoiceSession}
         />
 
         <HomeScreen
