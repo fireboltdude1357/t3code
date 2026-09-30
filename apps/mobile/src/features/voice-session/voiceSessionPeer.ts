@@ -41,6 +41,7 @@ function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
 export async function openVoiceSessionPeer(handlers: {
   readonly onRealtimeEvent: (event: unknown) => void;
   readonly onConnectionFailed: () => void;
+  readonly onConnected: () => void;
 }): Promise<VoiceSessionPeer> {
   let pc: RTCPeerConnection | null = null;
   let stream: MediaStream | null = null;
@@ -70,7 +71,9 @@ export async function openVoiceSessionPeer(handlers: {
       }
     };
     connection.onconnectionstatechange = () => {
-      if (!closed && connection.connectionState === "failed") handlers.onConnectionFailed();
+      if (closed) return;
+      if (connection.connectionState === "failed") handlers.onConnectionFailed();
+      if (connection.connectionState === "connected") handlers.onConnected();
     };
 
     await connection.setLocalDescription(await connection.createOffer());

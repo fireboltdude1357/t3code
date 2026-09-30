@@ -3,6 +3,8 @@ import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
   RunId,
+  RuntimeRequestId,
+  type OrchestrationV2ServerCommand,
   ThreadId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -23,7 +25,6 @@ import * as ServerConfig from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import type { ProviderAdapterV2RealtimeCall } from "../ProviderAdapter.ts";
-import { RuntimeRequestServiceV2 } from "../RuntimeRequestService.ts";
 import { ThreadManagementService } from "../ThreadManagementService.ts";
 import {
   layer as orchestratorLayer,
@@ -51,6 +52,18 @@ const completedRun = {
   payload: { id: RunId.make("run-1"), threadId: workThreadId, status: "completed" },
 } as OrchestrationV2DomainEvent;
 
+const approvalRequestId = RuntimeRequestId.make("request-1");
+const pendingApproval = {
+  type: "runtime-request.updated",
+  threadId: workThreadId,
+  payload: {
+    id: approvalRequestId,
+    kind: "command",
+    status: "pending",
+    responseCapability: { type: "live", providerSessionId: "provider-session" },
+  },
+} as unknown as OrchestrationV2DomainEvent;
+
 /**
  * Builds the orchestrator on the real store and registry, with fakes for the
  * thread, project and session services. Returns the recorders the tests read.
@@ -60,6 +73,7 @@ const makeHarness = Effect.gen(function* () {
   const prepared = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const released = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const speech = yield* Ref.make<ReadonlyArray<string>>([]);
+  const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
 
   const fakeCall = (sessionThreadId: ThreadId): ProviderAdapterV2RealtimeCall => ({
     sdpAnswer: `answer:${sessionThreadId}`,
@@ -90,6 +104,16 @@ const makeHarness = Effect.gen(function* () {
   const threadManagement = Layer.mock(ThreadManagementService)({
     streamDomainEvents: Stream.fromQueue(domainEvents),
     getThreadShell: (threadId) => Effect.succeed(threadId === workThreadId ? workShell : null),
+    getThreadRecords: () =>
+      Effect.succeed({
+        turnItems: [
+          { type: "approval_request", requestId: approvalRequestId, prompt: "rm -rf build/" },
+        ],
+      } as never),
+    dispatch: (command) =>
+      Ref.update(dispatched, (current) => [...current, command]).pipe(
+        Effect.as({ sequence: 1, storedEvents: [] } as never),
+      ),
     getShellSnapshot: () =>
       Effect.succeed({ schemaVersion: 1, snapshotSequence: 0, threads: [], archivedThreads: [] }),
   });
@@ -108,14 +132,13 @@ const makeHarness = Effect.gen(function* () {
         sessionService,
         threadManagement,
         projects,
-        Layer.mock(RuntimeRequestServiceV2)({}),
         ServerConfig.layerTest(process.cwd(), { prefix: "t3code-voice-orchestrator-" }),
       ),
     ),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(NodeServices.layer),
   );
-  return { layer, domainEvents, prepared, released, speech };
+  return { layer, domainEvents, prepared, released, speech, dispatched };
 });
 
 type Harness = Effect.Success<typeof makeHarness>;
@@ -269,6 +292,32 @@ it.effect("prewarms the next session thread and the next open uses it", () =>
       assert.strictEqual((yield* Ref.get(harness.prepared)).length, 2);
       assert.strictEqual(second.answer.sessionThreadId, afterPrewarm[1]);
       assert.strictEqual((yield* takeUntilType(first.events, "ended")).reason, "rotated");
+    }),
+  ),
+);
+
+it.effect("approving a runtime request on the phone dispatches the response", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      const { events } = yield* openCall;
+      yield* Queue.offer(harness.domainEvents, pendingApproval);
+      const confirm = yield* takeUntilType(events, "confirm");
+      assert.strictEqual(confirm.request.action, "runtime_approval");
+      assert.strictEqual(confirm.request.detail, "rm -rf build/");
+
+      yield* orchestrator.respond({ requestId: confirm.request.id, approved: true });
+      yield* takeUntilType(events, "confirm_resolved");
+      yield* settle;
+      const responses = (yield* Ref.get(harness.dispatched)).filter(
+        (command) => command.type === "runtime-request.respond",
+      );
+      assert.deepInclude(responses[0], {
+        type: "runtime-request.respond",
+        threadId: workThreadId,
+        requestId: approvalRequestId,
+        decision: "accept",
+      });
     }),
   ),
 );

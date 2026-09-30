@@ -84,3 +84,65 @@ it("rejects a missing read-back, a yes before it, or an empty draft", () => {
   );
   assert.isFalse(isSpokenConfirmation(say(["assistant", readBack], ["user", "Yes"]), "  ?! "));
 });
+
+it("counts a weak yes only as a short reply", () => {
+  assert.isTrue(isSpokenConfirmation(say(["assistant", readBack], ["user", "Okay."]), draft));
+  assert.isFalse(
+    isSpokenConfirmation(
+      say(["assistant", readBack], ["user", "Okay, what is the other thread doing?"]),
+      draft,
+    ),
+  );
+});
+
+it("requires the read-back to name the target thread when one is given", () => {
+  const named = `Send to Auth refactor: "${draft}" Should I send it?`;
+  assert.isTrue(
+    isSpokenConfirmation(say(["assistant", named], ["user", "Yes"]), draft, "Auth refactor"),
+  );
+  assert.isFalse(
+    isSpokenConfirmation(say(["assistant", readBack], ["user", "Yes"]), draft, "Auth refactor"),
+  );
+});
+
+it("needs the draft word for word, so a dropped negation fails", () => {
+  const unsafe = "Delete the production database.";
+  assert.isFalse(
+    isSpokenConfirmation(
+      say(["assistant", "I'll send: do not keep the production database. OK?"], ["user", "Yes"]),
+      unsafe,
+    ),
+  );
+  assert.isFalse(
+    isSpokenConfirmation(
+      say(["assistant", "I'll send: the production database delete. OK?"], ["user", "Yes"]),
+      unsafe,
+    ),
+  );
+});
+
+it("rejects unsure, negative and conditional replies", () => {
+  for (const reply of ["I'm not sure", "I cannot confirm", "Maybe yes tomorrow", "Yes but later"]) {
+    assert.isFalse(
+      isSpokenConfirmation(say(["assistant", readBack], ["user", reply]), draft),
+      reply,
+    );
+  }
+});
+
+it("accepts a yes the voice model talked over, as in the live call", () => {
+  const live = say(
+    ["user", 'Please send this message to the main thread: "Voice four check passed."'],
+    [
+      "assistant",
+      'All right, I\'ll send: "Voice four check passed." to "Voice main thread". Is that correct?',
+    ],
+    ["user", "Yes"],
+    ["assistant", "Okay, sending that"],
+    ["user", "That is right"],
+    ["assistant", "now."],
+    ["user", "Send it."],
+    ["assistant", "Sending."],
+  );
+  assert.isTrue(isSpokenConfirmation(live, "Voice four check passed.", "Voice main thread"));
+});

@@ -2,7 +2,6 @@ import {
   CommandId,
   type OrchestrationV2DomainEvent,
   ProjectId,
-  type ProviderApprovalDecision,
   type ThreadId,
   type VoiceAgendaItem,
   type VoiceConfirmAction,
@@ -32,7 +31,6 @@ import * as Stream from "effect/Stream";
 import { ServerConfig } from "../../config.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import type { ProviderAdapterV2RealtimeCall } from "../ProviderAdapter.ts";
-import { RuntimeRequestServiceV2 } from "../RuntimeRequestService.ts";
 import { ThreadManagementService } from "../ThreadManagementService.ts";
 import { buildBriefing } from "./VoiceBriefing.ts";
 import { composeNoticeBatch, isUrgentBatch, noticeForEvent } from "./VoiceNotificationPolicy.ts";
@@ -95,6 +93,14 @@ const NOTICE_BATCH_MAX = 8;
 const QUIET_BEFORE_URGENT = Duration.seconds(2);
 const QUIET_BEFORE_ROUTINE = Duration.seconds(6);
 const NOTICE_MAX_WAIT = Duration.seconds(90);
+/** How far back the store is read for pending notices. */
+const NOTICE_LOOKBACK = 500;
+/** Older pending notices are dropped from a briefing as stale. */
+const NOTICE_FRESH_HOURS = 2;
+const BRIEFING_NOTICES = 20;
+/** Thread items older than this are left out of briefings; topics never age out. */
+const THREAD_AGENDA_FRESH_HOURS = 24;
+const BRIEFING_AGENDA_ITEMS = 15;
 const VOICE_PROJECT_TITLE = "Voice";
 
 /** Instructions for the realtime voice model. */
@@ -103,7 +109,7 @@ export const VOICE_SESSION_PROMPT = [
   "Hand lookups, questions about threads, and any action to the background agent. It can see every thread; you cannot.",
   'Lines that start with "Update from T3:" are news about other threads, timed by the system for a pause. Say them briefly and let the user decide whether to dig in.',
   "When a tangent wraps up, come back to open agenda items from your briefing or the agent.",
-  "To send or queue a message to a thread: get a draft, read it back word for word, and ask whether to send it. Only after a clear yes, hand off so the agent can send. If anything changes, read the new draft back and ask again.",
+  "To send or queue a message to a thread: get a draft, read it back word for word, name the thread it goes to, and ask whether to send it. Only after a clear yes, hand off so the agent can send. If anything changes, read the new draft back and ask again.",
   "Launching a thread, interrupting one, and approvals need a tap on the phone. Say so, and wait.",
   "You cannot do anything yourself. Never say something was sent, launched or approved until the agent confirms it.",
 ].join("\n");
@@ -147,7 +153,6 @@ interface State {
 export const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService;
   const projects = yield* ProjectService;
-  const runtimeRequests = yield* RuntimeRequestServiceV2;
   const sessions = yield* VoiceSessionService;
   const registry = yield* VoiceSessionRegistry;
   const store = yield* VoiceStore;
@@ -248,7 +253,11 @@ export const make = Effect.gen(function* () {
       };
     });
 
-  /** On-screen yes for another thread's approval request, answered in place. */
+  /**
+   * On-screen yes for another thread's approval request, answered in place.
+   * The card shows what is being approved; a request with nothing to show
+   * gets no card and stays for the user in its thread, as does a denial.
+   */
   const confirmRuntimeApproval = (
     event: Extract<OrchestrationV2DomainEvent, { type: "runtime-request.updated" }>,
     threadTitle: string,
@@ -256,20 +265,27 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const request = event.payload;
       if (request.responseCapability.type !== "live" || request.kind === "user_input") return;
-      const providerSessionId = request.responseCapability.providerSessionId;
+      const records = yield* threads.getThreadRecords(event.threadId, ["turnItems"], {
+        turnItemTypes: ["approval_request"],
+      });
+      const item = records.turnItems.find(
+        (candidate) => candidate.type === "approval_request" && candidate.requestId === request.id,
+      );
+      const prompt = item?.type === "approval_request" ? item.prompt?.trim() : undefined;
+      if (prompt === undefined || prompt.length === 0) return;
       const approved = yield* requestConfirmation({
         action: "runtime_approval",
         threadId: event.threadId,
         title: `${threadTitle} needs an approval`,
-        detail: `Request: ${request.kind}. Approve once, or deny.`,
+        detail: prompt,
       });
-      const decision: ProviderApprovalDecision = approved ? "accept" : "decline";
-      if (!approved) return; // Leave a timed-out or denied request for the user in the thread.
-      yield* runtimeRequests.respond({
+      if (!approved) return;
+      yield* threads.dispatch({
+        type: "runtime-request.respond",
+        commandId: CommandId.make(`server:voice-session:approve:${yield* uuid}`),
         threadId: event.threadId,
-        providerSessionId,
         requestId: request.id,
-        decision,
+        decision: "accept",
       });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -337,11 +353,17 @@ export const make = Effect.gen(function* () {
       // A rotation while waiting hands the batch to the newer generation.
       const { live } = yield* Ref.get(state);
       if (live === undefined) return;
-      yield* live.call.appendSpeech(composeNoticeBatch(batch));
-      yield* Effect.forEach(batch, (notice) =>
+      // voice_pending_notices may have handed some to the agent already.
+      const undelivered = new Set(
+        (yield* store.undeliveredNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
+      );
+      const fresh = batch.filter((notice) => undelivered.has(notice.id));
+      if (fresh.length === 0) return;
+      yield* live.call.appendSpeech(composeNoticeBatch(fresh));
+      yield* Effect.forEach(fresh, (notice) =>
         Queue.offer(live.events, { type: "notice", notice }),
       );
-      yield* store.markDelivered(batch.map((notice) => notice.id));
+      yield* store.markDelivered(fresh.map((notice) => notice.id));
     }).pipe(
       Effect.catchCause((cause) => Effect.logWarning("voice-session.deliver-failed", { cause })),
     );
@@ -363,15 +385,29 @@ export const make = Effect.gen(function* () {
 
   const briefingFor = (generation: number, focusThreadId: ThreadId | undefined) =>
     Effect.gen(function* () {
-      const [agenda, transcript, undelivered, snapshot, projectShells, voiceProject] =
+      const [openAgenda, transcript, pending, snapshot, projectShells, voiceProject, now] =
         yield* Effect.all([
           store.listAgenda({ status: "open" }),
           store.recentTranscript(60),
-          store.undeliveredNotices(20),
+          store.undeliveredNotices(NOTICE_LOOKBACK),
           threads.getShellSnapshot(),
           projects.listShells(),
           Ref.get(voiceProjectId),
+          DateTime.now,
         ]);
+      // Voice may sit unused for days while notices pile up. Brief only recent
+      // news and the newest agenda; `open` marks everything pending delivered.
+      const since = (hours: number) => DateTime.toEpochMillis(now) - hours * 3_600_000;
+      const undelivered = pending
+        .filter((notice) => DateTime.toEpochMillis(notice.createdAt) >= since(NOTICE_FRESH_HOURS))
+        .slice(-BRIEFING_NOTICES);
+      const agenda = openAgenda
+        .filter(
+          (item) =>
+            item.kind === "topic" ||
+            DateTime.toEpochMillis(item.openedAt) >= since(THREAD_AGENDA_FRESH_HOURS),
+        )
+        .slice(-BRIEFING_AGENDA_ITEMS);
       const projectTitles = new Map(projectShells.map((project) => [project.id, project.title]));
       const visible = snapshot.threads.filter(
         (thread) =>
@@ -392,7 +428,7 @@ export const make = Effect.gen(function* () {
         })),
         ...(focus === undefined ? {} : { focusThread: { threadId: focus.id, title: focus.title } }),
       });
-      return { briefing, undelivered, focus, agenda };
+      return { briefing, pending, focus, agenda };
     });
 
   /** Prepares the next session thread ahead of rotation, unless one is ready. */
@@ -425,7 +461,7 @@ export const make = Effect.gen(function* () {
           ),
           ({ sessionThreadId }) => sessions.release(sessionThreadId),
         );
-        const { briefing, undelivered, focus, agenda } = yield* briefingFor(
+        const { briefing, pending, focus, agenda } = yield* briefingFor(
           generation,
           input.focusThreadId,
         );
@@ -458,18 +494,7 @@ export const make = Effect.gen(function* () {
           end: yield* Deferred.make<GenerationEnd>(),
           lastActivity,
         };
-        const previous = yield* Ref.modify(state, (existing) => [
-          existing.live,
-          { ...existing, live: current },
-        ]);
-        if (previous !== undefined) {
-          yield* Deferred.succeed(previous.end, { reason: "rotated" });
-        }
-        yield* store.markDelivered(undelivered.map((notice) => notice.id));
-        // Cards still waiting for a tap carry over to the new generation.
-        yield* Effect.forEach((yield* Ref.get(confirmations)).values(), ({ request }) =>
-          Queue.offer(current.events, { type: "confirm", request }),
-        );
+        // Registered before `current` goes live, so it can never be left live.
         // Hanging up (not rotating) also drops a warm thread nobody will use.
         yield* Effect.addFinalizer(() =>
           Ref.modify(state, (existing) =>
@@ -481,6 +506,21 @@ export const make = Effect.gen(function* () {
               warm === undefined ? Effect.void : sessions.release(warm.sessionThreadId),
             ),
           ),
+        );
+        // Generations are numbered before setup, so a slow older open that
+        // finishes after a newer one yields to it instead of replacing it.
+        const previous = yield* Ref.modify(state, (existing) =>
+          existing.live !== undefined && existing.live.generation > generation
+            ? [current, existing]
+            : [existing.live, { ...existing, live: current }],
+        );
+        if (previous !== undefined) {
+          yield* Deferred.succeed(previous.end, { reason: "rotated" });
+        }
+        yield* store.markDelivered(pending.map((notice) => notice.id));
+        // Cards still waiting for a tap carry over to the new generation.
+        yield* Effect.forEach((yield* Ref.get(confirmations)).values(), ({ request }) =>
+          Queue.offer(current.events, { type: "confirm", request }),
         );
 
         const rotateAt = Duration.toMillis(ROTATE_AFTER);

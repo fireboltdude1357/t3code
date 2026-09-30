@@ -292,7 +292,6 @@ const layerVoiceOrchestratorProvided = VoiceOrchestrator.layer.pipe(
         ),
       ),
       layerThreadManagementProvided,
-      layerRuntimeRequestServiceProvided,
       layerVoiceSessionRegistry,
       layerVoiceStore,
       layerProjectService,
