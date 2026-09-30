@@ -297,7 +297,9 @@ const config: ExpoConfig = {
       NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
       // "Audio, AirPlay, and Picture in Picture": the browser screen's system
       // picture in picture needs it to start and to stay up outside the app.
-      UIBackgroundModes: ["audio"],
+      // "voip" keeps a voice orchestrator call talking while the phone is
+      // locked or another app is in front.
+      UIBackgroundModes: ["audio", "voip"],
       ITSAppUsesNonExemptEncryption: false,
       // The App Store screenshot harness rotates the iPad interface from
       // inside the app (CI denies osascript the Accessibility access that

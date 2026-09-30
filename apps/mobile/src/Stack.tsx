@@ -14,7 +14,7 @@ import {
   createNativeStackScreen,
   type NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   Platform,
   Pressable,
@@ -48,7 +48,8 @@ import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { DevicePreviewRouteScreen } from "./features/devices/DevicePreviewRouteScreen";
 import { BrowserPreviewRouteScreen } from "./features/browser/BrowserPreviewRouteScreen";
-import { VoiceCallSheet } from "./features/voice-call/VoiceCallSheet";
+import { VoiceSessionMiniBar } from "./features/voice-session/VoiceSessionMiniBar";
+import { VoiceSessionSheet } from "./features/voice-session/VoiceSessionSheet";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
@@ -555,7 +556,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "ThreadReviewComment",
   "ThreadDevicePreview",
   "ThreadBrowserPreview",
-  "ThreadVoiceCall",
+  "VoiceSession",
   "ThreadSettingsSheet",
 ]);
 
@@ -618,6 +619,7 @@ function RootStackLayout(props: {
       params: { incomingShareId: transition.shareIdToPresent },
     });
   }, [navigation, pendingShare, props.state]);
+  const openVoiceSession = useCallback(() => navigation.navigate("VoiceSession"), [navigation]);
 
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
@@ -630,6 +632,10 @@ function RootStackLayout(props: {
         >
           {props.children}
           <HardwareKeyboardCommandOverlay />
+          <VoiceSessionMiniBar
+            sheetOpen={props.state.routes[props.state.index]?.name === "VoiceSession"}
+            onOpenSheet={openVoiceSession}
+          />
         </AdaptiveWorkspaceLayout>
       </ExistingThreadSettingsRouteProvider>
     </HardwareKeyboardCommandProvider>
@@ -740,8 +746,8 @@ const RootStackConfig = createWorkspaceStackNavigator({
         sheetGrabberVisible: Platform.OS !== "android",
       },
     }),
-    ThreadVoiceCall: createNativeStackScreen({
-      screen: VoiceCallSheet,
+    VoiceSession: createNativeStackScreen({
+      screen: VoiceSessionSheet,
       // No deep link: a URL must never open a live microphone call.
       options: {
         gestureEnabled: true,

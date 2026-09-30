@@ -143,6 +143,7 @@ import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
+import { startVoiceSession } from "../voice-session/voiceSessionController";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 
@@ -353,22 +354,20 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     },
     [navigation, props.environmentId, props.selectedThread.id],
   );
-  // The server forks the latest completed run, so offer a call only once the
-  // latest run has finished and the environment can take the request.
-  const canStartVoiceCall =
-    props.connectionStateLabel === "connected" &&
-    !props.activeThreadBusy &&
-    props.activityRun?.status === "completed";
+  // Opens the orchestrator focused on this thread, or just shows the sheet
+  // when a session is already running.
+  const canStartVoiceCall = props.connectionStateLabel === "connected";
   const startVoiceCall = useMemo(
     () =>
       canStartVoiceCall
         ? () => {
             Keyboard.dismiss();
             void Haptics.selectionAsync();
-            navigation.navigate("ThreadVoiceCall", {
+            startVoiceSession({
               environmentId: props.environmentId,
-              threadId: props.selectedThread.id,
+              focusThreadId: props.selectedThread.id,
             });
+            navigation.navigate("VoiceSession");
           }
         : null,
     [canStartVoiceCall, navigation, props.environmentId, props.selectedThread.id],
