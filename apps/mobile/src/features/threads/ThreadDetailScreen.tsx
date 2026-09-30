@@ -316,6 +316,26 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       threadId: props.selectedThread.id,
     });
   }, [navigation, props.environmentId, props.selectedThread.id]);
+  // The server forks the latest completed run, so offer a call only once the
+  // latest run has finished and the environment can take the request.
+  const canStartVoiceCall =
+    props.connectionStateLabel === "connected" &&
+    !props.activeThreadBusy &&
+    props.activityRun?.status === "completed";
+  const startVoiceCall = useMemo(
+    () =>
+      canStartVoiceCall
+        ? () => {
+            Keyboard.dismiss();
+            void Haptics.selectionAsync();
+            navigation.navigate("ThreadVoiceCall", {
+              environmentId: props.environmentId,
+              threadId: props.selectedThread.id,
+            });
+          }
+        : null,
+    [canStartVoiceCall, navigation, props.environmentId, props.selectedThread.id],
+  );
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
   const liveKeyboardHeight = useKeyboardState((state) => state.height);
@@ -1325,6 +1345,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onNativePasteText={props.onNativePasteText}
                       onRemoveDraftImage={props.onRemoveDraftImage}
                       onStopThread={props.onStopThread}
+                      onStartVoiceCall={startVoiceCall}
                       onSendMessage={handleSendMessage}
                       onShowUsageLimits={showUsageLimits}
                       canSwitchProvider={props.canSwitchThreadProvider}
