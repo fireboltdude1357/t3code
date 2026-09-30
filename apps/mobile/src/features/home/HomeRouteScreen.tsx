@@ -7,7 +7,7 @@ import { Platform, useWindowDimensions } from "react-native";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
-import { useProjects, useNavigationThreadShells } from "../../state/entities";
+import { useNavigationThreadShells, useProjects, useServerConfigs } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -97,15 +97,16 @@ export function HomeRouteScreen() {
   const { options: listOptions, setSelectedEnvironmentId } =
     useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
-  // The orchestrator runs in the filtered environment, else the first connected one.
+  const serverConfigs = useServerConfigs();
+  // The orchestrator runs in the filtered environment, else the first connected
+  // one. Either way the server has to advertise it; the button hides otherwise.
   const voiceEnvironmentId =
-    (selectedEnvironmentId === null
-      ? environments.find((environment) => environment.connectionState === "connected")
-      : environments.find(
-          (environment) =>
-            environment.environmentId === selectedEnvironmentId &&
-            environment.connectionState === "connected",
-        )
+    environments.find(
+      (environment) =>
+        (selectedEnvironmentId === null || environment.environmentId === selectedEnvironmentId) &&
+        environment.connectionState === "connected" &&
+        serverConfigs.get(environment.environmentId)?.environment.capabilities.voiceSessions ===
+          true,
     )?.environmentId ?? null;
   const openVoiceSession = useMemo(
     () =>
