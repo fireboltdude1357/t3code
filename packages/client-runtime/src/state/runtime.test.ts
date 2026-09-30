@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, WS_METHODS } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -31,6 +31,7 @@ import {
   createAtomCommandScheduler,
   createEnvironmentQueryAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
+  createEnvironmentRpcStreamAtomFamily,
   createRuntimeCommand,
   scheduleAtomCommandEffect,
   executeAtomCommand,
@@ -721,6 +722,69 @@ describe("environment query lifecycle", () => {
         expect(yield* read).toBe(2);
       }),
     ),
+  );
+});
+
+describe("environment RPC stream atoms", () => {
+  it.effect("start once on mount and interrupt the RPC stream on unmount", () =>
+    Effect.gen(function* () {
+      const answered = Latch.makeUnsafe();
+      const finalized = Latch.makeUnsafe();
+      let starts = 0;
+      const answer = {
+        type: "answer",
+        forkThreadId: ThreadId.make("fork"),
+        sdpAnswer: "v=0",
+      } as const;
+      const session = {
+        client: {
+          [WS_METHODS.voiceCallStart]: () => {
+            starts += 1;
+            return Stream.make(answer).pipe(
+              Stream.tap(() => Effect.sync(() => answered.openUnsafe())),
+              Stream.concat(Stream.never),
+              // The stream never completes, so its finalizer only runs on interruption.
+              Stream.ensuring(Effect.sync(() => finalized.openUnsafe())),
+            );
+          },
+        },
+      } as unknown as RpcSession.RpcSession;
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: QUERY_ENVIRONMENT,
+        state: yield* SubscriptionRef.make(queryConnectionState()),
+        session: yield* SubscriptionRef.make(Option.some(session)),
+        prepared: yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none()),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+      const runStream: EnvironmentRegistry.EnvironmentRegistry["Service"]["runStream"] = (
+        _environmentId,
+        stream,
+      ) => Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+      const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+        runStream,
+      } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+      const family = createEnvironmentRpcStreamAtomFamily(
+        Atom.runtime(Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry)),
+        { label: "test.voice-call", tag: WS_METHODS.voiceCallStart },
+      );
+      const atom = family({
+        environmentId: QUERY_ENVIRONMENT.environmentId,
+        input: { sourceThreadId: ThreadId.make("source"), sdpOffer: "v=0" },
+      });
+      const registry = AtomRegistry.make();
+      const unmount = registry.mount(atom);
+
+      yield* answered.await;
+      yield* Effect.yieldNow;
+      expect(registry.get(atom)).toMatchObject({ _tag: "Success", value: answer, waiting: true });
+
+      unmount();
+      yield* finalized.await;
+      expect(starts).toBe(1);
+      registry.dispose();
+    }),
   );
 });
 

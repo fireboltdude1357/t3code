@@ -48,6 +48,7 @@ import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { DevicePreviewRouteScreen } from "./features/devices/DevicePreviewRouteScreen";
 import { BrowserPreviewRouteScreen } from "./features/browser/BrowserPreviewRouteScreen";
+import { VoiceCallSheet } from "./features/voice-call/VoiceCallSheet";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
@@ -554,6 +555,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "ThreadReviewComment",
   "ThreadDevicePreview",
   "ThreadBrowserPreview",
+  "ThreadVoiceCall",
   "ThreadSettingsSheet",
 ]);
 
@@ -736,6 +738,22 @@ const RootStackConfig = createWorkspaceStackNavigator({
           : FORM_SHEET_PRESENTATION_OPTIONS),
         sheetAllowedDetents: Platform.OS === "android" ? undefined : [0.55, 0.92],
         sheetGrabberVisible: Platform.OS !== "android",
+      },
+    }),
+    ThreadVoiceCall: createNativeStackScreen({
+      screen: VoiceCallSheet,
+      // No deep link: a URL must never open a live microphone call.
+      options: {
+        gestureEnabled: true,
+        headerShown: false,
+        ...(Platform.OS === "android"
+          ? { presentation: "fullScreenModal" as const }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [0.65, 0.95],
+              sheetInitialDetentIndex: 1,
+              sheetGrabberVisible: true,
+            }),
       },
     }),
     ThreadFiles: createNativeStackScreen({
