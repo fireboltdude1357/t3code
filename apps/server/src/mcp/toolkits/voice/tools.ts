@@ -6,6 +6,10 @@ import {
   VoiceMcpLaunchInput,
   VoiceMcpLaunchResult,
   VoiceMcpNoticesResult,
+  VoiceMcpQuestionListInput,
+  VoiceMcpQuestionListResult,
+  VoiceMcpQuestionReadInput,
+  VoiceMcpQuestionReadResult,
   VoiceMcpSendInput,
   VoiceMcpSendResult,
   VoiceMcpThreadReadInput,
@@ -53,6 +57,30 @@ const VoiceThreadReadTool = Tool.make("voice_thread_read", {
   success: VoiceMcpThreadReadResult,
 })
   .annotate(Tool.Title, "Read a thread")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
+const VoiceQuestionListTool = Tool.make("voice_pending_question_list", {
+  ...shared,
+  description:
+    "List pending user-question IDs in any thread from a live voice session. Permission approvals are excluded. Use voice_pending_question_read to read each question.",
+  parameters: VoiceMcpQuestionListInput,
+  success: VoiceMcpQuestionListResult,
+})
+  .annotate(Tool.Title, "List pending questions")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
+const VoiceQuestionReadTool = Tool.make("voice_pending_question_read", {
+  ...shared,
+  description:
+    "Read a pending user question and its options in any thread from a live voice session. Resolved questions and permission approvals cannot be read here. This tool does not answer questions or approve permissions.",
+  parameters: VoiceMcpQuestionReadInput,
+  success: VoiceMcpQuestionReadResult,
+})
+  .annotate(Tool.Title, "Read a pending question")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
@@ -131,6 +159,8 @@ const VoiceInterruptTool = Tool.make("voice_interrupt", {
 export const VoiceToolkit = Toolkit.make(
   VoiceThreadsTool,
   VoiceThreadReadTool,
+  VoiceQuestionListTool,
+  VoiceQuestionReadTool,
   VoicePendingNoticesTool,
   VoiceAgendaListTool,
   VoiceTopicOpenTool,
