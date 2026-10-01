@@ -5,16 +5,25 @@ import {
   PositiveInt,
   ProjectId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { OrchestratorMcpThreadStatus } from "./orchestratorMcp.ts";
-import { VoiceAgendaItem, VoiceNotice } from "./voiceSession.ts";
+import { OrchestrationV2UserInputQuestion } from "./orchestrationV2.ts";
+import { VoiceAgendaItem, VoiceConfirmRequest, VoiceNotice } from "./voiceSession.ts";
 
 /**
  * Inputs and results of the `voice_*` MCP tools. Only a live voice session
  * thread may call them; they read and act across every project.
  */
+
+/** MCP structuredContent must contain JSON values rather than DateTime instances. */
+export const VoiceMcpConfirmRequest = VoiceConfirmRequest.mapFields((fields) => ({
+  ...fields,
+  expiresAt: IsoDateTime,
+}));
+export type VoiceMcpConfirmRequest = typeof VoiceMcpConfirmRequest.Type;
 
 export const VoiceMcpThreadsInput = Schema.Struct({
   limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))),
@@ -59,10 +68,36 @@ export const VoiceMcpThreadReadResult = Schema.Struct({
 });
 export type VoiceMcpThreadReadResult = typeof VoiceMcpThreadReadResult.Type;
 
-export const VoiceMcpNoticesResult = Schema.Struct({ notices: Schema.Array(VoiceNotice) });
+export const VoiceMcpQuestionListInput = Schema.Struct({ threadId: ThreadId });
+export type VoiceMcpQuestionListInput = typeof VoiceMcpQuestionListInput.Type;
+
+export const VoiceMcpQuestionListResult = Schema.Struct({
+  threadId: ThreadId,
+  requestIds: Schema.Array(RuntimeRequestId),
+});
+export type VoiceMcpQuestionListResult = typeof VoiceMcpQuestionListResult.Type;
+
+export const VoiceMcpQuestionReadInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: RuntimeRequestId,
+});
+export type VoiceMcpQuestionReadInput = typeof VoiceMcpQuestionReadInput.Type;
+
+export const VoiceMcpQuestionReadResult = Schema.Struct({
+  threadId: ThreadId,
+  requestId: RuntimeRequestId,
+  questions: Schema.Array(OrchestrationV2UserInputQuestion),
+});
+export type VoiceMcpQuestionReadResult = typeof VoiceMcpQuestionReadResult.Type;
+
+export const VoiceMcpNoticesResult = Schema.toCodecJson(
+  Schema.Struct({ notices: Schema.Array(VoiceNotice) }),
+);
 export type VoiceMcpNoticesResult = typeof VoiceMcpNoticesResult.Type;
 
-export const VoiceMcpAgendaResult = Schema.Struct({ items: Schema.Array(VoiceAgendaItem) });
+export const VoiceMcpAgendaResult = Schema.toCodecJson(
+  Schema.Struct({ items: Schema.Array(VoiceAgendaItem) }),
+);
 export type VoiceMcpAgendaResult = typeof VoiceMcpAgendaResult.Type;
 
 export const VoiceMcpTopicOpenInput = Schema.Struct({
@@ -71,7 +106,7 @@ export const VoiceMcpTopicOpenInput = Schema.Struct({
 });
 export type VoiceMcpTopicOpenInput = typeof VoiceMcpTopicOpenInput.Type;
 
-export const VoiceMcpTopicOpenResult = Schema.Struct({ item: VoiceAgendaItem });
+export const VoiceMcpTopicOpenResult = Schema.toCodecJson(Schema.Struct({ item: VoiceAgendaItem }));
 export type VoiceMcpTopicOpenResult = typeof VoiceMcpTopicOpenResult.Type;
 
 export const VoiceMcpTopicCloseInput = Schema.Struct({ id: TrimmedNonEmptyString });
@@ -119,14 +154,53 @@ export const VoiceMcpLaunchResult = Schema.Union([
     runId: Schema.NullOr(RunId),
   }),
   Schema.Struct({ status: Schema.Literal("denied") }),
+  Schema.Struct({
+    status: Schema.Literal("needs_approval"),
+    request: VoiceMcpConfirmRequest,
+    readback: Schema.String,
+  }),
 ]);
 export type VoiceMcpLaunchResult = typeof VoiceMcpLaunchResult.Type;
 
 export const VoiceMcpInterruptInput = Schema.Struct({ threadId: ThreadId });
 export type VoiceMcpInterruptInput = typeof VoiceMcpInterruptInput.Type;
 
-export const VoiceMcpInterruptResult = Schema.Struct({
-  threadId: ThreadId,
-  status: Schema.Literals(["interrupt_requested", "no_active_run", "already_terminal", "denied"]),
-});
+export const VoiceMcpInterruptResult = Schema.Union([
+  Schema.Struct({
+    threadId: ThreadId,
+    status: Schema.Literals(["interrupt_requested", "no_active_run", "already_terminal", "denied"]),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("needs_approval"),
+    threadId: ThreadId,
+    request: VoiceMcpConfirmRequest,
+    readback: Schema.String,
+  }),
+]);
 export type VoiceMcpInterruptResult = typeof VoiceMcpInterruptResult.Type;
+
+export const VoiceMcpConfirmationsResult = Schema.Struct({
+  requests: Schema.Array(
+    Schema.Struct({ request: VoiceMcpConfirmRequest, readback: Schema.String }),
+  ),
+});
+export type VoiceMcpConfirmationsResult = typeof VoiceMcpConfirmationsResult.Type;
+
+export const VoiceMcpApproveInput = Schema.Struct({ requestId: TrimmedNonEmptyString });
+export type VoiceMcpApproveInput = typeof VoiceMcpApproveInput.Type;
+
+export const VoiceMcpApproveResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("failed"), requestId: TrimmedNonEmptyString }),
+  Schema.Struct({
+    status: Schema.Literal("approved"),
+    requestId: TrimmedNonEmptyString,
+    completion: Schema.String,
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), requestId: TrimmedNonEmptyString }),
+  Schema.Struct({
+    status: Schema.Literal("needs_spoken_yes"),
+    requestId: TrimmedNonEmptyString,
+    instruction: Schema.String,
+  }),
+]);
+export type VoiceMcpApproveResult = typeof VoiceMcpApproveResult.Type;

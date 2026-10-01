@@ -48,6 +48,8 @@ export const layer = Layer.effect(
 export const VOICE_SESSION_TOOLS = [
   "voice_threads",
   "voice_thread_read",
+  "voice_pending_question_list",
+  "voice_pending_question_read",
   "voice_pending_notices",
   "voice_agenda_list",
   "voice_topic_open",
@@ -55,6 +57,8 @@ export const VOICE_SESSION_TOOLS = [
   "voice_send",
   "voice_launch",
   "voice_interrupt",
+  "voice_confirmations",
+  "voice_approve",
   "t3_project_list",
   "t3_environment_read",
 ];

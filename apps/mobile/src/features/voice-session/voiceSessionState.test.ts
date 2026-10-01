@@ -18,12 +18,14 @@ import {
 
 const start: VoiceSessionAction = {
   type: "start",
+  at: 0,
   environmentId: EnvironmentId.make("env"),
   focusThreadId: ThreadId.make("focus"),
 };
 
 const server = (attempt: number, event: VoiceSessionEvent): VoiceSessionAction => ({
   type: "server",
+  at: 1000,
   attempt,
   event,
 });
@@ -42,7 +44,12 @@ const ended = (
 ): VoiceSessionAction => server(attempt, { type: "ended", reason });
 
 function run(...actions: ReadonlyArray<VoiceSessionAction>): VoiceSessionState {
-  return actions.reduce(voiceSessionReducer, INITIAL_VOICE_SESSION_STATE);
+  return actions.reduce((state, action) => {
+    const next = voiceSessionReducer(state, action);
+    return action.type === "server" && action.event.type === "answer"
+      ? voiceSessionReducer(next, { type: "audio-connected", attempt: action.attempt, at: 2000 })
+      : next;
+  }, INITIAL_VOICE_SESSION_STATE);
 }
 
 function notice(
@@ -66,7 +73,22 @@ const requests = (attempt: number, notices: ReadonlyArray<VoiceNotice>): VoiceSe
   server(attempt, { type: "request_notices", notices });
 
 describe("voiceSessionReducer", () => {
-  it("goes live on the answer and stops sending the focus thread", () => {
+  it("keeps startup visible until audio connects and ignores cancelled or stale progress", () => {
+    const connecting = voiceSessionReducer(run(start), answer(1));
+    expect(connecting.status).toBe("connecting");
+    const progress = { type: "startup", attempt: 1, stage: "briefing", at: 1100 } as const;
+    const briefing = voiceSessionReducer(connecting, progress);
+    expect(briefing.startupLog.at(-1)?.stage).toBe("briefing");
+    expect(voiceSessionReducer(briefing, { ...progress, attempt: 0 })).toBe(briefing);
+    const cancelled = voiceSessionReducer(briefing, { type: "hang-up", at: 1200 });
+    expect(cancelled.startupLog.at(-1)?.stage).toBe("cancelled");
+    expect(voiceSessionReducer(cancelled, progress)).toBe(cancelled);
+    expect(voiceSessionReducer(cancelled, { type: "audio-connected", attempt: 1, at: 1300 })).toBe(
+      cancelled,
+    );
+  });
+
+  it("goes live when audio connects after the answer and stops sending the focus thread", () => {
     expect(run(start)).toMatchObject({
       status: "connecting",
       attempt: 1,
@@ -92,7 +114,12 @@ describe("voiceSessionReducer", () => {
     expect(rotated).toMatchObject({ status: "live", liveAttempt: 2, generation: 2 });
     expect(voiceSessionReducer(rotated, ended(1, "rotated"))).toBe(rotated);
     expect(
-      voiceSessionReducer(rotated, { type: "generation-lost", attempt: 1, message: null }),
+      voiceSessionReducer(rotated, {
+        type: "generation-lost",
+        at: 2000,
+        attempt: 1,
+        message: null,
+      }),
     ).toBe(rotated);
   });
 
@@ -107,8 +134,10 @@ describe("voiceSessionReducer", () => {
     });
     // An answer alone doesn't clear the count: audio can still fail to connect.
     const answered = voiceSessionReducer(reconnecting, answer(2));
-    expect(answered).toMatchObject({ status: "live", liveAttempt: 2, failures: 1 });
-    expect(voiceSessionReducer(answered, { type: "audio-connected", attempt: 2 })).toMatchObject({
+    expect(answered).toMatchObject({ status: "reconnecting", liveAttempt: 2, failures: 1 });
+    expect(
+      voiceSessionReducer(answered, { type: "audio-connected", at: 2000, attempt: 2 }),
+    ).toMatchObject({
       failures: 0,
     });
   });
@@ -118,6 +147,7 @@ describe("voiceSessionReducer", () => {
     for (let index = 0; index < RECONNECT_DELAYS_MS.length; index += 1) {
       state = voiceSessionReducer(state, {
         type: "generation-lost",
+        at: 2000,
         attempt: state.attempt,
         message: null,
       });
@@ -125,6 +155,7 @@ describe("voiceSessionReducer", () => {
     }
     state = voiceSessionReducer(state, {
       type: "generation-lost",
+      at: 2000,
       attempt: state.attempt,
       message: "The call audio connection dropped.",
     });
@@ -139,6 +170,7 @@ describe("voiceSessionReducer", () => {
     }
     state = voiceSessionReducer(state, {
       type: "generation-lost",
+      at: 2000,
       attempt: state.attempt,
       message: "Not connected.",
     });
@@ -153,11 +185,11 @@ describe("voiceSessionReducer", () => {
   });
 
   it("stops reconnecting once the user hangs up", () => {
-    const hungUp = run(start, answer(1), { type: "hang-up" });
+    const hungUp = run(start, answer(1), { type: "hang-up", at: 2000 });
     expect(hungUp).toMatchObject({ status: "ended", liveAttempt: null });
     expect(voiceSessionReducer(hungUp, ended(1, "closed"))).toBe(hungUp);
     expect(
-      voiceSessionReducer(hungUp, { type: "generation-lost", attempt: 1, message: null }),
+      voiceSessionReducer(hungUp, { type: "generation-lost", at: 2000, attempt: 1, message: null }),
     ).toBe(hungUp);
   });
 

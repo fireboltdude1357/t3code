@@ -16,6 +16,7 @@ import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
 import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
 import { VoiceStore } from "../../../orchestration-v2/voice/VoiceStore.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
@@ -33,6 +34,7 @@ const StubServicesLive = Layer.mergeAll(
   Layer.mock(ProjectionStoreV2)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(ThreadManagementService)({}),
+  Layer.mock(ProviderSessionManagerV2)({}),
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(VoiceOrchestrator)({}),
   Layer.mock(VoiceStore)({}),
