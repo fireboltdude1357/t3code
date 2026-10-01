@@ -1,7 +1,9 @@
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
+  isProviderAvailable,
   MessageId,
+  type ModelSelection,
+  type ProviderInstanceId,
   OrchestratorMcpFailure,
   ThreadId,
   type OrchestrationV2ThreadShell,
@@ -18,6 +20,7 @@ import { confirmationReadback } from "../../../orchestration-v2/voice/VoiceConfi
 import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
 import { VoiceStore } from "../../../orchestration-v2/voice/VoiceStore.ts";
 import { ProjectService } from "../../../project/ProjectService.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { newCommandId } from "../../threadAccess.ts";
 import { VoiceToolkit } from "./tools.ts";
@@ -27,6 +30,10 @@ const DEFAULT_READ_LIMIT = 10;
 const MAX_MESSAGE_CHARS = 1_500;
 const NEEDS_SPOKEN_YES =
   "Nothing was sent. Read the message back to the user word for word, naming the thread it goes to, wait for them to say yes, then call voice_send again with exactly that text.";
+
+/** Threads the voice orchestrator starts run Opus 5.5 on high with full access. */
+const LAUNCH_MODEL = "claude-opus-5-5";
+const LAUNCH_DRIVER = "claudeAgent";
 
 const orchestrationError = (message: string) => () =>
   new OrchestratorMcpFailure({ code: "orchestration_error", message });
@@ -57,6 +64,7 @@ const make = Effect.gen(function* () {
   const providerSessions = yield* ProviderSessionManagerV2;
   const launches = yield* ThreadLaunchService;
   const projects = yield* ProjectService;
+  const providers = yield* ProviderRegistry;
   /** Refuses every caller except a live voice session thread. */
   const requireVoiceSession = Effect.gen(function* () {
     const scope = yield* McpInvocationContext;
@@ -117,6 +125,41 @@ const make = Effect.gen(function* () {
     ),
     Effect.mapError(orchestrationError("Could not read projects.")),
   );
+
+  /**
+   * Picks a usable Claude instance that offers the launch model, preferring
+   * the project's own instance so the thread runs on the account it uses.
+   * Fails instead of falling back, so a launch never runs on a model nobody chose.
+   */
+  const launchModelSelection = (preferred: ProviderInstanceId | undefined) =>
+    providers.getProviders.pipe(
+      Effect.flatMap((snapshots) => {
+        const usable = snapshots.filter(
+          (provider) =>
+            provider.driver === LAUNCH_DRIVER &&
+            provider.enabled &&
+            provider.installed &&
+            isProviderAvailable(provider) &&
+            provider.status !== "error" &&
+            provider.status !== "disabled" &&
+            provider.auth.status !== "unauthenticated" &&
+            provider.models.some((model) => model.slug === LAUNCH_MODEL),
+        );
+        const instance = usable.find((provider) => provider.instanceId === preferred) ?? usable[0];
+        return instance === undefined
+          ? Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "No working Claude provider offers Opus 5.5, so nothing was started.",
+              }),
+            )
+          : Effect.succeed<ModelSelection>({
+              instanceId: instance.instanceId,
+              model: LAUNCH_MODEL,
+              options: [{ id: "effort", value: "high" }],
+            });
+      }),
+    );
 
   const requireThread = (threadId: ThreadId) =>
     threads.getThreadShell(threadId).pipe(
@@ -334,7 +377,9 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
-        const sessionThread = yield* requireThread(session.sessionThreadId);
+        const modelSelection = yield* launchModelSelection(
+          project.defaultModelSelection?.instanceId,
+        );
         const commandId = yield* newCommandId();
         const request = yield* voice.proposeAction({
           sessionThreadId: session.sessionThreadId,
@@ -348,8 +393,8 @@ const make = Effect.gen(function* () {
               threadId: ThreadId.make(commandId),
               projectId: project.id,
               title: input.title,
-              modelSelection: project.defaultModelSelection ?? sessionThread.modelSelection,
-              runtimeMode: DEFAULT_RUNTIME_MODE,
+              modelSelection,
+              runtimeMode: "full-access",
               interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
               workspaceStrategy: { type: "root" },
               initialMessage: {
