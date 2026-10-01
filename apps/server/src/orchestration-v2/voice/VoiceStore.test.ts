@@ -1,18 +1,19 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { RuntimeRequestId, ThreadId, type VoiceNotice } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { runMigrations } from "../../persistence/Migrations.ts";
 import { layer as voiceStoreLayer, VoiceStore } from "./VoiceStore.ts";
 
-const TestLayer = voiceStoreLayer.pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
-  Layer.provide(NodeCrypto.layer),
-);
+const StoreLayer = voiceStoreLayer.pipe(Layer.provide(NodeCrypto.layer));
+const TestLayer = StoreLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
 
 const threadA = ThreadId.make("thread-a");
 const threadB = ThreadId.make("thread-b");
@@ -26,6 +27,21 @@ const notice = (id: string, dedupeKey: string, createdAt: string) => ({
   text: "Thread A finished.",
   createdAt: DateTime.makeUnsafe(createdAt),
 });
+
+const requestNotice = (input: {
+  readonly id: string;
+  readonly threadId: ThreadId;
+  readonly requestId?: RuntimeRequestId;
+  readonly kind: "input" | "approval";
+  readonly createdAt: string;
+}) =>
+  ({
+    ...input,
+    dedupeKey: `${input.threadId}:request:${input.requestId ?? "unknown"}:${input.kind}`,
+    threadTitle: "Request thread",
+    text: "Request thread needs attention.",
+    createdAt: DateTime.makeUnsafe(input.createdAt),
+  }) satisfies VoiceNotice & { readonly dedupeKey: string };
 
 it.effect("persists an increasing generation number", () =>
   Effect.gen(function* () {
@@ -127,4 +143,354 @@ it.effect("returns the last transcript entries oldest first", () =>
     );
     assert.strictEqual(recent[1] && DateTime.formatIso(recent[1].at), "2026-09-30T10:00:02.000Z");
   }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("resolves only the exact request and preserves history, dedupe, and later requests", () =>
+  Effect.gen(function* () {
+    const store = yield* VoiceStore;
+    const sql = yield* SqlClient.SqlClient;
+    const requestId = RuntimeRequestId.make("request:old:input");
+    const laterRequestId = RuntimeRequestId.make("request:old:input:later");
+    const first = requestNotice({
+      id: "old-input",
+      threadId: threadA,
+      requestId,
+      kind: "input",
+      createdAt: "2026-09-30T10:00:00.000Z",
+    });
+    yield* store.recordNotice(first);
+    yield* store.recordNotice({
+      ...first,
+      id: "old-approval",
+      kind: "approval",
+      dedupeKey: "approval",
+    });
+    yield* store.recordNotice(
+      requestNotice({
+        id: "other-thread",
+        threadId: threadB,
+        requestId,
+        kind: "input",
+        createdAt: "2026-09-30T10:00:01.000Z",
+      }),
+    );
+    yield* store.markDelivered(["old-input", "other-thread"]);
+    yield* store.recordNotice({
+      ...notice("completed", "completed", "2026-09-30T10:00:03.000Z"),
+      requestId,
+    });
+    yield* store.recordNotice({
+      ...notice("failed", "failed", "2026-09-30T10:00:04.000Z"),
+      kind: "failed",
+    });
+
+    yield* store.resolveRequestNotice(threadA, requestId);
+    yield* store.recordNotice(
+      requestNotice({
+        id: "later-request",
+        threadId: threadA,
+        requestId: laterRequestId,
+        kind: "approval",
+        createdAt: "2026-09-30T10:00:02.000Z",
+      }),
+    );
+    yield* store.resolveRequestNotice(threadA, requestId);
+    assert.isFalse(yield* store.recordNotice({ ...first, id: "duplicate-resolved" }));
+    assert.deepStrictEqual(
+      (yield* store.pendingRequestNotices(10)).map((n) => [n.id, n.requestId]),
+      [
+        ["later-request", laterRequestId],
+        ["other-thread", requestId],
+      ],
+    );
+    assert.deepStrictEqual(
+      (yield* store.pendingRequestNotices(1)).map((n) => n.id),
+      ["later-request"],
+    );
+    assert.deepStrictEqual(
+      (yield* store.undeliveredNotices(10)).map((n) => n.id),
+      ["later-request", "completed", "failed"],
+    );
+    assert.deepStrictEqual(
+      (yield* store.recentNotices(10)).map((n) => n.id),
+      ["failed", "completed", "later-request", "other-thread"],
+    );
+    const history = yield* sql<{ readonly id: string; readonly resolvedAt: string | null }>`
+      SELECT notice_id AS id, resolved_at AS resolvedAt FROM voice_notice_ledger ORDER BY notice_id
+    `;
+    assert.strictEqual(history.length, 6);
+    assert.deepStrictEqual(
+      history.filter((row) => row.resolvedAt !== null).map((row) => row.id),
+      ["old-approval", "old-input"],
+    );
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "refreshes matching attention details without closing conversations or replacing newer details",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      const requestId = RuntimeRequestId.make("request:agenda");
+      const threadCompleted = ThreadId.make("thread-completed");
+      const threadFailed = ThreadId.make("thread-failed");
+      const threadNewer = ThreadId.make("thread-newer");
+      const questionText = "Thread A is waiting on you.";
+      const approvalText = "Thread B needs approval.";
+      const details = [
+        { threadId: threadA, kind: "input" as const, text: questionText, detail: questionText },
+        { threadId: threadB, kind: "approval" as const, text: approvalText, detail: approvalText },
+        {
+          threadId: threadCompleted,
+          kind: "input" as const,
+          text: questionText,
+          detail: "Thread finished.",
+        },
+        {
+          threadId: threadFailed,
+          kind: "approval" as const,
+          text: approvalText,
+          detail: "Thread failed.",
+        },
+        {
+          threadId: threadNewer,
+          kind: "input" as const,
+          text: questionText,
+          detail: "A newer question needs an answer.",
+        },
+      ];
+      for (const [index, input] of details.entries()) {
+        yield* store.recordNotice({
+          ...requestNotice({
+            id: `agenda-${index}`,
+            threadId: input.threadId,
+            requestId,
+            kind: input.kind,
+            createdAt: `2026-09-30T10:00:0${index}.000Z`,
+          }),
+          text: input.text,
+        });
+        yield* store.openThreadItem({
+          threadId: input.threadId,
+          title: "Conversation",
+          detail: input.detail,
+        });
+      }
+      const topic = yield* store.openTopic({ title: "Topic", detail: questionText });
+      yield* store.markDelivered(["agenda-0", "agenda-1"]);
+
+      yield* store.resolveRequestNotice(threadA, requestId);
+      const afterResolution = yield* store.listAgenda({ status: "open" });
+      assert.strictEqual(afterResolution.length, 6);
+      assert.strictEqual(
+        afterResolution.find((item) => item.threadId === threadA)?.detail,
+        "The question was answered or closed.",
+      );
+      assert.strictEqual(
+        afterResolution.find((item) => item.threadId === threadB)?.detail,
+        approvalText,
+      );
+
+      yield* store.openThreadItem({
+        threadId: threadA,
+        title: "Conversation",
+        detail: questionText,
+      });
+      yield* store.resolveRequestNotice(threadA, requestId);
+      yield* store.reconcileRequestNotices([]);
+      const afterReconciliation = yield* store.listAgenda({ status: "open" });
+      assert.strictEqual(afterReconciliation.length, 6);
+      assert.strictEqual(
+        afterReconciliation.find((item) => item.threadId === threadA)?.detail,
+        questionText,
+      );
+      assert.strictEqual(
+        afterReconciliation.find((item) => item.threadId === threadB)?.detail,
+        "The approval request was answered or closed.",
+      );
+      for (const input of details.slice(2)) {
+        assert.strictEqual(
+          afterReconciliation.find((item) => item.threadId === input.threadId)?.detail,
+          input.detail,
+        );
+      }
+      assert.strictEqual(
+        afterReconciliation.find((item) => item.id === topic.id)?.detail,
+        questionText,
+      );
+      assert.deepStrictEqual(yield* store.listAgenda({ status: "closed" }), []);
+    }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("persists request identity and resolution across store instances", () =>
+  Effect.gen(function* () {
+    const requestId = RuntimeRequestId.make("persisted:request");
+    yield* Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      yield* store.recordNotice(
+        requestNotice({
+          id: "persisted",
+          threadId: threadA,
+          requestId,
+          kind: "input",
+          createdAt: "2026-09-30T10:00:00.000Z",
+        }),
+      );
+      yield* store.markDelivered(["persisted"]);
+    }).pipe(Effect.provide(StoreLayer));
+
+    yield* Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      assert.strictEqual((yield* store.pendingRequestNotices(10))[0]?.requestId, requestId);
+      yield* store.resolveRequestNotice(threadA, requestId);
+    }).pipe(Effect.provide(StoreLayer));
+
+    yield* Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
+      assert.deepStrictEqual(yield* store.recentNotices(10), []);
+    }).pipe(Effect.provide(StoreLayer));
+  }).pipe(Effect.provide(SqlitePersistenceMemory)),
+);
+
+it.effect(
+  "reconciles missed resolutions and unknown legacy notices against exact request pairs",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      const requestId = RuntimeRequestId.make("request:current");
+      const staleRequestId = RuntimeRequestId.make("request:stale");
+      for (const [index, input] of [
+        { id: "active", threadId: threadA, requestId },
+        { id: "missed", threadId: threadA, requestId: staleRequestId },
+        { id: "other-thread", threadId: threadB, requestId },
+        { id: "legacy", threadId: threadB },
+      ].entries()) {
+        yield* store.recordNotice(
+          requestNotice({
+            ...input,
+            kind: index % 2 === 0 ? "input" : "approval",
+            createdAt: `2026-09-30T10:00:0${index}.000Z`,
+          }),
+        );
+      }
+      yield* store.recordNotice(notice("completed", "completed", "2026-09-30T10:00:04.000Z"));
+      yield* store.markDelivered(["active", "missed"]);
+      assert.isUndefined(
+        (yield* store.pendingRequestNotices(10)).find((n) => n.id === "legacy")?.requestId,
+      );
+
+      yield* store.reconcileRequestNotices([{ threadId: threadA, requestId }]);
+      assert.deepStrictEqual(
+        (yield* store.pendingRequestNotices(10)).map((n) => n.id),
+        ["active"],
+      );
+      assert.deepStrictEqual(
+        (yield* store.undeliveredNotices(10)).map((n) => n.id),
+        ["completed"],
+      );
+      assert.deepStrictEqual(
+        (yield* store.recentNotices(10)).map((n) => n.id),
+        ["completed", "active"],
+      );
+      yield* store.reconcileRequestNotices([]);
+      assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
+      assert.deepStrictEqual(
+        (yield* store.recentNotices(10)).map((n) => n.id),
+        ["completed"],
+      );
+    }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("migrates legacy request keys using exact thread prefixes and kind suffixes", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 57 });
+    const threadId = ThreadId.make("thread:request:Ω_%:input");
+    const requestId = RuntimeRequestId.make("request:request:λ:approval:input");
+    const createdAt = "2026-09-30T10:00:00.000Z";
+    const deliveredAt = "2026-09-30T10:00:01.000Z";
+    const legacy = [
+      { id: "input", kind: "input", key: `${threadId}:request:${requestId}:input`, requestId },
+      {
+        id: "approval",
+        kind: "approval",
+        key: `${threadId}:request:${requestId}:approval`,
+        requestId,
+      },
+      { id: "unknown", kind: "input", key: "legacy-input", requestId: null },
+      {
+        id: "wrong-prefix",
+        kind: "input",
+        key: `other:request:${requestId}:input`,
+        requestId: null,
+      },
+      {
+        id: "wrong-suffix",
+        kind: "input",
+        key: `${threadId}:request:${requestId}:approval:extra`,
+        requestId: null,
+      },
+      {
+        id: "wrong-kind",
+        kind: "approval",
+        key: `${threadId}:request:${requestId}:mismatched:input`,
+        requestId: null,
+      },
+      { id: "empty", kind: "input", key: `${threadId}:request::input`, requestId: null },
+      {
+        id: "completed",
+        kind: "completed",
+        key: `${threadId}:request:${requestId}:completed`,
+        requestId: null,
+      },
+    ];
+    for (const row of legacy) {
+      yield* sql`
+        INSERT INTO voice_notice_ledger
+          (notice_id, dedupe_key, kind, thread_id, thread_title, text, created_at, delivered_at)
+        VALUES (${row.id}, ${row.key}, ${row.kind}, ${threadId}, 'Legacy thread', 'Legacy notice',
+          ${createdAt}, ${deliveredAt})
+      `;
+    }
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 58 }), [
+      [58, "VoiceNoticeRequests"],
+    ]);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 58 }), []);
+    const migrated = yield* sql<{
+      readonly id: string;
+      readonly key: string;
+      readonly requestId: string | null;
+      readonly resolvedAt: string | null;
+      readonly createdAt: string;
+      readonly deliveredAt: string | null;
+    }>`
+      SELECT notice_id AS id, dedupe_key AS key, request_id AS requestId, resolved_at AS resolvedAt,
+        created_at AS createdAt, delivered_at AS deliveredAt
+      FROM voice_notice_ledger ORDER BY rowid
+    `;
+    assert.deepStrictEqual(
+      migrated,
+      legacy.map((row) => ({
+        id: row.id,
+        key: row.key,
+        requestId: row.requestId,
+        resolvedAt: null,
+        createdAt,
+        deliveredAt,
+      })),
+    );
+
+    yield* Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      assert.strictEqual((yield* store.pendingRequestNotices(20)).length, 7);
+      yield* store.resolveRequestNotice(threadId, requestId);
+      yield* store.reconcileRequestNotices([{ threadId, requestId }]);
+      assert.deepStrictEqual(yield* store.pendingRequestNotices(20), []);
+      assert.deepStrictEqual(
+        (yield* store.recentNotices(20)).map((n) => [n.id, n.requestId]),
+        [["completed", undefined]],
+      );
+    }).pipe(Effect.provide(StoreLayer));
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
