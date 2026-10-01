@@ -77,6 +77,7 @@ const pendingApproval = {
 const makeHarness = Effect.gen(function* () {
   const domainEvents = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
   const requests = yield* Ref.make<ReadonlyArray<OrchestrationV2RuntimeRequest>>([]);
+  const archivedAt = yield* Ref.make<DateTime.Utc | null>(null);
   const prepared = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const released = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const speech = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -84,7 +85,31 @@ const makeHarness = Effect.gen(function* () {
   const speechStarted = yield* Queue.unbounded<string>();
   const speechDone = yield* Queue.unbounded<string>();
   const releaseSpeech = yield* Deferred.make<void>();
+  const holdCall = yield* Ref.make(false);
+  const callStarted = yield* Queue.unbounded<ThreadId>();
+  const releaseCall = yield* Deferred.make<void>();
+  const holdRequestQuery = yield* Ref.make(false);
+  const requestQueryStarted = yield* Queue.unbounded<void>();
+  const releaseRequestQuery = yield* Deferred.make<void>();
   const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
+
+  const store = Layer.effect(
+    VoiceStore,
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      return VoiceStore.of({
+        ...store,
+        pendingRequestNotices: (limit) =>
+          Effect.gen(function* () {
+            if (yield* Ref.getAndSet(holdRequestQuery, false)) {
+              yield* Queue.offer(requestQueryStarted, undefined);
+              yield* Deferred.await(releaseRequestQuery);
+            }
+            return yield* store.pendingRequestNotices(limit);
+          }),
+      });
+    }),
+  ).pipe(Layer.provide(voiceStoreLayer));
 
   const fakeCall = (sessionThreadId: ThreadId): ProviderAdapterV2RealtimeCall => ({
     sdpAnswer: `answer:${sessionThreadId}`,
@@ -110,7 +135,14 @@ const makeHarness = Effect.gen(function* () {
             providerThread: {
               id: `provider-${sessionThreadId}`,
             } as unknown as OrchestrationV2ProviderThread,
-            startRealtimeCall: () => Effect.succeed(fakeCall(sessionThreadId)),
+            startRealtimeCall: () =>
+              Effect.gen(function* () {
+                if (yield* Ref.getAndSet(holdCall, false)) {
+                  yield* Queue.offer(callStarted, sessionThreadId);
+                  yield* Deferred.await(releaseCall);
+                }
+                return fakeCall(sessionThreadId);
+              }),
           },
           [...current, sessionThreadId],
         ];
@@ -129,7 +161,12 @@ const makeHarness = Effect.gen(function* () {
           : Effect.void,
       ),
     ),
-    getThreadShell: (threadId) => Effect.succeed(threadId === workThreadId ? workShell : null),
+    getThreadShell: (threadId) =>
+      Ref.get(archivedAt).pipe(
+        Effect.map((archivedAt) =>
+          threadId === workThreadId ? { ...workShell, archivedAt } : null,
+        ),
+      ),
     getThreadRecords: () =>
       Ref.get(requests).pipe(
         Effect.map(
@@ -147,13 +184,14 @@ const makeHarness = Effect.gen(function* () {
         Effect.as({ sequence: 1, storedEvents: [] } as never),
       ),
     getShellSnapshot: () =>
-      Ref.get(requests).pipe(
-        Effect.map((current) => ({
+      Effect.all([Ref.get(requests), Ref.get(archivedAt)]).pipe(
+        Effect.map(([current, archivedAt]) => ({
           schemaVersion: 1,
           snapshotSequence: 0,
           threads: [
             {
               ...workShell,
+              archivedAt,
               pendingRuntimeRequest:
                 current.find((request) => request.status === "pending") ?? null,
             },
@@ -172,7 +210,7 @@ const makeHarness = Effect.gen(function* () {
   const layer = orchestratorLayer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
-        voiceStoreLayer,
+        store,
         VoiceSessionRegistry.layer,
         sessionService,
         threadManagement,
@@ -187,6 +225,7 @@ const makeHarness = Effect.gen(function* () {
     layer,
     domainEvents,
     requests,
+    archivedAt,
     prepared,
     released,
     speech,
@@ -195,6 +234,12 @@ const makeHarness = Effect.gen(function* () {
     speechStarted,
     speechDone,
     releaseSpeech,
+    holdCall,
+    callStarted,
+    releaseCall,
+    holdRequestQuery,
+    requestQueryStarted,
+    releaseRequestQuery,
   };
 });
 
@@ -449,6 +494,85 @@ it.effect("reconnect reconciles a resolution missing from the event feed", () =>
       const store = yield* VoiceStore;
       assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
       assert.deepStrictEqual(yield* store.undeliveredNotices(10), []);
+    }),
+  ),
+);
+
+it.effect("reconnect restores an unarchived pending question and settlement still clears it", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      const first = yield* openCall;
+      yield* Queue.offer(harness.domainEvents, inputEvent("question-archived"));
+      const pending = yield* takeUntilType(first.events, "request_notices");
+      assert.strictEqual(pending.notices[0]?.kind, "input");
+      assert.strictEqual(pending.notices[0]?.requestId, RuntimeRequestId.make("question-archived"));
+
+      const connected = yield* openCall;
+      assert.deepStrictEqual(connected.snapshot.notices, pending.notices);
+      assert.deepStrictEqual(yield* store.undeliveredNotices(10), []);
+
+      yield* Ref.set(harness.archivedAt, DateTime.makeUnsafe("2026-10-01T00:01:00.000Z"));
+      const archived = yield* openCall;
+      assert.deepStrictEqual(archived.snapshot.notices, []);
+      assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
+
+      yield* Ref.set(harness.archivedAt, null);
+      const restored = yield* openCall;
+      assert.deepStrictEqual(restored.snapshot.notices, pending.notices);
+      assert.deepStrictEqual(yield* store.undeliveredNotices(10), []);
+
+      yield* Queue.offer(harness.domainEvents, inputEvent("question-archived", "resolved"));
+      assert.deepStrictEqual(
+        (yield* takeUntilType(restored.events, "request_notices")).notices,
+        [],
+      );
+      const settled = yield* openCall;
+      assert.deepStrictEqual(settled.snapshot.notices, []);
+      assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
+    }),
+  ),
+);
+
+it.effect("a legacy replacement never receives an in-flight request snapshot", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      const first = yield* openCall;
+      const legacyEvents = yield* Queue.unbounded<VoiceSessionEvent>();
+      yield* Ref.set(harness.holdCall, true);
+      yield* orchestrator.open({ sdpOffer: "v=0 legacy replacement" }).pipe(
+        Stream.runForEach((event) => Queue.offer(legacyEvents, event)),
+        Effect.forkScoped,
+      );
+      yield* Queue.take(harness.callStarted);
+
+      yield* Ref.set(harness.holdRequestQuery, true);
+      yield* Queue.offer(harness.domainEvents, inputEvent("question-generation-race"));
+      yield* Queue.take(harness.requestQueryStarted);
+      yield* Deferred.succeed(harness.releaseCall, undefined);
+      assert.strictEqual((yield* takeUntilType(first.events, "ended")).reason, "rotated");
+      yield* Deferred.succeed(harness.releaseRequestQuery, undefined);
+      assert.strictEqual((yield* Queue.take(legacyEvents)).type, "answer");
+
+      const confirmation = yield* orchestrator
+        .requestConfirmation({
+          action: "launch",
+          title: "Launch after replacement",
+          detail: "Start a new thread.",
+        })
+        .pipe(Effect.forkScoped);
+      const next = yield* Queue.take(legacyEvents);
+      assert.strictEqual(next.type, "confirm");
+      if (next.type !== "confirm") return;
+      yield* orchestrator.respond({ requestId: next.request.id, approved: false });
+      assert.isFalse(yield* Fiber.join(confirmation));
+      assert.strictEqual((yield* Queue.take(legacyEvents)).type, "confirm_resolved");
+      const store = yield* VoiceStore;
+      assert.deepStrictEqual(
+        (yield* store.pendingRequestNotices(10)).map((notice) => notice.requestId),
+        [RuntimeRequestId.make("question-generation-race")],
+      );
     }),
   ),
 );

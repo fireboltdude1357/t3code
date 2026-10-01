@@ -322,6 +322,78 @@ it.effect(
     }).pipe(Effect.provide(TestLayer)),
 );
 
+for (const resolution of ["direct", "reconcile"] as const) {
+  it.effect(`preserves identical pending agenda text during ${resolution} resolution`, () =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      for (const kind of ["input", "approval"] as const) {
+        const threadId = kind === "input" ? threadA : threadB;
+        const text = kind === "input" ? "Thread is waiting on you." : "Thread needs approval.";
+        const olderRequestId = RuntimeRequestId.make(`${kind}:older`);
+        const pendingRequestId = RuntimeRequestId.make(`${kind}:pending`);
+        const older = {
+          ...requestNotice({
+            id: `${kind}-older`,
+            threadId,
+            requestId: olderRequestId,
+            kind,
+            createdAt: "2026-09-30T10:00:00.000Z",
+          }),
+          text,
+        };
+        const pending = {
+          ...requestNotice({
+            id: `${kind}-pending`,
+            threadId,
+            requestId: pendingRequestId,
+            kind,
+            createdAt: "2026-09-30T10:00:01.000Z",
+          }),
+          text,
+        };
+        yield* store.recordNotice(older);
+        yield* store.recordNotice(pending);
+        yield* store.markDelivered(resolution === "direct" ? [older.id, pending.id] : [older.id]);
+        const agenda = yield* store.openThreadItem({
+          threadId,
+          title: "Conversation",
+          detail: text,
+        });
+
+        if (resolution === "direct") {
+          yield* store.resolveRequestNotice(threadId, olderRequestId);
+        } else {
+          yield* store.reconcileRequestNotices([{ threadId, requestId: pendingRequestId }]);
+        }
+        const stillOpen = (yield* store.listAgenda({ status: "open" })).find(
+          (item) => item.id === agenda.id,
+        );
+        assert.strictEqual(stillOpen?.detail, text);
+        assert.deepStrictEqual(
+          (yield* store.pendingRequestNotices(10)).map((notice) => notice.requestId),
+          [pendingRequestId],
+        );
+
+        if (resolution === "direct") {
+          yield* store.resolveRequestNotice(threadId, pendingRequestId);
+        } else {
+          yield* store.reconcileRequestNotices([]);
+        }
+        const resolved = (yield* store.listAgenda({ status: "open" })).find(
+          (item) => item.id === agenda.id,
+        );
+        assert.strictEqual(
+          resolved?.detail,
+          kind === "input"
+            ? "The question was answered or closed."
+            : "The approval request was answered or closed.",
+        );
+        assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
+      }
+    }).pipe(Effect.provide(TestLayer)),
+  );
+}
+
 it.effect("persists request identity and resolution across store instances", () =>
   Effect.gen(function* () {
     const requestId = RuntimeRequestId.make("persisted:request");
@@ -399,6 +471,154 @@ it.effect(
         (yield* store.recentNotices(10)).map((n) => n.id),
         ["completed"],
       );
+    }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "restores omitted pending requests before settling absent requests and preserves delivery history",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      const sql = yield* SqlClient.SqlClient;
+      for (const kind of ["input", "approval"] as const) {
+        const threadId = kind === "input" ? threadA : threadB;
+        const requestId = RuntimeRequestId.make(`${kind}:reappearing`);
+        const pending = requestNotice({
+          id: `${kind}-reappearing`,
+          threadId,
+          requestId,
+          kind,
+          createdAt: "2026-09-30T10:00:01.000Z",
+        });
+        yield* store.recordNotice(pending);
+        yield* store.markDelivered([pending.id]);
+        const agenda = yield* store.openThreadItem({
+          threadId,
+          title: "Conversation",
+          detail: pending.text,
+        });
+        const history = sql<{
+          readonly id: string;
+          readonly key: string;
+          readonly requestId: string;
+          readonly createdAt: string;
+          readonly deliveredAt: string | null;
+        }>`
+        SELECT notice_id AS id, dedupe_key AS key, request_id AS requestId,
+          created_at AS createdAt, delivered_at AS deliveredAt
+        FROM voice_notice_ledger WHERE notice_id = ${pending.id}
+      `;
+        const originalHistory = yield* history;
+        assert.isNotNull(originalHistory[0]?.deliveredAt);
+        const neutralDetail =
+          kind === "input"
+            ? "The question was answered or closed."
+            : "The approval request was answered or closed.";
+
+        yield* store.reconcileRequestNotices([]);
+        assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
+        assert.strictEqual(
+          (yield* store.listAgenda({ status: "open" })).find((item) => item.id === agenda.id)
+            ?.detail,
+          neutralDetail,
+        );
+
+        yield* store.reconcileRequestNotices([{ threadId, requestId }]);
+        assert.deepStrictEqual(
+          (yield* store.pendingRequestNotices(10)).map((notice) => [notice.id, notice.requestId]),
+          [[pending.id, requestId]],
+        );
+        assert.strictEqual(
+          (yield* store.listAgenda({ status: "open" })).find((item) => item.id === agenda.id)
+            ?.detail,
+          pending.text,
+        );
+        assert.deepStrictEqual(yield* store.undeliveredNotices(10), []);
+        assert.deepStrictEqual(yield* history, originalHistory);
+        assert.isFalse(yield* store.recordNotice({ ...pending, id: `${kind}-duplicate` }));
+
+        yield* store.reconcileRequestNotices([]);
+        yield* store.recordNotice({
+          ...requestNotice({
+            id: `${kind}-absent`,
+            threadId,
+            requestId: RuntimeRequestId.make(`${kind}:absent`),
+            kind,
+            createdAt: "2026-09-30T10:00:00.000Z",
+          }),
+          text: pending.text,
+        });
+        yield* store.reconcileRequestNotices([{ threadId, requestId }]);
+        assert.strictEqual(
+          (yield* store.listAgenda({ status: "open" })).find((item) => item.id === agenda.id)
+            ?.detail,
+          pending.text,
+        );
+        assert.deepStrictEqual(
+          (yield* store.pendingRequestNotices(10)).map((notice) => notice.id),
+          [pending.id],
+        );
+
+        yield* store.resolveRequestNotice(threadId, requestId);
+        yield* store.reconcileRequestNotices([]);
+        assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
+        assert.strictEqual(
+          (yield* store.listAgenda({ status: "open" })).find((item) => item.id === agenda.id)
+            ?.detail,
+          neutralDetail,
+        );
+        assert.deepStrictEqual(yield* history, originalHistory);
+      }
+    }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "restoring requests preserves completion, failure, newer, and other-kind agenda details",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      const requests = [
+        { kind: "input" as const, detail: "Thread finished." },
+        { kind: "approval" as const, detail: "Thread failed." },
+        { kind: "input" as const, detail: "A newer question needs an answer." },
+        { kind: "approval" as const, detail: "The question was answered or closed." },
+      ].map((input, index) => ({
+        ...input,
+        threadId: ThreadId.make(`thread-restored-${index}`),
+        requestId: RuntimeRequestId.make(`request-restored-${index}`),
+      }));
+      for (const [index, input] of requests.entries()) {
+        const notice = requestNotice({
+          id: `restored-${index}`,
+          threadId: input.threadId,
+          requestId: input.requestId,
+          kind: input.kind,
+          createdAt: `2026-09-30T10:00:0${index}.000Z`,
+        });
+        yield* store.recordNotice(notice);
+        yield* store.openThreadItem({
+          threadId: input.threadId,
+          title: "Conversation",
+          detail: notice.text,
+        });
+      }
+      yield* store.reconcileRequestNotices([]);
+      for (const input of requests) {
+        yield* store.openThreadItem({
+          threadId: input.threadId,
+          title: "Conversation",
+          detail: input.detail,
+        });
+      }
+      yield* store.reconcileRequestNotices(requests);
+      const open = yield* store.listAgenda({ status: "open" });
+      assert.strictEqual((yield* store.pendingRequestNotices(10)).length, requests.length);
+      for (const input of requests) {
+        assert.strictEqual(
+          open.find((item) => item.threadId === input.threadId)?.detail,
+          input.detail,
+        );
+      }
     }).pipe(Effect.provide(TestLayer)),
 );
 
@@ -485,7 +705,7 @@ it.effect("migrates legacy request keys using exact thread prefixes and kind suf
       const store = yield* VoiceStore;
       assert.strictEqual((yield* store.pendingRequestNotices(20)).length, 7);
       yield* store.resolveRequestNotice(threadId, requestId);
-      yield* store.reconcileRequestNotices([{ threadId, requestId }]);
+      yield* store.reconcileRequestNotices([]);
       assert.deepStrictEqual(yield* store.pendingRequestNotices(20), []);
       assert.deepStrictEqual(
         (yield* store.recentNotices(20)).map((n) => [n.id, n.requestId]),

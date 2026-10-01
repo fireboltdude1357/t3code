@@ -327,8 +327,9 @@ export const make = Effect.gen(function* () {
     });
 
   const publishRequestNotices = Effect.gen(function* () {
-    if (!(yield* Ref.get(state)).live?.supportsRequestNotices) return;
-    yield* offerToLive({
+    const { live } = yield* Ref.get(state);
+    if (!live?.supportsRequestNotices) return;
+    yield* Queue.offer(live.events, {
       type: "request_notices",
       notices: yield* store.pendingRequestNotices(BRIEFING_NOTICES),
     });
