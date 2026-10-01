@@ -18,6 +18,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as VoiceOrchestrator from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
 import * as VoiceStore from "../../../orchestration-v2/voice/VoiceStore.ts";
+import * as ProviderSessionManager from "../../../orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
@@ -42,6 +43,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(VoiceOrchestrator.VoiceOrchestrator)({}),
   Layer.mock(VoiceStore.VoiceStore)({}),
+  Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
   Layer.mock(ProjectService.ProjectService)({}),
   ServerSettings.layerTest({}),
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),

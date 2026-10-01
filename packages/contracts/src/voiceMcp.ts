@@ -5,10 +5,12 @@ import {
   PositiveInt,
   ProjectId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { OrchestratorMcpThreadStatus } from "./orchestratorMcp.ts";
+import { OrchestrationV2UserInputQuestion } from "./orchestrationV2.ts";
 import { VoiceAgendaItem, VoiceNotice } from "./voiceSession.ts";
 
 /**
@@ -59,10 +61,36 @@ export const VoiceMcpThreadReadResult = Schema.Struct({
 });
 export type VoiceMcpThreadReadResult = typeof VoiceMcpThreadReadResult.Type;
 
-export const VoiceMcpNoticesResult = Schema.Struct({ notices: Schema.Array(VoiceNotice) });
+export const VoiceMcpQuestionListInput = Schema.Struct({ threadId: ThreadId });
+export type VoiceMcpQuestionListInput = typeof VoiceMcpQuestionListInput.Type;
+
+export const VoiceMcpQuestionListResult = Schema.Struct({
+  threadId: ThreadId,
+  requestIds: Schema.Array(RuntimeRequestId),
+});
+export type VoiceMcpQuestionListResult = typeof VoiceMcpQuestionListResult.Type;
+
+export const VoiceMcpQuestionReadInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: RuntimeRequestId,
+});
+export type VoiceMcpQuestionReadInput = typeof VoiceMcpQuestionReadInput.Type;
+
+export const VoiceMcpQuestionReadResult = Schema.Struct({
+  threadId: ThreadId,
+  requestId: RuntimeRequestId,
+  questions: Schema.Array(OrchestrationV2UserInputQuestion),
+});
+export type VoiceMcpQuestionReadResult = typeof VoiceMcpQuestionReadResult.Type;
+
+export const VoiceMcpNoticesResult = Schema.toCodecJson(
+  Schema.Struct({ notices: Schema.Array(VoiceNotice) }),
+);
 export type VoiceMcpNoticesResult = typeof VoiceMcpNoticesResult.Type;
 
-export const VoiceMcpAgendaResult = Schema.Struct({ items: Schema.Array(VoiceAgendaItem) });
+export const VoiceMcpAgendaResult = Schema.toCodecJson(
+  Schema.Struct({ items: Schema.Array(VoiceAgendaItem) }),
+);
 export type VoiceMcpAgendaResult = typeof VoiceMcpAgendaResult.Type;
 
 export const VoiceMcpTopicOpenInput = Schema.Struct({
@@ -71,7 +99,7 @@ export const VoiceMcpTopicOpenInput = Schema.Struct({
 });
 export type VoiceMcpTopicOpenInput = typeof VoiceMcpTopicOpenInput.Type;
 
-export const VoiceMcpTopicOpenResult = Schema.Struct({ item: VoiceAgendaItem });
+export const VoiceMcpTopicOpenResult = Schema.toCodecJson(Schema.Struct({ item: VoiceAgendaItem }));
 export type VoiceMcpTopicOpenResult = typeof VoiceMcpTopicOpenResult.Type;
 
 export const VoiceMcpTopicCloseInput = Schema.Struct({ id: TrimmedNonEmptyString });

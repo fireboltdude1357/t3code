@@ -14,6 +14,7 @@ import * as Ref from "effect/Ref";
 
 import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
 import { isSpokenConfirmation } from "../../../orchestration-v2/voice/VoiceConfirmation.ts";
 import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
 import { VoiceStore } from "../../../orchestration-v2/voice/VoiceStore.ts";
@@ -60,6 +61,7 @@ const make = Effect.gen(function* () {
   const voice = yield* VoiceOrchestrator;
   const store = yield* VoiceStore;
   const threads = yield* ThreadManagementService;
+  const providerSessions = yield* ProviderSessionManagerV2;
   const launches = yield* ThreadLaunchService;
   const projects = yield* ProjectService;
   /** The user replies that already approved a send, so one yes can't approve two. */
@@ -69,10 +71,51 @@ const make = Effect.gen(function* () {
   const requireVoiceSession = Effect.gen(function* () {
     const scope = yield* McpInvocationContext;
     const session = yield* voice.liveSession(scope.threadId);
-    if (Option.isNone(session))
+    if (Option.isNone(session) || !scope.capabilities.has("orchestration"))
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "Voice tools only work in a live voice session.",
+      });
+    const caller = yield* threads
+      .getThreadShell(scope.threadId)
+      .pipe(Effect.mapError(orchestrationError("Could not read the voice session thread.")));
+    // Realtime turns are untracked, so activeRunId is not an ownership check here.
+    if (
+      caller === null ||
+      caller.deletedAt !== null ||
+      caller.archivedAt !== null ||
+      caller.providerInstanceId !== scope.providerInstanceId
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The calling provider no longer owns the live voice session.",
+      });
+    const records = yield* threads
+      .getThreadRecords(scope.threadId, ["providerThreads", "providerSessions"])
+      .pipe(Effect.mapError(orchestrationError("Could not read the voice provider binding.")));
+    const providerThread = records.providerThreads.find(
+      (thread) =>
+        thread.id === caller.activeProviderThreadId &&
+        thread.appThreadId === caller.id &&
+        thread.providerInstanceId === scope.providerInstanceId,
+    );
+    const binding = records.providerSessions.find(
+      (binding) =>
+        binding.id === providerThread?.providerSessionId &&
+        binding.providerInstanceId === scope.providerInstanceId &&
+        binding.status !== "stopped" &&
+        binding.status !== "error",
+    );
+    const runtime =
+      binding === undefined
+        ? Option.none()
+        : yield* providerSessions
+            .get(binding.id)
+            .pipe(Effect.mapError(orchestrationError("Could not read the live voice provider.")));
+    if (Option.isNone(runtime) || runtime.value.instanceId !== scope.providerInstanceId)
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The voice session's provider is no longer attached and running.",
       });
     return session.value;
   });
@@ -149,6 +192,51 @@ const make = Effect.gen(function* () {
                   ],
             )
             .slice(-(input.limit ?? DEFAULT_READ_LIMIT)),
+        };
+      }),
+
+    voice_pending_question_list: (input) =>
+      Effect.gen(function* () {
+        yield* requireVoiceSession;
+        yield* requireThread(input.threadId);
+        const records = yield* threads
+          .getThreadRecords(input.threadId, ["runtimeRequests"])
+          .pipe(Effect.mapError(orchestrationError("Could not read pending questions.")));
+        return {
+          threadId: input.threadId,
+          requestIds: records.runtimeRequests
+            .filter((request) => request.kind === "user_input" && request.status === "pending")
+            .map((request) => request.id),
+        };
+      }),
+
+    voice_pending_question_read: (input) =>
+      Effect.gen(function* () {
+        yield* requireVoiceSession;
+        yield* requireThread(input.threadId);
+        const records = yield* threads
+          .getThreadRecords(input.threadId, ["runtimeRequests", "turnItems"], {
+            turnItemTypes: ["user_input_request"],
+          })
+          .pipe(Effect.mapError(orchestrationError("Could not read the pending question.")));
+        const request = records.runtimeRequests.find(
+          (request) =>
+            request.id === input.requestId &&
+            request.kind === "user_input" &&
+            request.status === "pending",
+        );
+        const item = records.turnItems.find(
+          (item) => item.type === "user_input_request" && item.requestId === input.requestId,
+        );
+        if (request === undefined || item?.type !== "user_input_request")
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The pending user-input request was not found.",
+          });
+        return {
+          threadId: input.threadId,
+          requestId: input.requestId,
+          questions: item.questions,
         };
       }),
 
