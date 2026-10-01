@@ -763,9 +763,9 @@ export const make = Effect.gen(function* () {
         yield* store.markDelivered(pending.map((notice) => notice.id));
         // A new generation cannot execute actions proposed by the retired call.
         yield* Effect.forEach([...(yield* Ref.get(confirmations)).values()], (pending) =>
-          pending.generation === current.generation
-            ? Effect.void
-            : resolveConfirmation(pending.request.id, false),
+          pending.generation < current.generation
+            ? resolveConfirmation(pending.request.id, false)
+            : Effect.void,
         );
 
         const rotateAt = Duration.toMillis(ROTATE_AFTER);

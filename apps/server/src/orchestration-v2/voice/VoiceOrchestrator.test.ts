@@ -298,6 +298,64 @@ it.effect("a second open rotates the first generation out and releases its threa
   ),
 );
 
+it.effect("a slow older open preserves the newer generation's pending approval", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      const enteredRealtime = yield* Deferred.make<void>();
+      const finishRealtime = yield* Deferred.make<void>();
+      yield* Ref.set(
+        harness.realtimeWork,
+        Deferred.succeed(enteredRealtime, undefined).pipe(
+          Effect.andThen(Deferred.await(finishRealtime)),
+        ),
+      );
+      const older = yield* startCall;
+      yield* Deferred.await(enteredRealtime);
+      yield* Ref.set(harness.realtimeWork, Effect.void);
+      const newer = yield* openCall;
+      const executed = yield* Ref.make(0);
+      yield* orchestrator.proposeAction({
+        sessionThreadId: newer.answer.sessionThreadId,
+        action: "launch",
+        title: "Audit",
+        detail: "Review the change",
+        execute: Ref.update(executed, (count) => count + 1).pipe(Effect.as("Started Audit.")),
+      });
+      const { request } = yield* takeUntilType(newer.events, "confirm");
+
+      yield* Deferred.succeed(finishRealtime, undefined);
+      const olderAnswer = yield* takeUntilType(older.events, "answer");
+      assert.isBelow(olderAnswer.generation, newer.answer.generation);
+      assert.strictEqual((yield* takeUntilType(older.events, "ended")).reason, "rotated");
+      yield* Fiber.join(older.fiber);
+      assert.strictEqual(
+        (yield* orchestrator.liveSession(newer.answer.sessionThreadId))._tag,
+        "Some",
+      );
+      assert.deepStrictEqual(
+        yield* orchestrator.pendingConfirmations(newer.answer.sessionThreadId),
+        [request],
+      );
+      assert.strictEqual(yield* Ref.get(executed), 0);
+      assert.deepStrictEqual(
+        yield* orchestrator.respond({ requestId: request.id, approved: true }),
+        { accepted: true },
+      );
+      assert.deepStrictEqual(yield* takeUntilType(newer.events, "confirm_resolved"), {
+        type: "confirm_resolved",
+        requestId: request.id,
+        approved: true,
+      });
+      assert.deepStrictEqual(
+        yield* orchestrator.respond({ requestId: request.id, approved: true }),
+        { accepted: false },
+      );
+      assert.strictEqual(yield* Ref.get(executed), 1);
+    }),
+  ),
+);
+
 it.effect("confirmations resolve from the phone, or false after two minutes", () =>
   withOrchestrator(() =>
     Effect.gen(function* () {

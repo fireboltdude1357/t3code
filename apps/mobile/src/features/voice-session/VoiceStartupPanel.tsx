@@ -98,10 +98,14 @@ export function VoiceStartupPanel({ state }: { readonly state: VoiceSessionState
       subscription.remove();
     };
   }, [waiting]);
-  const latest = state.startupLog.at(-1);
+  const reconnectLog = state.startupLog.slice(
+    state.startupLog.findLastIndex((entry) => entry.stage === "connected") + 1,
+  );
+  const startupLog = reconnectLog.length > 0 ? reconnectLog : state.startupLog;
+  const latest = startupLog.at(-1);
   const stageIndex = STAGES.findIndex((stage) => stage === latest?.stage);
   const step = stageIndex < 0 ? 1 : stageIndex + 1;
-  const startedAt = state.startupLog[0]?.at ?? now;
+  const startedAt = startupLog[0]?.at ?? now;
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   return (
     <View className="gap-4 rounded-2xl border border-border bg-card p-4">
@@ -157,15 +161,15 @@ export function VoiceStartupPanel({ state }: { readonly state: VoiceSessionState
       </View>
       <View className="gap-1.5">
         <Text className="text-xs font-t3-medium text-foreground-muted">Startup log</Text>
-        {state.startupLog.map((entry) => (
+        {startupLog.map((entry) => (
           <View key={`${entry.attempt}-${entry.stage}-${entry.at}`} className="flex-row gap-3">
             <Text className="w-9 text-xs text-foreground-muted">
               {Math.max(0, (entry.at - startedAt) / 1000).toFixed(1)}s
             </Text>
             <Text selectable className="flex-1 text-xs leading-normal text-foreground-muted">
               {STARTUP_LABELS[entry.stage]}
-              {entry.attempt > (state.startupLog[0]?.attempt ?? 0)
-                ? ` · attempt ${entry.attempt - (state.startupLog[0]?.attempt ?? 0) + 1}`
+              {entry.attempt > (startupLog[0]?.attempt ?? 0)
+                ? ` · attempt ${entry.attempt - (startupLog[0]?.attempt ?? 0) + 1}`
                 : ""}
             </Text>
           </View>
