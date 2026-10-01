@@ -3,6 +3,7 @@ import {
   isProviderAvailable,
   MessageId,
   type ModelSelection,
+  type ProviderInstanceId,
   OrchestratorMcpFailure,
   ThreadId,
   type OrchestrationV2ThreadShell,
@@ -126,36 +127,39 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Picks the first usable Claude instance that offers the launch model. Fails
-   * instead of falling back, so a launch never runs on a model nobody chose.
+   * Picks a usable Claude instance that offers the launch model, preferring
+   * the project's own instance so the thread runs on the account it uses.
+   * Fails instead of falling back, so a launch never runs on a model nobody chose.
    */
-  const launchModelSelection = providers.getProviders.pipe(
-    Effect.flatMap((snapshots) => {
-      const instance = snapshots.find(
-        (provider) =>
-          provider.driver === LAUNCH_DRIVER &&
-          provider.enabled &&
-          provider.installed &&
-          isProviderAvailable(provider) &&
-          provider.status !== "error" &&
-          provider.status !== "disabled" &&
-          provider.auth.status !== "unauthenticated" &&
-          provider.models.some((model) => model.slug === LAUNCH_MODEL),
-      );
-      return instance === undefined
-        ? Effect.fail(
-            new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "No working Claude provider offers Opus 5.5, so nothing was started.",
-            }),
-          )
-        : Effect.succeed<ModelSelection>({
-            instanceId: instance.instanceId,
-            model: LAUNCH_MODEL,
-            options: [{ id: "effort", value: "high" }],
-          });
-    }),
-  );
+  const launchModelSelection = (preferred: ProviderInstanceId | undefined) =>
+    providers.getProviders.pipe(
+      Effect.flatMap((snapshots) => {
+        const usable = snapshots.filter(
+          (provider) =>
+            provider.driver === LAUNCH_DRIVER &&
+            provider.enabled &&
+            provider.installed &&
+            isProviderAvailable(provider) &&
+            provider.status !== "error" &&
+            provider.status !== "disabled" &&
+            provider.auth.status !== "unauthenticated" &&
+            provider.models.some((model) => model.slug === LAUNCH_MODEL),
+        );
+        const instance = usable.find((provider) => provider.instanceId === preferred) ?? usable[0];
+        return instance === undefined
+          ? Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "No working Claude provider offers Opus 5.5, so nothing was started.",
+              }),
+            )
+          : Effect.succeed<ModelSelection>({
+              instanceId: instance.instanceId,
+              model: LAUNCH_MODEL,
+              options: [{ id: "effort", value: "high" }],
+            });
+      }),
+    );
 
   const requireThread = (threadId: ThreadId) =>
     threads.getThreadShell(threadId).pipe(
@@ -373,7 +377,9 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
-        const modelSelection = yield* launchModelSelection;
+        const modelSelection = yield* launchModelSelection(
+          project.defaultModelSelection?.instanceId,
+        );
         const commandId = yield* newCommandId();
         const request = yield* voice.proposeAction({
           sessionThreadId: session.sessionThreadId,

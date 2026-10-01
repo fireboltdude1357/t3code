@@ -166,6 +166,8 @@ interface HarnessOptions {
   readonly binding?: "detached" | "stopped" | "error" | "missing_thread";
   readonly runtimeLive?: boolean;
   readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly projectInstance?: string;
+  readonly expectedInstance?: string;
 }
 
 const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: HarnessOptions = {}) {
@@ -321,7 +323,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
           expect(input.projectId).toBe(WORK_PROJECT);
           expect(input.initialMessage?.text).toBe("Review the change");
           expect(input.modelSelection).toEqual({
-            instanceId: "claude_vibeproxy",
+            instanceId: options.expectedInstance ?? "claude_vibeproxy",
             model: "claude-opus-5-5",
             options: [{ id: "effort", value: "high" }],
           });
@@ -341,7 +343,14 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
     Layer.mock(ProjectService)({
       getById: (projectId) =>
         Effect.succeed(
-          Option.some({ id: projectId, title: "Work", defaultModelSelection: null } as Project),
+          Option.some({
+            id: projectId,
+            title: "Work",
+            defaultModelSelection:
+              options.projectInstance === undefined
+                ? null
+                : { instanceId: options.projectInstance, model: "claude-opus-5-5" },
+          } as Project),
         ),
     }),
   );
@@ -674,6 +683,26 @@ it.effect("launch returns a pending readback and executes only after voice_appro
     expect(harness.launches()).toBe(1);
     const duplicate = yield* harness.call("voice_approve", { requestId: "pending-1" });
     expect(duplicate.result).toMatchObject({ status: "unavailable" });
+    expect(harness.launches()).toBe(1);
+  }),
+);
+
+it.effect("launch prefers the project's Claude instance when several qualify", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness({
+      providers: [claudeProvider("claudeAgent"), claudeProvider("claude_vibeproxy")],
+      projectInstance: "claude_vibeproxy",
+      expectedInstance: "claude_vibeproxy",
+    });
+    yield* harness.call("voice_launch", {
+      projectId: WORK_PROJECT,
+      title: "Audit",
+      message: "Review the change",
+    });
+    const pending = yield* harness.call("voice_confirmations", {});
+    const readback = pending.result as { requests: ReadonlyArray<{ readback: string }> };
+    harness.setTranscript([said("assistant", readback.requests[0]!.readback), said("user", "Yes")]);
+    yield* harness.call("voice_approve", { requestId: "pending-1" });
     expect(harness.launches()).toBe(1);
   }),
 );
