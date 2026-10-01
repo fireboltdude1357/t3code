@@ -219,7 +219,7 @@ export function deriveThreadRuntime(
   return {
     status: usageLimitedRun
       ? "failed"
-      : hasPendingBackgroundTasks
+      : hasPendingBackgroundTasks && latestRunProjection?.status !== "failed"
         ? "idle"
         : (activityRun?.status ?? "idle"),
     activeRunId,

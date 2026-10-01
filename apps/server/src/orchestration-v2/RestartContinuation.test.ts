@@ -15,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSettings from "../serverSettings.ts";
 import { restartContinuationRun, continueRestartedRun } from "./RestartContinuation.ts";
-import { ThreadManagementService } from "./ThreadManagementService.ts";
+import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EventSink from "./EventSink.ts";
@@ -121,6 +121,20 @@ it("requires matching saved native state for an unfinished root run", () => {
     assert.isUndefined(restartContinuationRun(invalid as OrchestrationV2ThreadProjection));
 });
 
+it("continues a live turn whose session the adapter never marked running", () => {
+  const projection = makeProjection();
+  // Codex, Claude, Cursor and ACP sessions stay "ready" for their whole life.
+  const withSessionStatus = (status: string) =>
+    ({
+      ...projection,
+      providerSessions: [{ ...projection.providerSessions[0]!, status }],
+    }) as OrchestrationV2ThreadProjection;
+  for (const status of ["starting", "ready", "running", "waiting"])
+    assert.equal(restartContinuationRun(withSessionStatus(status))?.id, runId, status);
+  for (const status of ["stopped", "error"])
+    assert.isUndefined(restartContinuationRun(withSessionStatus(status)), status);
+});
+
 it("recovers an admitted continuation after another crash before provider start", () => {
   const projection = makeProjection();
   const starting = {
@@ -179,11 +193,13 @@ it.effect("prompts a settled thread's continuation with the note of its lost wor
       runs: [{ ...base.runs[0]!, status: "completed", restartCancelledBackgroundWork: work }],
       providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
     } as unknown as OrchestrationV2ThreadProjection;
-    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    const commands: Parameters<
+      ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
       Effect.provide(
         Layer.merge(
-          Layer.mock(ThreadManagementService)({
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             dispatch: (command) => {
               commands.push(command);
@@ -222,11 +238,13 @@ it.effect("does not continue a failed run that lost background work", () =>
       ],
       providerTurns: [{ ...base.providerTurns[0]!, status: "failed" }],
     } as unknown as OrchestrationV2ThreadProjection;
-    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    const commands: Parameters<
+      ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
       Effect.provide(
         Layer.merge(
-          Layer.mock(ThreadManagementService)({
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             dispatch: (command) => {
               commands.push(command);
@@ -307,8 +325,10 @@ it.effect("does not duplicate delivery and yields to newer user work or opt-out"
   Effect.gen(function* () {
     let projection = makeProjection();
     projection = { ...projection, runs: [{ ...projection.runs[0]!, status: "cancelled" }] };
-    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
-    const threads = Layer.mock(ThreadManagementService)({
+    const commands: Parameters<
+      ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
+    const threads = Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadRecords: () => Effect.succeed(projection),
       dispatch: (command) => {
         commands.push(command);
@@ -479,7 +499,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-          Layer.mock(ThreadManagementService)({
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             dispatch: () =>
               Effect.sync(() => {

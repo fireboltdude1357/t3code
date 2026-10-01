@@ -10,8 +10,8 @@ import {
 import * as Effect from "effect/Effect";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 
-import { ServerSettingsService } from "../serverSettings.ts";
-import { ThreadManagementService } from "./ThreadManagementService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadManagementService from "./ThreadManagementService.ts";
 import {
   isRestartNoteSource,
   restartCancelledBackgroundWorkNote,
@@ -66,12 +66,14 @@ export function restartContinuationRun(
   );
   // A settled thread's session may already be stopped and out of the recovery
   // read; the continuation reopens it from the provider thread's native ref.
+  // Most adapters keep a live session "ready" through its turns, so only a
+  // stopped or failed session rules out a live turn.
   if (
     session === undefined
       ? !settledWithCancelledWork
       : session.providerInstanceId !== run.providerInstanceId ||
         session.driver !== providerThread.driver ||
-        (liveTurnRequired && session.status !== "running")
+        (liveTurnRequired && (session.status === "stopped" || session.status === "error"))
   )
     return;
   if (
@@ -89,10 +91,10 @@ export function restartContinuationRun(
 
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
   function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
-    const settings = yield* ServerSettingsService;
+    const settings = yield* ServerSettings.ServerSettingsService;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     if (!enabled) return;
-    const threads = yield* ThreadManagementService;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
     const messageId = MessageId.make(`message:restart-continuation:${input.sourceRunId}`);
     const projection = yield* threads.getThreadRecords(
       input.threadId,

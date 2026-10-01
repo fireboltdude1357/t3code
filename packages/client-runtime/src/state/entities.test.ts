@@ -153,6 +153,21 @@ describe("V2 client presentation", () => {
     ]);
   });
 
+  it("keeps a failed latest run failed while background tasks are still pending", () => {
+    const shell = presentThreadShell(environmentId, {
+      ...v2ThreadShell,
+      latestRunId: RunId.make("run-failed"),
+      activeRunId: null,
+      status: "failed",
+      lastError: "Provider turn failed",
+      pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
+    });
+
+    // Sidebar and mobile list read runtime "idle" as Waiting before failure.
+    expect(shell.runtime).toMatchObject({ status: "failed", lastError: "Provider turn failed" });
+    expect(shell.pendingBackgroundTasks).toHaveLength(1);
+  });
+
   it("stacks earlier provider owners behind the current one, newest history first to go", () => {
     const codex = ProviderInstanceId.make("codex");
     const claude = ProviderInstanceId.make("claude");
@@ -466,6 +481,13 @@ describe("V2 client presentation", () => {
       status: "running",
       activeRunId: runId,
     });
+    expect(
+      deriveThreadRuntime({
+        ...v2Projection,
+        runs: [{ ...run, status: "failed" as const, completedAt: now }],
+        turnItems: [backgroundItem],
+      }),
+    ).toMatchObject({ status: "failed", activeRunId: null });
   });
 
   it("joins pending request entities to their native turn-item display data", () => {
