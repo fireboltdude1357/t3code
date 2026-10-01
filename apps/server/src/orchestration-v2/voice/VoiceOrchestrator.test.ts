@@ -68,7 +68,7 @@ const pendingApproval = {
     status: "pending",
     responseCapability: { type: "live", providerSessionId: "provider-session" },
   },
-} as unknown as OrchestrationV2DomainEvent;
+} as unknown as Extract<OrchestrationV2DomainEvent, { type: "runtime-request.updated" }>;
 
 /**
  * Builds the orchestrator on the real store and registry, with fakes for the
@@ -77,6 +77,7 @@ const pendingApproval = {
 const makeHarness = Effect.gen(function* () {
   const domainEvents = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
   const requests = yield* Ref.make<ReadonlyArray<OrchestrationV2RuntimeRequest>>([]);
+  const projectDomainRequests = yield* Ref.make(true);
   const archivedAt = yield* Ref.make<DateTime.Utc | null>(null);
   const prepared = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const released = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
@@ -92,6 +93,7 @@ const makeHarness = Effect.gen(function* () {
   const requestQueryStarted = yield* Queue.unbounded<void>();
   const releaseRequestQuery = yield* Deferred.make<void>();
   const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
+  const commandDispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
 
   const store = Layer.effect(
     VoiceStore,
@@ -153,12 +155,14 @@ const makeHarness = Effect.gen(function* () {
   const threadManagement = Layer.mock(ThreadManagementService)({
     streamDomainEvents: Stream.fromQueue(domainEvents).pipe(
       Stream.tap((event) =>
-        event.type === "runtime-request.updated"
-          ? Ref.update(requests, (current) => [
+        Effect.gen(function* () {
+          if (event.type === "runtime-request.updated" && (yield* Ref.get(projectDomainRequests))) {
+            yield* Ref.update(requests, (current) => [
               ...current.filter((request) => request.id !== event.payload.id),
               { ...event.payload, threadId: event.threadId },
-            ])
-          : Effect.void,
+            ]);
+          }
+        }),
       ),
     ),
     getThreadShell: (threadId) =>
@@ -181,6 +185,7 @@ const makeHarness = Effect.gen(function* () {
       ),
     dispatch: (command) =>
       Ref.update(dispatched, (current) => [...current, command]).pipe(
+        Effect.andThen(Queue.offer(commandDispatched, command)),
         Effect.as({ sequence: 1, storedEvents: [] } as never),
       ),
     getShellSnapshot: () =>
@@ -225,11 +230,13 @@ const makeHarness = Effect.gen(function* () {
     layer,
     domainEvents,
     requests,
+    projectDomainRequests,
     archivedAt,
     prepared,
     released,
     speech,
     dispatched,
+    commandDispatched,
     holdSpeech,
     speechStarted,
     speechDone,
@@ -444,6 +451,193 @@ const inputEvent = (
       responseCapability: { type: "live", providerSessionId: "provider-session" },
     },
   }) as unknown as Extract<OrchestrationV2DomainEvent, { type: "runtime-request.updated" }>;
+
+it.effect(
+  "an approval pending before the call gets a gate and dispatches only after approval",
+  () =>
+    withOrchestrator((harness) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* VoiceOrchestrator;
+        yield* Ref.set(harness.requests, [pendingApproval.payload]);
+        const first = yield* openCall;
+        assert.strictEqual(first.snapshot.notices[0]?.requestId, approvalRequestId);
+        const confirm = yield* takeUntilType(first.events, "confirm");
+        assert.strictEqual(confirm.request.action, "runtime_approval");
+        assert.strictEqual(confirm.request.detail, "rm -rf build/");
+        assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
+        yield* orchestrator.respond({ requestId: confirm.request.id, approved: true });
+        yield* takeUntilType(first.events, "confirm_resolved");
+        assert.deepInclude(yield* Queue.take(harness.commandDispatched), {
+          type: "runtime-request.respond",
+          threadId: workThreadId,
+          requestId: approvalRequestId,
+          decision: "accept",
+        });
+      }),
+    ),
+);
+
+it.effect(
+  "post-live reconciliation and a pending event share one approval gate across reconnect",
+  () =>
+    withOrchestrator((harness) =>
+      Effect.gen(function* () {
+        yield* Ref.set(harness.requests, [pendingApproval.payload]);
+        yield* Ref.set(harness.holdRequestQuery, true);
+        const opening = yield* openCall.pipe(Effect.forkScoped);
+        yield* Queue.take(harness.requestQueryStarted);
+        yield* Queue.offer(harness.domainEvents, pendingApproval);
+        yield* Deferred.succeed(harness.releaseRequestQuery, undefined);
+        const first = yield* Fiber.join(opening);
+        const remaining: VoiceSessionEvent[] = [];
+        while (
+          !remaining.some((event) => event.type === "confirm") ||
+          !remaining.some((event) => event.type === "request_notices")
+        ) {
+          remaining.push(yield* Queue.take(first.events));
+        }
+        const confirm = remaining.find((event) => event.type === "confirm");
+        assert.isDefined(confirm);
+        const second = yield* openCall;
+        const carried = yield* Queue.take(second.events);
+        assert.strictEqual(carried.type, "confirm");
+        if (carried.type !== "confirm") return;
+        assert.strictEqual(carried.request.id, confirm?.request.id);
+        assert.strictEqual(remaining.filter((event) => event.type === "confirm").length, 1);
+        assert.deepStrictEqual(yield* Queue.takeAll(first.events), [
+          { type: "ended", reason: "rotated" },
+        ]);
+        const orchestrator = yield* VoiceOrchestrator;
+        yield* orchestrator.respond({ requestId: carried.request.id, approved: false });
+        assert.strictEqual((yield* Queue.take(second.events)).type, "confirm_resolved");
+        assert.strictEqual(yield* Queue.size(second.events), 0);
+      }),
+    ),
+);
+
+it.effect("a denied approval is not prompted again until reconnect", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      yield* Ref.set(harness.requests, [pendingApproval.payload]);
+      const first = yield* openCall;
+      const confirm = yield* takeUntilType(first.events, "confirm");
+      yield* orchestrator.respond({ requestId: confirm.request.id, approved: false });
+      yield* takeUntilType(first.events, "confirm_resolved");
+      yield* Queue.offer(harness.domainEvents, pendingApproval);
+      assert.strictEqual((yield* Queue.take(first.events)).type, "request_notices");
+      const second = yield* openCall;
+      const retried = yield* Queue.take(second.events);
+      assert.strictEqual(retried.type, "confirm");
+      if (retried.type !== "confirm") return;
+      assert.notStrictEqual(retried.request.id, confirm.request.id);
+      assert.deepStrictEqual(yield* Queue.takeAll(first.events), [
+        { type: "ended", reason: "rotated" },
+      ]);
+      assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
+    }),
+  ),
+);
+
+it.effect("an expired approval is not prompted again until reconnect", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      yield* Ref.set(harness.requests, [pendingApproval.payload]);
+      const first = yield* openCall;
+      const confirm = yield* takeUntilType(first.events, "confirm");
+      yield* TestClock.adjust("2 minutes");
+      const resolved = yield* takeUntilType(first.events, "confirm_resolved");
+      assert.isFalse(resolved.approved);
+      yield* Queue.offer(harness.domainEvents, pendingApproval);
+      assert.strictEqual((yield* Queue.take(first.events)).type, "request_notices");
+      const second = yield* openCall;
+      const retried = yield* Queue.take(second.events);
+      assert.strictEqual(retried.type, "confirm");
+      if (retried.type !== "confirm") return;
+      assert.notStrictEqual(retried.request.id, confirm.request.id);
+      assert.deepStrictEqual(yield* Queue.takeAll(first.events), [
+        { type: "ended", reason: "rotated" },
+      ]);
+      assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
+    }),
+  ),
+);
+
+it.effect("settlement during setup prevents an approval prompt", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      yield* Ref.set(harness.requests, [pendingApproval.payload]);
+      yield* Ref.set(harness.holdCall, true);
+      const opening = yield* openCall.pipe(Effect.forkScoped);
+      yield* Queue.take(harness.callStarted);
+      yield* Ref.set(harness.requests, [{ ...pendingApproval.payload, status: "resolved" }]);
+      yield* Deferred.succeed(harness.releaseCall, undefined);
+      const first = yield* Fiber.join(opening);
+      assert.deepStrictEqual(first.snapshot.notices, []);
+      yield* Queue.offer(harness.domainEvents, inputEvent("receipt-question"));
+      const receipt = yield* Queue.take(first.events);
+      assert.strictEqual(receipt.type, "request_notices");
+      const second = yield* openCall;
+      assert.deepStrictEqual(
+        second.snapshot.notices.map((notice) => notice.requestId),
+        [RuntimeRequestId.make("receipt-question")],
+      );
+      assert.deepStrictEqual(yield* Queue.takeAll(first.events), [
+        { type: "ended", reason: "rotated" },
+      ]);
+      assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
+    }),
+  ),
+);
+
+it.effect("settlement closes an approval gate and a stale pending event cannot restore it", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      yield* Ref.set(harness.requests, [pendingApproval.payload]);
+      const first = yield* openCall;
+      const confirm = yield* takeUntilType(first.events, "confirm");
+      yield* Queue.offer(harness.domainEvents, {
+        ...pendingApproval,
+        payload: { ...pendingApproval.payload, status: "resolved" },
+      });
+      const cleared: VoiceSessionEvent[] = [];
+      while (
+        !cleared.some((event) => event.type === "request_notices") ||
+        !cleared.some((event) => event.type === "confirm_resolved")
+      ) {
+        cleared.push(yield* Queue.take(first.events));
+      }
+      assert.deepInclude(cleared, { type: "request_notices", notices: [] });
+      assert.deepInclude(cleared, {
+        type: "confirm_resolved",
+        requestId: confirm.request.id,
+        approved: false,
+      });
+      assert.deepStrictEqual(
+        yield* orchestrator.respond({ requestId: confirm.request.id, approved: true }),
+        { accepted: false },
+      );
+      yield* Ref.set(harness.projectDomainRequests, false);
+      yield* Queue.offer(harness.domainEvents, pendingApproval);
+      yield* Ref.update(harness.requests, (requests) => [
+        ...requests,
+        inputEvent("receipt-question").payload,
+      ]);
+      yield* Queue.offer(harness.domainEvents, inputEvent("receipt-question"));
+      assert.strictEqual((yield* Queue.take(first.events)).type, "request_notices");
+      const second = yield* openCall;
+      assert.deepStrictEqual(
+        second.snapshot.notices.map((notice) => notice.requestId),
+        [RuntimeRequestId.make("receipt-question")],
+      );
+      assert.deepStrictEqual(yield* Queue.takeAll(first.events), [
+        { type: "ended", reason: "rotated" },
+      ]);
+      assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
+    }),
+  ),
+);
 
 it.effect(
   "clears an answered question immediately and shows a later question on the same thread",
