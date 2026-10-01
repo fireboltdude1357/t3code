@@ -86,7 +86,6 @@ const shell = (id: ThreadId, projectId: ProjectId) =>
     activeRunId: null,
     activeProviderThreadId: ProviderThreadId.make("voice-provider-thread"),
     deletedAt: null,
-    activeRunId: RunId.make("target-run"),
   }) as unknown as OrchestrationV2ThreadShell;
 
 const said = (role: VoiceTranscriptEntry["role"], text: string): VoiceTranscriptEntry => ({
