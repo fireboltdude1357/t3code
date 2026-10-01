@@ -57,7 +57,7 @@ export interface VoiceStoreShape {
   ) => Effect.Effect<void>;
   /** Active questions and approvals, including notices already delivered. Newest first. */
   readonly pendingRequestNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
-  /** Resolves notices absent from the authoritative pending requests, including unknown legacy IDs. */
+  /** Restores known pending notices and resolves absent notices, including unknown legacy IDs. */
   readonly reconcileRequestNotices: (
     pending: ReadonlyArray<{ readonly threadId: ThreadId; readonly requestId: RuntimeRequestId }>,
   ) => Effect.Effect<void>;
@@ -248,18 +248,26 @@ export const layer = Layer.effect(
             `;
           }).pipe(Effect.orDie);
 
+    const resolvedAgendaDetail = (kind: VoiceNotice["kind"]) =>
+      kind === "input"
+        ? "The question was answered or closed."
+        : "The approval request was answered or closed.";
+
     const refreshResolvedAgenda = Effect.fnUntraced(function* (
       notices: ReadonlyArray<Pick<VoiceNotice, "threadId" | "kind" | "text">>,
     ) {
       for (const notice of notices) {
-        const detail =
-          notice.kind === "input"
-            ? "The question was answered or closed."
-            : "The approval request was answered or closed.";
+        const detail = resolvedAgendaDetail(notice.kind);
         yield* sql`
           UPDATE voice_agenda SET detail = ${detail}
           WHERE kind = 'thread' AND status = 'open'
             AND thread_id = ${notice.threadId} AND detail = ${notice.text}
+            AND NOT EXISTS (
+              SELECT 1 FROM voice_notice_ledger AS pending
+              WHERE pending.thread_id = voice_agenda.thread_id
+                AND pending.text = voice_agenda.detail
+                AND pending.kind IN ('input', 'approval') AND pending.resolved_at IS NULL
+            )
         `;
       }
     });
@@ -287,11 +295,29 @@ export const layer = Layer.effect(
     const reconcileRequestNotices: VoiceStoreShape["reconcileRequestNotices"] = (pending) =>
       Effect.gen(function* () {
         const now = iso(yield* DateTime.now);
+        const pendingJson = encodePendingRequests(pending);
+        const restored = yield* sql<Pick<VoiceNotice, "threadId" | "kind" | "text">>`
+          UPDATE voice_notice_ledger SET resolved_at = NULL
+          WHERE kind IN ('input', 'approval') AND resolved_at IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM json_each(${pendingJson}) AS pending
+              WHERE json_extract(pending.value, '$.threadId') = voice_notice_ledger.thread_id
+                AND json_extract(pending.value, '$.requestId') = voice_notice_ledger.request_id
+            )
+          RETURNING thread_id AS threadId, kind, text
+        `;
+        for (const notice of restored) {
+          yield* sql`
+            UPDATE voice_agenda SET detail = ${notice.text}
+            WHERE kind = 'thread' AND status = 'open'
+              AND thread_id = ${notice.threadId} AND detail = ${resolvedAgendaDetail(notice.kind)}
+          `;
+        }
         const resolved = yield* sql<Pick<VoiceNotice, "threadId" | "kind" | "text">>`
           UPDATE voice_notice_ledger SET resolved_at = ${now}
           WHERE kind IN ('input', 'approval') AND resolved_at IS NULL
             AND NOT EXISTS (
-              SELECT 1 FROM json_each(${encodePendingRequests(pending)}) AS pending
+              SELECT 1 FROM json_each(${pendingJson}) AS pending
               WHERE json_extract(pending.value, '$.threadId') = voice_notice_ledger.thread_id
                 AND json_extract(pending.value, '$.requestId') = voice_notice_ledger.request_id
             )
