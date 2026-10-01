@@ -8,7 +8,7 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * `connecting` waits for the first answer, `live` has audio playing (a
+ * `connecting` waits for connected audio, `live` has audio playing (a
  * rotation may be opening the next generation underneath), and `reconnecting`
  * lost its audio and is opening a replacement.
  */
@@ -21,8 +21,30 @@ export type VoiceSessionStatus =
   | "failed"
   | "microphone-denied";
 
+export const STARTUP_LABELS = {
+  microphone: "Checking microphone access",
+  "preparing-audio": "Preparing microphone and connection",
+  "contacting-server": "Contacting the server",
+  "preparing-session": "Preparing the Codex session",
+  briefing: "Briefing the voice agent",
+  "starting-realtime": "Starting Codex live voice",
+  "connecting-audio": "Connecting call audio",
+  connected: "Call audio connected",
+  retrying: "Connection lost. Retrying",
+  failed: "Call startup failed",
+  cancelled: "Call cancelled",
+  "microphone-denied": "Microphone permission denied",
+} as const;
+export type VoiceStartupStage = keyof typeof STARTUP_LABELS;
+export interface VoiceStartupEntry {
+  readonly stage: VoiceStartupStage;
+  readonly at: number;
+  readonly attempt: number;
+}
+
 export interface VoiceSessionState {
   readonly status: VoiceSessionStatus;
+  readonly startupLog: ReadonlyArray<VoiceStartupEntry>;
   readonly environmentId: EnvironmentId | null;
   /** Sent with each open until a generation answers, so the first briefing leads with it. */
   readonly focusThreadId: ThreadId | null;
@@ -53,19 +75,36 @@ export interface VoiceSessionState {
 export type VoiceSessionAction =
   | {
       readonly type: "start";
+      readonly at: number;
       readonly environmentId: EnvironmentId;
       readonly focusThreadId: ThreadId | null;
     }
-  | { readonly type: "hang-up" }
-  | { readonly type: "server"; readonly attempt: number; readonly event: VoiceSessionEvent }
+  | { readonly type: "hang-up"; readonly at: number }
+  | {
+      readonly type: "startup";
+      readonly attempt: number;
+      readonly stage: VoiceStartupStage;
+      readonly at: number;
+    }
+  | {
+      readonly type: "server";
+      readonly attempt: number;
+      readonly event: VoiceSessionEvent;
+      readonly at: number;
+    }
   /**
    * A generation died without an `ended` event: its stream completed or
    * failed, its peer could not be set up, or its audio connection failed.
    */
-  | { readonly type: "generation-lost"; readonly attempt: number; readonly message: string | null }
+  | {
+      readonly type: "generation-lost";
+      readonly attempt: number;
+      readonly message: string | null;
+      readonly at: number;
+    }
   /** A generation's audio actually connected; only this clears the failure count. */
-  | { readonly type: "audio-connected"; readonly attempt: number }
-  | { readonly type: "microphone-denied" }
+  | { readonly type: "audio-connected"; readonly attempt: number; readonly at: number }
+  | { readonly type: "microphone-denied"; readonly attempt: number; readonly at: number }
   | { readonly type: "toggle-mute" }
   /** A parsed JSON event from a generation's `oai-events` data channel. */
   | { readonly type: "realtime"; readonly attempt: number; readonly event: unknown }
@@ -79,6 +118,7 @@ const MAX_NOTICES = 20;
 
 export const INITIAL_VOICE_SESSION_STATE: VoiceSessionState = {
   status: "idle",
+  startupLog: [],
   environmentId: null,
   focusThreadId: null,
   attempt: 0,
@@ -133,10 +173,27 @@ function transcriptUpdate(event: unknown): TranscriptUpdate | null {
  * backoff, or gives up after `RECONNECT_DELAYS_MS.length` tries. Losing an
  * older live generation while a newer one is opening only drops its audio.
  */
+function logStartup(
+  state: VoiceSessionState,
+  stage: VoiceStartupStage,
+  at: number,
+): VoiceSessionState {
+  if (
+    state.startupLog.at(-1)?.stage === stage &&
+    state.startupLog.at(-1)?.attempt === state.attempt
+  )
+    return state;
+  return {
+    ...state,
+    startupLog: [...state.startupLog, { stage, at, attempt: state.attempt }].slice(-24),
+  };
+}
+
 function loseGeneration(
   state: VoiceSessionState,
   attempt: number,
   message: string | null,
+  at: number,
 ): VoiceSessionState {
   if (attempt !== state.attempt) {
     return attempt === state.liveAttempt
@@ -147,7 +204,7 @@ function loseGeneration(
   const delay = RECONNECT_DELAYS_MS[failures - 1];
   if (delay === undefined) {
     return {
-      ...state,
+      ...logStartup(state, "failed", at),
       status: "failed",
       liveAttempt: null,
       confirms: [],
@@ -157,7 +214,7 @@ function loseGeneration(
   // A failed rotation leaves the previous generation playing.
   const stillLive = state.liveAttempt !== null && state.liveAttempt !== attempt;
   return {
-    ...state,
+    ...logStartup(state, "retrying", at),
     status: stillLive ? "live" : state.generation === null ? "connecting" : "reconnecting",
     liveAttempt: stillLive ? state.liveAttempt : null,
     attempt: state.attempt + 1,
@@ -172,6 +229,7 @@ function applyEnded(
   attempt: number,
   reason: VoiceSessionEndReason,
   message: string | null,
+  at: number,
 ): VoiceSessionState {
   switch (reason) {
     case "rotated":
@@ -190,7 +248,7 @@ function applyEnded(
       return { ...state, status: "ended", liveAttempt: null, confirms: [], message };
     case "closed":
     case "error":
-      return loseGeneration(state, attempt, message);
+      return loseGeneration(state, attempt, message, at);
   }
 }
 
@@ -198,25 +256,27 @@ function applyServerEvent(
   state: VoiceSessionState,
   attempt: number,
   event: VoiceSessionEvent,
+  at: number,
 ): VoiceSessionState {
   switch (event.type) {
     case "answer":
       if (attempt !== state.attempt) return state;
       return {
         ...state,
-        status: "live",
         liveAttempt: attempt,
         generation: event.generation,
         sessionThreadId: event.sessionThreadId,
         focusThreadId: null,
         message: null,
       };
+    case "startup":
+      return attempt === state.attempt ? logStartup(state, event.stage, at) : state;
     case "rotate":
       // Ignore a repeat while the next generation is already opening.
       if (attempt !== state.liveAttempt || state.attempt !== attempt) return state;
       return { ...state, attempt: state.attempt + 1, openDelayMs: 0 };
     case "ended":
-      return applyEnded(state, attempt, event.reason, event.message ?? null);
+      return applyEnded(state, attempt, event.reason, event.message ?? null, at);
     case "notice":
       if (state.notices.some((notice) => notice.id === event.notice.id)) return state;
       return { ...state, notices: [event.notice, ...state.notices].slice(0, MAX_NOTICES) };
@@ -248,6 +308,7 @@ export function voiceSessionReducer(
       if (isVoiceSessionActive(state)) return state;
       return {
         ...INITIAL_VOICE_SESSION_STATE,
+        startupLog: [{ stage: "microphone", at: action.at, attempt: state.attempt + 1 }],
         status: "connecting",
         environmentId: action.environmentId,
         focusThreadId: action.focusThreadId,
@@ -255,19 +316,34 @@ export function voiceSessionReducer(
       };
     case "hang-up":
       if (!isVoiceSessionActive(state)) return state;
-      return { ...state, status: "ended", liveAttempt: null, confirms: [], message: null };
+      return {
+        ...logStartup(state, "cancelled", action.at),
+        status: "ended",
+        liveAttempt: null,
+        confirms: [],
+        message: null,
+      };
     case "microphone-denied":
-      if (!isVoiceSessionActive(state)) return state;
-      return { ...state, status: "microphone-denied", liveAttempt: null, confirms: [] };
+      if (action.attempt !== state.attempt || !isVoiceSessionActive(state)) return state;
+      return {
+        ...logStartup(state, "microphone-denied", action.at),
+        status: "microphone-denied",
+        liveAttempt: null,
+        confirms: [],
+      };
     case "server":
       if (!isVoiceSessionActive(state)) return state;
-      return applyServerEvent(state, action.attempt, action.event);
+      return applyServerEvent(state, action.attempt, action.event, action.at);
     case "audio-connected":
-      if (action.attempt !== state.liveAttempt || state.failures === 0) return state;
-      return { ...state, failures: 0 };
+      if (!isVoiceSessionActive(state) || action.attempt !== state.liveAttempt) return state;
+      return { ...logStartup(state, "connected", action.at), status: "live", failures: 0 };
     case "generation-lost":
       if (!isVoiceSessionActive(state)) return state;
-      return loseGeneration(state, action.attempt, action.message);
+      return loseGeneration(state, action.attempt, action.message, action.at);
+    case "startup":
+      return isVoiceSessionActive(state) && action.attempt === state.attempt
+        ? logStartup(state, action.stage, action.at)
+        : state;
     case "toggle-mute":
       return isVoiceSessionActive(state) ? { ...state, muted: !state.muted } : state;
     case "confirm-removed":

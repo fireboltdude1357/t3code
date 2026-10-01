@@ -12,13 +12,14 @@ import {
   type VoiceSessionOpenInput,
 } from "@t3tools/contracts";
 import { requestRecordingPermissionsAsync } from "expo-audio";
-import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Stream from "effect/Stream";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { AppState, type NativeEventSubscription } from "react-native";
 import InCallManager from "react-native-incall-manager";
 
+import { mobilePreferencesAtom } from "../../state/preferences";
+import { createVoiceStartupAudio } from "./voiceStartupAudio";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { openVoiceSessionPeer, type VoiceSessionPeer } from "./voiceSessionPeer";
@@ -28,6 +29,7 @@ import {
   voiceSessionReducer,
   type VoiceSessionAction,
   type VoiceSessionState,
+  type VoiceStartupStage,
 } from "./voiceSessionState";
 
 /**
@@ -79,11 +81,32 @@ interface Generation {
   closed: boolean;
 }
 
+const voiceStartupAudio = createVoiceStartupAudio();
 const generations = new Map<number, Generation>();
 const confirmTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let preferencesSubscription: (() => void) | null = null;
 let appStateSubscription: NativeEventSubscription | null = null;
 let pendingActions: Array<VoiceSessionAction> = [];
 let dispatching = false;
+
+function startup(attempt: number, stage: VoiceStartupStage): void {
+  dispatch({ type: "startup", attempt, stage, at: Date.now() });
+}
+
+function syncStartupAudio(): void {
+  const state = readState();
+  const stage = state.startupLog.at(-1)?.stage;
+  const waiting =
+    (state.status === "connecting" || state.status === "reconnecting") &&
+    stage !== "retrying" &&
+    stage !== "connecting-audio";
+  const preferences = appAtomRegistry.get(mobilePreferencesAtom);
+  if (waiting && preferences._tag === "Success") {
+    voiceStartupAudio.start(preferences.value.voiceStartupAudio ?? "ringing");
+  } else {
+    voiceStartupAudio.stop();
+  }
+}
 
 function readState(): VoiceSessionState {
   return appAtomRegistry.get(voiceSessionStateAtom);
@@ -110,10 +133,6 @@ function dispatch(action: VoiceSessionAction): void {
   }
 }
 
-function messageOf(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
-}
-
 function closeGeneration(generation: Generation): void {
   generation.closed = true;
   if (generation.openTimer !== null) clearTimeout(generation.openTimer);
@@ -124,7 +143,8 @@ function closeGeneration(generation: Generation): void {
 }
 
 function lose(attempt: number, message: string | null): void {
-  dispatch({ type: "generation-lost", attempt, message });
+  voiceStartupAudio.stop();
+  dispatch({ type: "generation-lost", attempt, message, at: Date.now() });
 }
 
 function handleStreamResult(
@@ -135,8 +155,7 @@ function handleStreamResult(
   const { attempt } = generation;
   if (result._tag === "Failure") {
     if (!generation.ended) {
-      const error = Cause.squash(result.cause);
-      lose(attempt, messageOf(error, "The voice session connection failed."));
+      lose(attempt, "The voice session connection failed.");
     }
     return;
   }
@@ -146,14 +165,31 @@ function handleStreamResult(
     for (const event of result.value) {
       if (generation.closed) return;
       if (event.type === "answer") {
-        if (generation.answerTimer !== null) clearTimeout(generation.answerTimer);
-        generation.answerTimer = null;
-        generation.peer?.acceptAnswer(event.sdpAnswer).catch((error: unknown) => {
-          lose(attempt, messageOf(error, "Could not connect the call audio."));
+        startup(attempt, "connecting-audio");
+        voiceStartupAudio.stop();
+        dispatch({ type: "server", attempt, event, at: Date.now() });
+        generation.peer?.acceptAnswer(event.sdpAnswer).catch(() => {
+          if (!generation.closed) lose(attempt, "Could not connect the call audio.");
         });
+        continue;
       }
-      if (event.type === "ended") generation.ended = true;
-      dispatch({ type: "server", attempt, event });
+      if (event.type === "ended") {
+        generation.ended = true;
+        voiceStartupAudio.stop();
+      }
+      dispatch({
+        type: "server",
+        attempt,
+        event:
+          event.type === "ended" && event.reason === "error"
+            ? {
+                type: "ended",
+                reason: "error",
+                message: "The server could not start or keep the call connected.",
+              }
+            : event,
+        at: Date.now(),
+      });
     }
   }
   if (!result.waiting && !generation.ended && !generation.closed) lose(attempt, null);
@@ -165,16 +201,30 @@ async function runGeneration(
   focusThreadId: ThreadId | null,
 ): Promise<void> {
   const { attempt } = generation;
+  startup(attempt, "microphone");
   const permission = await requestRecordingPermissionsAsync();
   if (generation.closed) return;
   if (!permission.granted) {
-    dispatch({ type: "microphone-denied" });
+    dispatch({ type: "microphone-denied", attempt, at: Date.now() });
     return;
   }
+  startup(attempt, "preparing-audio");
+  generation.answerTimer = setTimeout(() => {
+    generation.answerTimer = null;
+    lose(attempt, "The call did not connect in time.");
+  }, ANSWER_TIMEOUT_MS);
   const peer = await openVoiceSessionPeer({
     onRealtimeEvent: (event) => dispatch({ type: "realtime", attempt, event }),
-    onConnectionFailed: () => lose(attempt, "The call audio connection dropped."),
-    onConnected: () => dispatch({ type: "audio-connected", attempt }),
+    onConnectionFailed: () => {
+      if (!generation.closed) lose(attempt, "The call audio connection dropped.");
+    },
+    onConnected: () => {
+      if (generation.closed) return;
+      voiceStartupAudio.stop();
+      if (generation.answerTimer !== null) clearTimeout(generation.answerTimer);
+      generation.answerTimer = null;
+      dispatch({ type: "audio-connected", attempt, at: Date.now() });
+    },
   });
   if (generation.closed) {
     peer.close();
@@ -182,8 +232,10 @@ async function runGeneration(
   }
   generation.peer = peer;
   peer.setMuted(readState().muted);
+  startup(attempt, "contacting-server");
   const atom = openStreamAtom(environmentId, {
     sdpOffer: peer.offerSdp,
+    startupProgress: true,
     ...(focusThreadId === null ? {} : { focusThreadId }),
   });
   const unsubscribe = appAtomRegistry.subscribe(
@@ -197,12 +249,6 @@ async function runGeneration(
     return;
   }
   generation.unsubscribe = unsubscribe;
-  if (generation.lastBatch === null) {
-    generation.answerTimer = setTimeout(() => {
-      generation.answerTimer = null;
-      lose(attempt, "The server did not answer the call.");
-    }, ANSWER_TIMEOUT_MS);
-  }
 }
 
 function openGeneration(state: VoiceSessionState): void {
@@ -221,8 +267,8 @@ function openGeneration(state: VoiceSessionState): void {
   generations.set(attempt, generation);
   generation.openTimer = setTimeout(() => {
     generation.openTimer = null;
-    runGeneration(generation, environmentId, focusThreadId).catch((error: unknown) => {
-      if (!generation.closed) lose(attempt, messageOf(error, "Could not start the microphone."));
+    runGeneration(generation, environmentId, focusThreadId).catch(() => {
+      if (!generation.closed) lose(attempt, "Could not start the microphone.");
     });
   }, state.openDelayMs);
 }
@@ -266,10 +312,18 @@ function runEffects(previous: VoiceSessionState, state: VoiceSessionState): void
     // "video" media selects the speaker by default while still yielding to
     // headphones and Bluetooth; "audio" would route the reply to the earpiece.
     InCallManager.start({ media: "video" });
+    preferencesSubscription = appAtomRegistry.subscribe(
+      mobilePreferencesAtom,
+      () => syncStartupAudio(),
+      { immediate: true },
+    );
+
     appStateSubscription = AppState.addEventListener("change", (next) => {
       if (next === "active") checkLiveConnection();
     });
   }
+
+  syncStartupAudio();
 
   // Keep only the newest attempt and the one playing audio.
   // Deleting the current entry while iterating a Map is safe.
@@ -288,6 +342,9 @@ function runEffects(previous: VoiceSessionState, state: VoiceSessionState): void
   if (state.confirms !== previous.confirms) syncConfirmTimers(state);
 
   if (!active && wasActive) {
+    preferencesSubscription?.();
+    preferencesSubscription = null;
+    voiceStartupAudio.stop();
     appStateSubscription?.remove();
     appStateSubscription = null;
     InCallManager.stop();
@@ -302,11 +359,12 @@ export function startVoiceSession(input: {
   readonly environmentId: EnvironmentId;
   readonly focusThreadId: ThreadId | null;
 }): void {
-  dispatch({ type: "start", ...input });
+  dispatch({ type: "start", ...input, at: Date.now() });
 }
 
 export function hangUpVoiceSession(): void {
-  dispatch({ type: "hang-up" });
+  voiceStartupAudio.stop();
+  dispatch({ type: "hang-up", at: Date.now() });
 }
 
 export function toggleVoiceSessionMute(): void {

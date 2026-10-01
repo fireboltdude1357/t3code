@@ -18,14 +18,19 @@ import {
   type Project,
   type VoiceNotice,
   type VoiceAgendaItem,
+  type VoiceConfirmRequest,
+  VoiceMcpLaunchResult,
+  VoiceMcpInterruptResult,
+  VoiceMcpConfirmationsResult,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
+import { McpSchema, McpServer } from "effect/unstable/ai";
 
 import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
 import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
@@ -35,6 +40,10 @@ import {
   type ThreadManagementSendInput,
   type ThreadManagementSendResult,
 } from "../../../orchestration-v2/ThreadManagementService.ts";
+import {
+  confirmationReadback,
+  makeVoiceConfirmationGate,
+} from "../../../orchestration-v2/voice/VoiceConfirmation.ts";
 import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
 import {
   VoiceStore,
@@ -43,8 +52,15 @@ import {
 import { ProjectService } from "../../../project/ProjectService.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../../McpInvocationContext.ts";
 import type { ProjectionRecords } from "../../../orchestration-v2/ProjectionStore.ts";
+import { VoiceToolkitRegistrationLive } from "../../McpHttpServer.ts";
 import { VoiceToolkitHandlersLive } from "./handlers.ts";
 import { VoiceToolkit } from "./tools.ts";
+
+const decodeLaunch = Schema.decodeUnknownEffect(Schema.fromJsonString(VoiceMcpLaunchResult));
+const decodeInterrupt = Schema.decodeUnknownEffect(Schema.fromJsonString(VoiceMcpInterruptResult));
+const decodeConfirmations = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(VoiceMcpConfirmationsResult),
+);
 
 const SESSION_THREAD = ThreadId.make("voice-session");
 const OTHER_THREAD = ThreadId.make("ordinary-thread");
@@ -143,6 +159,14 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
   let confirmations = 0;
   let recordReads = 0;
   const delivered: string[] = [];
+  let interruptions = 0;
+  let activeRunId = RunId.make("target-run");
+  let transcript = options.transcript ?? [];
+  const gate = makeVoiceConfirmationGate();
+  const pending = new Map<
+    string,
+    { request: VoiceConfirmRequest; execute: Effect.Effect<string> }
+  >();
   const dependencies = Layer.mergeAll(
     Layer.succeed(Crypto.Crypto, testCrypto),
     Layer.mock(ProviderSessionManagerV2)({
@@ -166,10 +190,56 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
               })
             : Option.none(),
         ),
-      requestConfirmation: () =>
+      claimSpokenSend: ({ text, targetTitle }) =>
+        Effect.sync(() =>
+          gate.claim({
+            transcript,
+            generation: 1,
+            now: DateTime.makeUnsafe("2026-09-30T12:00:01Z"),
+            draft: text,
+            targetTitle,
+          }),
+        ),
+      pendingConfirmations: () =>
+        Effect.succeed([...pending.values()].map(({ request }) => request)),
+      proposeAction: (input) =>
         Effect.sync(() => {
           confirmations += 1;
-          return options.approve ?? false;
+          if (options.approve === false) return Option.none();
+          const request: VoiceConfirmRequest = {
+            id: `pending-${confirmations}`,
+            action: input.action,
+            title: input.title,
+            detail: input.detail,
+            expiresAt: DateTime.makeUnsafe("2026-09-30T12:02:00Z"),
+            ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+          };
+          pending.set(request.id, { request, execute: input.execute });
+          return Option.some(request);
+        }),
+      approveSpoken: ({ requestId }) =>
+        Effect.gen(function* () {
+          const action = pending.get(requestId);
+          if (action === undefined) return { status: "unavailable" as const, requestId };
+          if (
+            !gate.claim({
+              transcript,
+              generation: 1,
+              now: DateTime.makeUnsafe("2026-09-30T12:00:01Z"),
+              draft: confirmationReadback(action.request),
+              exactReadback: true,
+            })
+          )
+            return {
+              status: "needs_spoken_yes" as const,
+              requestId,
+              instruction: "Read back and ask again.",
+            };
+          pending.delete(requestId);
+          return yield* action.execute.pipe(
+            Effect.map((completion) => ({ status: "approved" as const, requestId, completion })),
+            Effect.catchCause(() => Effect.succeed({ status: "failed" as const, requestId })),
+          );
         }),
     }),
     Layer.mock(VoiceStore)({
@@ -188,7 +258,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
           id === TARGET_THREAD
             ? options.missingTarget
               ? null
-              : shell(TARGET_THREAD, WORK_PROJECT)
+              : { ...shell(TARGET_THREAD, WORK_PROJECT), activeRunId }
             : { ...shell(id, ProjectId.make("voice-project")), ...options.caller },
         ),
       getThreadRecords: (id, fields) =>
@@ -215,6 +285,12 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
             providerSessions: options.binding === "detached" ? [] : [binding],
           } as unknown as ProjectionRecords<(typeof fields)[number]>;
         }),
+      interruptThread: (input) =>
+        Effect.sync(() => {
+          expect(input.runId).toBe(RunId.make("target-run"));
+          interruptions += 1;
+          return { type: "interrupt_requested" } as never;
+        }),
       sendToThread: (input) =>
         Effect.sync(() => {
           sends.push(input);
@@ -225,10 +301,13 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
         }),
     }),
     Layer.mock(ThreadLaunchService)({
-      launch: () =>
+      launch: (input) =>
         Effect.sync(() => {
+          expect(input.projectId).toBe(WORK_PROJECT);
+          expect(input.initialMessage?.text).toBe("Review the change");
           launches += 1;
-        }).pipe(Effect.andThen(Effect.die("unexpected launch"))),
+          return { threadId: ThreadId.make("new-thread"), projection: { runs: [] } } as never;
+        }),
     }),
     Layer.mock(ProjectService)({
       getById: (projectId) =>
@@ -261,13 +340,57 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
       }),
       Effect.provide(dependencies),
     );
+  const mcpCall = (name: keyof typeof VoiceToolkit.tools, params: Record<string, unknown>) =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      return yield* server.callTool({ name, arguments: params }).pipe(
+        Effect.provideService(McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment"),
+          threadId: SESSION_THREAD,
+          providerSessionId: "session",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          issuedAt: 0,
+          capabilities: new Set(["orchestration" as const]),
+        }),
+        Effect.provideService(
+          McpSchema.McpServerClient,
+          McpSchema.McpServerClient.of({
+            clientId: 1,
+            protocolVersion: "2025-06-18",
+            clientCapabilities: {},
+            clientInfo: { name: "voice-test", version: "1" },
+            initializePayload: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              clientInfo: { name: "voice-test", version: "1" },
+            },
+            getClient: Effect.die("unused"),
+          }),
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        VoiceToolkitRegistrationLive.pipe(
+          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(dependencies),
+        ),
+      ),
+    );
   return {
     call,
+    mcpCall,
     sends,
     launches: () => launches,
     confirmations: () => confirmations,
     recordReads: () => recordReads,
     delivered,
+    interruptions: () => interruptions,
+    setTranscript: (entries: ReadonlyArray<VoiceTranscriptEntry>) => {
+      transcript = entries;
+    },
+    replaceRun: () => {
+      activeRunId = RunId.make("replacement-run");
+    },
   };
 });
 
@@ -499,3 +622,101 @@ describe("voice toolkit handlers", () => {
     }),
   );
 });
+
+it.effect("launch returns a pending readback and executes only after voice_approve", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness();
+    const proposed = yield* harness.call("voice_launch", {
+      projectId: WORK_PROJECT,
+      title: "Audit",
+      message: "Review the change",
+    });
+    expect(proposed.result).toMatchObject({
+      status: "needs_approval",
+      request: { id: "pending-1" },
+    });
+    expect(harness.launches()).toBe(0);
+    const pending = yield* harness.call("voice_confirmations", {});
+    expect(pending.result).toMatchObject({ requests: [{ request: { id: "pending-1" } }] });
+    const readback = pending.result as { requests: ReadonlyArray<{ readback: string }> };
+    harness.setTranscript([said("assistant", readback.requests[0]!.readback), said("user", "Yes")]);
+    const approved = yield* harness.call("voice_approve", { requestId: "pending-1" });
+    expect(approved.result).toMatchObject({ status: "approved" });
+    expect(harness.launches()).toBe(1);
+    const duplicate = yield* harness.call("voice_approve", { requestId: "pending-1" });
+    expect(duplicate.result).toMatchObject({ status: "unavailable" });
+    expect(harness.launches()).toBe(1);
+  }),
+);
+
+it.effect("an interrupt approval cannot stop a replacement run", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness();
+    yield* harness.call("voice_interrupt", { threadId: TARGET_THREAD });
+    const pending = yield* harness.call("voice_confirmations", {});
+    const readback = pending.result as { requests: ReadonlyArray<{ readback: string }> };
+    harness.setTranscript([said("assistant", readback.requests[0]!.readback), said("user", "Yes")]);
+    harness.replaceRun();
+    const approved = yield* harness.call("voice_approve", { requestId: "pending-1" });
+    expect(approved.result).toMatchObject({ status: "failed" });
+    expect(harness.interruptions()).toBe(0);
+  }),
+);
+
+it.effect("an interrupt uses the run that was read back after approval", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness();
+    yield* harness.call("voice_interrupt", { threadId: TARGET_THREAD });
+    expect(harness.interruptions()).toBe(0);
+    const pending = yield* harness.call("voice_confirmations", {});
+    const readback = pending.result as { requests: ReadonlyArray<{ readback: string }> };
+    harness.setTranscript([said("assistant", readback.requests[0]!.readback), said("user", "Yes")]);
+    const approved = yield* harness.call("voice_approve", { requestId: "pending-1" });
+    expect(approved.result).toMatchObject({ status: "approved" });
+    expect(harness.interruptions()).toBe(1);
+  }),
+);
+
+it.effect(
+  "voice approval requests cross the registered MCP JSON boundary with ISO timestamps",
+  () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const launched = yield* harness.mcpCall("voice_launch", {
+        projectId: WORK_PROJECT,
+        title: "Audit",
+        message: "Review the change",
+      });
+      expect(launched.isError).not.toBe(true);
+      const launch = yield* decodeLaunch(
+        launched.content.find((entry) => entry.type === "text")?.text,
+      );
+      expect(launched.structuredContent).toEqual(launch);
+      expect(launch).toMatchObject({
+        status: "needs_approval",
+        request: { expiresAt: "2026-09-30T12:02:00.000Z" },
+      });
+      const interrupted = yield* harness.mcpCall("voice_interrupt", { threadId: TARGET_THREAD });
+      expect(interrupted.isError).not.toBe(true);
+      const interrupt = yield* decodeInterrupt(
+        interrupted.content.find((entry) => entry.type === "text")?.text,
+      );
+      expect(interrupted.structuredContent).toEqual(interrupt);
+      expect(interrupt).toMatchObject({
+        status: "needs_approval",
+        request: { expiresAt: "2026-09-30T12:02:00.000Z" },
+      });
+      const pending = yield* harness.mcpCall("voice_confirmations", {});
+      expect(pending.isError).not.toBe(true);
+      const decoded = yield* decodeConfirmations(
+        pending.content.find((entry) => entry.type === "text")?.text,
+      );
+      expect(pending.structuredContent).toEqual(decoded);
+      expect(decoded.requests).toHaveLength(2);
+      expect(decoded.requests.every(({ request }) => typeof request.expiresAt === "string")).toBe(
+        true,
+      );
+      expect(harness.launches()).toBe(0);
+      expect(harness.interruptions()).toBe(0);
+    }).pipe(Effect.scoped),
+);
