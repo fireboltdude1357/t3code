@@ -26,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../../config.ts";
@@ -33,7 +34,13 @@ import { ProjectService } from "../../project/ProjectService.ts";
 import type { ProviderAdapterV2RealtimeCall } from "../ProviderAdapter.ts";
 import { ThreadManagementService } from "../ThreadManagementService.ts";
 import { buildBriefing } from "./VoiceBriefing.ts";
-import { composeNoticeBatch, isUrgentBatch, noticeForEvent } from "./VoiceNotificationPolicy.ts";
+import {
+  composeNoticeBatch,
+  isUrgentBatch,
+  noticeForEvent,
+  noticeForRequest,
+  type VoiceNoticeDraft,
+} from "./VoiceNotificationPolicy.ts";
 import { VoiceSessionRegistry } from "./VoiceSessionRegistry.ts";
 import { type PreparedSessionThread, VoiceSessionService } from "./VoiceSessionService.ts";
 import { VoiceStore } from "./VoiceStore.ts";
@@ -137,6 +144,7 @@ interface GenerationEnd {
 }
 
 interface Generation extends LiveVoiceSession {
+  readonly supportsRequestNotices: boolean;
   readonly call: ProviderAdapterV2RealtimeCall;
   readonly events: Queue.Queue<VoiceSessionEvent>;
   readonly end: Deferred.Deferred<GenerationEnd>;
@@ -163,6 +171,7 @@ export const make = Effect.gen(function* () {
 
   const uuid = crypto.randomUUIDv4.pipe(Effect.orDie);
   const state = yield* Ref.make<State>({ live: undefined, warm: undefined });
+  const noticeLock = yield* Semaphore.make(1);
   const confirmations = yield* Ref.make(
     new Map<
       string,
@@ -247,6 +256,7 @@ export const make = Effect.gen(function* () {
         title: shell?.title ?? "A thread",
         ignored:
           shell === null ||
+          shell.archivedAt !== null ||
           (yield* registry.has(threadId)) ||
           shell.projectId === voiceProject ||
           shell.lineage.relationshipToParent === "subagent",
@@ -295,36 +305,87 @@ export const make = Effect.gen(function* () {
 
   const pendingNotices = yield* Queue.unbounded<VoiceNotice>();
 
-  /** Turns one domain event into at most one recorded notice. */
-  const handleEvent = (event: OrchestrationV2DomainEvent) =>
+  const recordDraft = (draft: VoiceNoticeDraft) =>
     Effect.gen(function* () {
-      if (event.type !== "run.updated" && event.type !== "runtime-request.updated") return;
-      const info = yield* threadInfo(event.threadId);
-      const draft = noticeForEvent(event, info);
-      if (draft === undefined) return;
       const notice: VoiceNotice = {
         id: `voice-notice:${yield* uuid}`,
         kind: draft.kind,
         threadId: draft.threadId,
         threadTitle: draft.threadTitle,
+        ...(draft.requestId === undefined ? {} : { requestId: draft.requestId }),
         text: draft.text,
         createdAt: yield* DateTime.now,
       };
-      if (!(yield* store.recordNotice({ ...notice, dedupeKey: draft.dedupeKey }))) return;
-      if (draft.agenda === "open") {
-        yield* store.openThreadItem({
-          threadId: draft.threadId,
-          title: draft.threadTitle,
-          detail: draft.text,
-        });
-      } else if (draft.agenda === "close") {
-        yield* store.closeThreadItem(draft.threadId);
-      }
+      if (!(yield* store.recordNotice({ ...notice, dedupeKey: draft.dedupeKey }))) return false;
+      yield* store.openThreadItem({
+        threadId: draft.threadId,
+        title: draft.threadTitle,
+        detail: draft.text,
+      });
       yield* Queue.offer(pendingNotices, notice);
-      if (event.type === "runtime-request.updated" && (yield* Ref.get(state)).live !== undefined) {
+      return true;
+    });
+
+  const publishRequestNotices = Effect.gen(function* () {
+    if (!(yield* Ref.get(state)).live?.supportsRequestNotices) return;
+    yield* offerToLive({
+      type: "request_notices",
+      notices: yield* store.pendingRequestNotices(BRIEFING_NOTICES),
+    });
+  });
+
+  /** Rebuild attention cards from projections, including requests missed while offline. */
+  const reconcileRequests = Effect.gen(function* () {
+    const snapshot = yield* threads.getShellSnapshot();
+    const pending: Parameters<typeof store.reconcileRequestNotices>[0][number][] = [];
+    for (const shell of snapshot.threads) {
+      if (shell.pendingRuntimeRequest === null) continue;
+      const info = yield* threadInfo(shell.id);
+      if (info.ignored) continue;
+      const records = yield* threads.getThreadRecords(shell.id, ["runtimeRequests"]);
+      for (const request of records.runtimeRequests) {
+        const draft = noticeForRequest(request, info);
+        if (draft === undefined) continue;
+        pending.push({ threadId: shell.id, requestId: request.id });
+        yield* recordDraft(draft);
+      }
+    }
+    yield* store.reconcileRequestNotices(pending);
+  });
+
+  /** Turns one domain event into at most one recorded notice. */
+  const handleEvent = (event: OrchestrationV2DomainEvent) =>
+    Effect.gen(function* () {
+      if (event.type !== "run.updated" && event.type !== "runtime-request.updated") return;
+      if (event.type === "runtime-request.updated" && event.payload.status !== "pending") {
+        yield* store.resolveRequestNotice(event.threadId, event.payload.id);
+        yield* publishRequestNotices;
+        return;
+      }
+      const info = yield* threadInfo(event.threadId);
+      const draft = noticeForEvent(event, info);
+      if (draft === undefined) return;
+      if (event.type === "runtime-request.updated") {
+        const records = yield* threads.getThreadRecords(event.threadId, ["runtimeRequests"]);
+        // The event feed can trail the projection. Never revive an answered question.
+        if (
+          !records.runtimeRequests.some(
+            (request) => request.id === event.payload.id && request.status === "pending",
+          )
+        )
+          return;
+      }
+      const recorded = yield* recordDraft(draft);
+      if (event.type === "runtime-request.updated") yield* publishRequestNotices;
+      if (
+        recorded &&
+        event.type === "runtime-request.updated" &&
+        (yield* Ref.get(state)).live !== undefined
+      ) {
         yield* Effect.forkDetach(confirmRuntimeApproval(event, info.title));
       }
     }).pipe(
+      noticeLock.withPermits(1),
       Effect.catchCause((cause) => Effect.logWarning("voice-session.notice-failed", { cause })),
     );
 
@@ -354,15 +415,45 @@ export const make = Effect.gen(function* () {
       const { live } = yield* Ref.get(state);
       if (live === undefined) return;
       // voice_pending_notices may have handed some to the agent already.
-      const undelivered = new Set(
-        (yield* store.undeliveredNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
-      );
-      const fresh = batch.filter((notice) => undelivered.has(notice.id));
+      const fresh = yield* Effect.gen(function* () {
+        // Resolve queued questions against current state before delayed speech.
+        for (const threadId of new Set(
+          batch.filter((notice) => notice.requestId !== undefined).map((notice) => notice.threadId),
+        )) {
+          const records = yield* threads.getThreadRecords(threadId, ["runtimeRequests"]);
+          const pending = new Set(
+            records.runtimeRequests
+              .filter((request) => request.status === "pending")
+              .map((request) => request.id),
+          );
+          for (const notice of batch) {
+            if (
+              notice.threadId === threadId &&
+              notice.requestId !== undefined &&
+              !pending.has(notice.requestId)
+            ) {
+              yield* store.resolveRequestNotice(threadId, notice.requestId);
+            }
+          }
+        }
+        const undelivered = new Set(
+          (yield* store.undeliveredNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
+        );
+        yield* publishRequestNotices;
+        return batch.filter((notice) => undelivered.has(notice.id));
+      }).pipe(noticeLock.withPermits(1));
       if (fresh.length === 0) return;
       yield* live.call.appendSpeech(composeNoticeBatch(fresh));
-      yield* Effect.forEach(fresh, (notice) =>
-        Queue.offer(live.events, { type: "notice", notice }),
-      );
+      yield* Effect.gen(function* () {
+        const pendingIds = new Set(
+          (yield* store.pendingRequestNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
+        );
+        for (const notice of fresh) {
+          const attention = notice.kind === "input" || notice.kind === "approval";
+          if (attention && (live.supportsRequestNotices || !pendingIds.has(notice.id))) continue;
+          yield* Queue.offer(live.events, { type: "notice", notice });
+        }
+      }).pipe(noticeLock.withPermits(1));
       yield* store.markDelivered(fresh.map((notice) => notice.id));
     }).pipe(
       Effect.catchCause((cause) => Effect.logWarning("voice-session.deliver-failed", { cause })),
@@ -385,6 +476,7 @@ export const make = Effect.gen(function* () {
 
   const briefingFor = (generation: number, focusThreadId: ThreadId | undefined) =>
     Effect.gen(function* () {
+      yield* reconcileRequests.pipe(noticeLock.withPermits(1));
       const [openAgenda, transcript, pending, snapshot, projectShells, voiceProject, now] =
         yield* Effect.all([
           store.listAgenda({ status: "open" }),
@@ -486,6 +578,7 @@ export const make = Effect.gen(function* () {
           (started) => started.stop.pipe(Effect.ignore),
         );
         const current: Generation = {
+          supportsRequestNotices: input.supportsRequestNotices === true,
           generation,
           sessionThreadId: prepared.sessionThreadId,
           focusThreadId: input.focusThreadId,
@@ -517,6 +610,17 @@ export const make = Effect.gen(function* () {
         if (previous !== undefined) {
           yield* Deferred.succeed(previous.end, { reason: "rotated" });
         }
+        // Publish after going live under the same lock as request events. A
+        // resolution during setup cannot be overwritten by an older snapshot.
+        yield* Effect.gen(function* () {
+          yield* reconcileRequests;
+          if (current.supportsRequestNotices) {
+            yield* Queue.offer(current.events, {
+              type: "request_notices",
+              notices: yield* store.pendingRequestNotices(BRIEFING_NOTICES),
+            });
+          }
+        }).pipe(noticeLock.withPermits(1));
         yield* store.markDelivered(pending.map((notice) => notice.id));
         // Cards still waiting for a tap carry over to the new generation.
         yield* Effect.forEach((yield* Ref.get(confirmations)).values(), ({ request }) =>

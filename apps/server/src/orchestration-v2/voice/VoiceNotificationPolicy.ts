@@ -1,5 +1,7 @@
 import type {
   OrchestrationV2DomainEvent,
+  OrchestrationV2RuntimeRequest,
+  RuntimeRequestId,
   ThreadId,
   VoiceNotice,
   VoiceNoticeKind,
@@ -25,6 +27,7 @@ export interface VoiceNoticeDraft {
   readonly text: string;
   readonly dedupeKey: string;
   readonly agenda: "open" | "close" | "none";
+  readonly requestId?: RuntimeRequestId;
 }
 
 /** Higher is spoken first. */
@@ -83,17 +86,23 @@ export function noticeForEvent(
       return draft(thread, status, `run:${event.payload.id}`);
     }
     case "runtime-request.updated": {
-      const request = event.payload;
-      if (request.status !== "pending") return undefined;
-      return draft(
-        thread,
-        request.kind === "user_input" ? "input" : "approval",
-        `request:${request.id}`,
-      );
+      return noticeForRequest(event.payload, thread);
     }
     default:
       return undefined;
   }
+}
+
+/** Reconnect uses the same request identity and policy as live events. */
+export function noticeForRequest(
+  request: OrchestrationV2RuntimeRequest,
+  thread: VoiceThreadInfo,
+): VoiceNoticeDraft | undefined {
+  if (thread.ignored || request.status !== "pending") return undefined;
+  return {
+    ...draft(thread, request.kind === "user_input" ? "input" : "approval", `request:${request.id}`),
+    requestId: request.id,
+  };
 }
 
 const MAX_BATCH_ITEMS = 6;

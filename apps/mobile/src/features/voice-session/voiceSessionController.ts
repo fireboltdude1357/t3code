@@ -184,6 +184,7 @@ async function runGeneration(
   peer.setMuted(readState().muted);
   const atom = openStreamAtom(environmentId, {
     sdpOffer: peer.offerSdp,
+    supportsRequestNotices: true,
     ...(focusThreadId === null ? {} : { focusThreadId }),
   });
   const unsubscribe = appAtomRegistry.subscribe(
