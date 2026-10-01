@@ -38,6 +38,7 @@ describe("V2 preview upgrade", () => {
         [54, "ProjectionThreadsAutoSettleDisabledAt"],
         [56, "RemoveRedundantProjectionIndexes"],
         [57, "VoiceOrchestrator"],
+        [58, "VoiceNoticeRequests"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -118,6 +119,7 @@ describe("V2 preview upgrade", () => {
         [54, "ProjectionThreadsAutoSettleDisabledAt"],
         [56, "RemoveRedundantProjectionIndexes"],
         [57, "VoiceOrchestrator"],
+        [58, "VoiceNoticeRequests"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
