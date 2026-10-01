@@ -1,6 +1,7 @@
 import {
   CommandId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2RuntimeRequest,
   ProjectId,
   type ThreadId,
   type VoiceAgendaItem,
@@ -27,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../../config.ts";
@@ -39,7 +41,13 @@ import {
   sameConfirmationReadback,
 } from "./VoiceConfirmation.ts";
 import { buildBriefing } from "./VoiceBriefing.ts";
-import { composeNoticeBatch, isUrgentBatch, noticeForEvent } from "./VoiceNotificationPolicy.ts";
+import {
+  composeNoticeBatch,
+  isUrgentBatch,
+  noticeForEvent,
+  noticeForRequest,
+  type VoiceNoticeDraft,
+} from "./VoiceNotificationPolicy.ts";
 import { VoiceSessionRegistry } from "./VoiceSessionRegistry.ts";
 import { type PreparedSessionThread, VoiceSessionService } from "./VoiceSessionService.ts";
 import { VoiceStore } from "./VoiceStore.ts";
@@ -165,6 +173,7 @@ interface GenerationEnd {
 }
 
 interface Generation extends LiveVoiceSession {
+  readonly supportsRequestNotices: boolean;
   readonly call: ProviderAdapterV2RealtimeCall;
   readonly events: Queue.Queue<VoiceSessionEvent>;
   readonly end: Deferred.Deferred<GenerationEnd>;
@@ -193,6 +202,7 @@ export const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const gate = makeVoiceConfirmationGate();
   const state = yield* Ref.make<State>({ live: undefined, warm: undefined });
+  const noticeLock = yield* Semaphore.make(1);
   const confirmations = yield* Ref.make(
     new Map<
       string,
@@ -205,6 +215,18 @@ export const make = Effect.gen(function* () {
       }
     >(),
   );
+  const approvalAttempts = yield* Ref.make(
+    new Map<
+      string,
+      {
+        readonly generation: number;
+        readonly decided: Deferred.Deferred<boolean>;
+        readonly finished: Deferred.Deferred<void>;
+      }
+    >(),
+  );
+  const approvalKey = (threadId: ThreadId, requestId: OrchestrationV2RuntimeRequest["id"]) =>
+    `${threadId.length}:${threadId}${requestId}`;
   const voiceProjectId = yield* Ref.make<ProjectId | undefined>(undefined);
 
   /** The dedicated Voice project, created on first use. */
@@ -282,7 +304,10 @@ export const make = Effect.gen(function* () {
       return { accepted: true, completed, completion };
     });
 
-  const beginConfirmation = (input: Parameters<VoiceOrchestratorShape["proposeAction"]>[0]) =>
+  const beginConfirmation = (
+    input: Parameters<VoiceOrchestratorShape["proposeAction"]>[0],
+    existingDecision?: Deferred.Deferred<boolean>,
+  ) =>
     Effect.gen(function* () {
       const live = (yield* Ref.get(state)).live;
       if (
@@ -292,7 +317,7 @@ export const make = Effect.gen(function* () {
         return Option.none();
       const createdAt = yield* DateTime.now;
       const id = `voice-confirm:${yield* uuid}`;
-      const decided = yield* Deferred.make<boolean>();
+      const decided = existingDecision ?? (yield* Deferred.make<boolean>());
       const request: VoiceConfirmRequest = {
         id,
         action: input.action,
@@ -430,15 +455,16 @@ export const make = Effect.gen(function* () {
     });
 
   /** Session threads, subagents and archived threads are never announced. */
-  const threadInfo = (threadId: ThreadId) =>
+  const threadInfo = (threadId: ThreadId, source = threads.getThreadShell(threadId)) =>
     Effect.gen(function* () {
-      const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+      const shell = yield* source.pipe(Effect.orElseSucceed(() => null));
       const voiceProject = yield* Ref.get(voiceProjectId);
       return {
         threadId,
         title: shell?.title ?? "A thread",
         ignored:
           shell === null ||
+          shell.archivedAt !== null ||
           (yield* registry.has(threadId)) ||
           shell.projectId === voiceProject ||
           shell.lineage.relationshipToParent === "subagent",
@@ -451,102 +477,240 @@ export const make = Effect.gen(function* () {
    * gets no card and stays for the user in its thread, as does a denial.
    */
   const confirmRuntimeApproval = (
-    event: Extract<OrchestrationV2DomainEvent, { type: "runtime-request.updated" }>,
+    threadId: ThreadId,
+    request: OrchestrationV2RuntimeRequest,
+    threadTitle: string,
+    generation: number,
+    decided: Deferred.Deferred<boolean>,
+  ) =>
+    Effect.gen(function* () {
+      const confirmation = yield* Effect.gen(function* () {
+        const live = (yield* Ref.get(state)).live;
+        if (
+          live?.generation !== generation ||
+          (yield* Deferred.isDone(decided)) ||
+          request.responseCapability.type !== "live" ||
+          (yield* threadInfo(threadId)).ignored
+        )
+          return Option.none();
+        const providerSessionId = request.responseCapability.providerSessionId;
+        const records = yield* threads.getThreadRecords(
+          threadId,
+          ["runtimeRequests", "turnItems"],
+          { turnItemTypes: ["approval_request"] },
+        );
+        const currentRequest = records.runtimeRequests.find(
+          (candidate) => candidate.id === request.id,
+        );
+        if (
+          currentRequest?.status !== "pending" ||
+          currentRequest.kind === "user_input" ||
+          currentRequest.responseCapability.type !== "live" ||
+          currentRequest.responseCapability.providerSessionId !== providerSessionId
+        )
+          return Option.none();
+        const item = records.turnItems.find(
+          (candidate) =>
+            candidate.type === "approval_request" && candidate.requestId === request.id,
+        );
+        const prompt = item?.type === "approval_request" ? item.prompt?.trim() : undefined;
+        if (prompt === undefined || prompt.length === 0) return Option.none();
+        return yield* beginConfirmation(
+          {
+            sessionThreadId: live.sessionThreadId,
+            action: "runtime_approval",
+            threadId,
+            title: `${threadTitle} needs an approval`,
+            detail: prompt,
+            execute: Effect.gen(function* () {
+              const current = yield* threads.getThreadRecords(
+                threadId,
+                ["runtimeRequests", "turnItems"],
+                { turnItemTypes: ["approval_request"] },
+              );
+              const liveRequest = current.runtimeRequests.find(
+                (candidate) => candidate.id === request.id,
+              );
+              const currentItem = current.turnItems.find(
+                (candidate) =>
+                  candidate.type === "approval_request" && candidate.requestId === request.id,
+              );
+              const currentPrompt =
+                currentItem?.type === "approval_request" ? currentItem.prompt?.trim() : undefined;
+              if (
+                (yield* Ref.get(state)).live?.generation !== generation ||
+                (yield* Deferred.isDone(decided)) ||
+                (yield* threadInfo(threadId)).ignored ||
+                currentPrompt !== prompt ||
+                liveRequest?.status !== "pending" ||
+                liveRequest.kind === "user_input" ||
+                liveRequest.responseCapability.type !== "live" ||
+                liveRequest.responseCapability.providerSessionId !== providerSessionId
+              ) {
+                return yield* Effect.die("The runtime approval is no longer current.");
+              }
+              yield* threads.dispatch({
+                type: "runtime-request.respond",
+                commandId: CommandId.make(`server:voice-session:approve:${yield* uuid}`),
+                threadId,
+                requestId: request.id,
+                decision: "accept",
+              });
+              return `${threadTitle}'s runtime request was approved.`;
+            }).pipe(noticeLock.withPermits(1), Effect.orDie),
+          },
+          decided,
+        );
+      }).pipe(noticeLock.withPermits(1));
+      if (Option.isNone(confirmation)) return;
+      yield* Deferred.await(decided).pipe(
+        Effect.ensuring(resolveConfirmation(confirmation.value.request.id, false)),
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("voice-session.approval-failed", { threadId, cause }),
+      ),
+    );
+
+  /** One gate per request; a reconnect may retry an attempt that already ended. */
+  const scheduleRuntimeApproval = (
+    threadId: ThreadId,
+    request: OrchestrationV2RuntimeRequest,
     threadTitle: string,
   ) =>
     Effect.gen(function* () {
-      const request = event.payload;
+      const { live } = yield* Ref.get(state);
       if (
+        live === undefined ||
         request.status !== "pending" ||
         request.responseCapability.type !== "live" ||
         request.kind === "user_input"
       )
         return;
-      const providerSessionId = request.responseCapability.providerSessionId;
-      const records = yield* threads.getThreadRecords(event.threadId, ["turnItems"], {
-        turnItemTypes: ["approval_request"],
-      });
-      const item = records.turnItems.find(
-        (candidate) => candidate.type === "approval_request" && candidate.requestId === request.id,
+      const key = approvalKey(threadId, request.id);
+      const previous = (yield* Ref.get(approvalAttempts)).get(key);
+      if (
+        previous !== undefined &&
+        (previous.generation === live.generation || !(yield* Deferred.isDone(previous.finished)))
+      )
+        return;
+      const attempt = {
+        generation: live.generation,
+        decided: yield* Deferred.make<boolean>(),
+        finished: yield* Deferred.make<void>(),
+      };
+      yield* Ref.update(approvalAttempts, (current) => new Map(current).set(key, attempt));
+      yield* Effect.forkDetach(
+        confirmRuntimeApproval(
+          threadId,
+          request,
+          threadTitle,
+          attempt.generation,
+          attempt.decided,
+        ).pipe(Effect.ensuring(Deferred.succeed(attempt.finished, undefined))),
       );
-      const prompt = item?.type === "approval_request" ? item.prompt?.trim() : undefined;
-      if (prompt === undefined || prompt.length === 0) return;
-      yield* proposeAction({
-        action: "runtime_approval",
-        threadId: event.threadId,
-        title: `${threadTitle} needs an approval`,
-        detail: prompt,
-        execute: Effect.gen(function* () {
-          const current = yield* threads.getThreadRecords(
-            event.threadId,
-            ["runtimeRequests", "turnItems"],
-            { turnItemTypes: ["approval_request"] },
-          );
-          const liveRequest = current.runtimeRequests.find(
-            (candidate) => candidate.id === request.id,
-          );
-          const currentItem = current.turnItems.find(
-            (candidate) =>
-              candidate.type === "approval_request" && candidate.requestId === request.id,
-          );
-          const currentPrompt =
-            currentItem?.type === "approval_request" ? currentItem.prompt?.trim() : undefined;
-          if (
-            currentPrompt !== prompt ||
-            liveRequest?.status !== "pending" ||
-            liveRequest.responseCapability.type !== "live" ||
-            liveRequest.responseCapability.providerSessionId !== providerSessionId
-          ) {
-            return yield* Effect.die("The runtime approval is no longer current.");
-          }
-          yield* threads.dispatch({
-            type: "runtime-request.respond",
-            commandId: CommandId.make(`server:voice-session:approve:${yield* uuid}`),
-            threadId: event.threadId,
-            requestId: request.id,
-            decision: "accept",
-          });
-          return `${threadTitle}'s runtime request was approved.`;
-        }).pipe(Effect.orDie),
+    });
+
+  const clearApprovalAttempt = (key: string) =>
+    Effect.gen(function* () {
+      const attempt = (yield* Ref.get(approvalAttempts)).get(key);
+      yield* Ref.update(approvalAttempts, (current) => {
+        const updated = new Map(current);
+        updated.delete(key);
+        return updated;
       });
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("voice-session.approval-failed", { threadId: event.threadId, cause }),
-      ),
-    );
+      if (attempt !== undefined) yield* Deferred.succeed(attempt.decided, false);
+    });
 
   const pendingNotices = yield* Queue.unbounded<VoiceNotice>();
 
-  /** Turns one domain event into at most one recorded notice. */
-  const handleEvent = (event: OrchestrationV2DomainEvent) =>
+  const recordDraft = (draft: VoiceNoticeDraft) =>
     Effect.gen(function* () {
-      if (event.type !== "run.updated" && event.type !== "runtime-request.updated") return;
-      const info = yield* threadInfo(event.threadId);
-      const draft = noticeForEvent(event, info);
-      if (draft === undefined) return;
       const notice: VoiceNotice = {
         id: `voice-notice:${yield* uuid}`,
         kind: draft.kind,
         threadId: draft.threadId,
         threadTitle: draft.threadTitle,
+        ...(draft.requestId === undefined ? {} : { requestId: draft.requestId }),
         text: draft.text,
         createdAt: yield* DateTime.now,
       };
-      if (!(yield* store.recordNotice({ ...notice, dedupeKey: draft.dedupeKey }))) return;
-      if (draft.agenda === "open") {
-        yield* store.openThreadItem({
-          threadId: draft.threadId,
-          title: draft.threadTitle,
-          detail: draft.text,
-        });
-      } else if (draft.agenda === "close") {
-        yield* store.closeThreadItem(draft.threadId);
-      }
+      if (!(yield* store.recordNotice({ ...notice, dedupeKey: draft.dedupeKey }))) return false;
+      yield* store.openThreadItem({
+        threadId: draft.threadId,
+        title: draft.threadTitle,
+        detail: draft.text,
+      });
       yield* Queue.offer(pendingNotices, notice);
-      if (event.type === "runtime-request.updated" && (yield* Ref.get(state)).live !== undefined) {
-        yield* Effect.forkDetach(confirmRuntimeApproval(event, info.title));
+      return true;
+    });
+
+  const publishRequestNotices = Effect.gen(function* () {
+    const { live } = yield* Ref.get(state);
+    if (!live?.supportsRequestNotices) return;
+    yield* Queue.offer(live.events, {
+      type: "request_notices",
+      notices: yield* store.pendingRequestNotices(BRIEFING_NOTICES),
+    });
+  });
+
+  /** Rebuild attention cards from projections, including requests missed while offline. */
+  const reconcileRequests = (scheduleApprovals = false) =>
+    Effect.gen(function* () {
+      const snapshot = yield* threads.getShellSnapshot();
+      const pending: Parameters<typeof store.reconcileRequestNotices>[0][number][] = [];
+      for (const shell of snapshot.threads) {
+        if (shell.pendingRuntimeRequest === null) continue;
+        const info = yield* threadInfo(shell.id, Effect.succeed(shell));
+        if (info.ignored) continue;
+        const records = yield* threads.getThreadRecords(shell.id, ["runtimeRequests"]);
+        for (const request of records.runtimeRequests) {
+          const draft = noticeForRequest(request, info);
+          if (draft === undefined) continue;
+          pending.push({ threadId: shell.id, requestId: request.id });
+          yield* recordDraft(draft);
+          if (scheduleApprovals) yield* scheduleRuntimeApproval(shell.id, request, info.title);
+        }
+      }
+      yield* store.reconcileRequestNotices(pending);
+      const pendingKeys = new Set(
+        pending.map(({ threadId, requestId }) => approvalKey(threadId, requestId)),
+      );
+      for (const key of (yield* Ref.get(approvalAttempts)).keys()) {
+        if (!pendingKeys.has(key)) yield* clearApprovalAttempt(key);
+      }
+    });
+
+  /** Turns one domain event into at most one recorded notice. */
+  const handleEvent = (event: OrchestrationV2DomainEvent) =>
+    Effect.gen(function* () {
+      if (event.type !== "run.updated" && event.type !== "runtime-request.updated") return;
+      if (event.type === "runtime-request.updated" && event.payload.status !== "pending") {
+        yield* clearApprovalAttempt(approvalKey(event.threadId, event.payload.id));
+        yield* store.resolveRequestNotice(event.threadId, event.payload.id);
+        yield* publishRequestNotices;
+        return;
+      }
+      const info = yield* threadInfo(event.threadId);
+      const draft = noticeForEvent(event, info);
+      if (draft === undefined) return;
+      if (event.type === "runtime-request.updated") {
+        const records = yield* threads.getThreadRecords(event.threadId, ["runtimeRequests"]);
+        // The event feed can trail the projection. Never revive an answered question.
+        if (
+          !records.runtimeRequests.some(
+            (request) => request.id === event.payload.id && request.status === "pending",
+          )
+        )
+          return;
+      }
+      yield* recordDraft(draft);
+      if (event.type === "runtime-request.updated") {
+        yield* publishRequestNotices;
+        yield* scheduleRuntimeApproval(event.threadId, event.payload, info.title);
       }
     }).pipe(
+      noticeLock.withPermits(1),
       Effect.catchCause((cause) => Effect.logWarning("voice-session.notice-failed", { cause })),
     );
 
@@ -576,15 +740,45 @@ export const make = Effect.gen(function* () {
       const { live } = yield* Ref.get(state);
       if (live === undefined) return;
       // voice_pending_notices may have handed some to the agent already.
-      const undelivered = new Set(
-        (yield* store.undeliveredNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
-      );
-      const fresh = batch.filter((notice) => undelivered.has(notice.id));
+      const fresh = yield* Effect.gen(function* () {
+        // Resolve queued questions against current state before delayed speech.
+        for (const threadId of new Set(
+          batch.filter((notice) => notice.requestId !== undefined).map((notice) => notice.threadId),
+        )) {
+          const records = yield* threads.getThreadRecords(threadId, ["runtimeRequests"]);
+          const pending = new Set(
+            records.runtimeRequests
+              .filter((request) => request.status === "pending")
+              .map((request) => request.id),
+          );
+          for (const notice of batch) {
+            if (
+              notice.threadId === threadId &&
+              notice.requestId !== undefined &&
+              !pending.has(notice.requestId)
+            ) {
+              yield* store.resolveRequestNotice(threadId, notice.requestId);
+            }
+          }
+        }
+        const undelivered = new Set(
+          (yield* store.undeliveredNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
+        );
+        yield* publishRequestNotices;
+        return batch.filter((notice) => undelivered.has(notice.id));
+      }).pipe(noticeLock.withPermits(1));
       if (fresh.length === 0) return;
       yield* live.call.appendSpeech(composeNoticeBatch(fresh));
-      yield* Effect.forEach(fresh, (notice) =>
-        Queue.offer(live.events, { type: "notice", notice }),
-      );
+      yield* Effect.gen(function* () {
+        const pendingIds = new Set(
+          (yield* store.pendingRequestNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
+        );
+        for (const notice of fresh) {
+          const attention = notice.kind === "input" || notice.kind === "approval";
+          if (attention && (live.supportsRequestNotices || !pendingIds.has(notice.id))) continue;
+          yield* Queue.offer(live.events, { type: "notice", notice });
+        }
+      }).pipe(noticeLock.withPermits(1));
       yield* store.markDelivered(fresh.map((notice) => notice.id));
     }).pipe(
       Effect.catchCause((cause) => Effect.logWarning("voice-session.deliver-failed", { cause })),
@@ -607,6 +801,7 @@ export const make = Effect.gen(function* () {
 
   const briefingFor = (generation: number, focusThreadId: ThreadId | undefined) =>
     Effect.gen(function* () {
+      yield* reconcileRequests().pipe(noticeLock.withPermits(1));
       const [openAgenda, transcript, pending, snapshot, projectShells, voiceProject, now] =
         yield* Effect.all([
           store.listAgenda({ status: "open" }),
@@ -718,6 +913,7 @@ export const make = Effect.gen(function* () {
           { interruptible: true },
         );
         const current: Generation = {
+          supportsRequestNotices: input.supportsRequestNotices === true,
           generation,
           sessionThreadId: prepared.sessionThreadId,
           focusThreadId: input.focusThreadId,
@@ -760,13 +956,39 @@ export const make = Effect.gen(function* () {
         if (previous !== undefined) {
           yield* Deferred.succeed(previous.end, { reason: "rotated" });
         }
+        // Publish after going live under the same lock as request events. A
+        // resolution during setup cannot be overwritten by an older snapshot.
+        yield* Effect.gen(function* () {
+          if ((yield* Ref.get(state)).live !== current) return;
+          // Retire the old call's gates before scheduling fresh gates for this generation.
+          yield* Effect.forEach([...(yield* Ref.get(confirmations)).values()], (pending) =>
+            pending.generation < current.generation
+              ? resolveConfirmation(pending.request.id, false)
+              : Effect.void,
+          );
+          for (const [key, attempt] of (yield* Ref.get(approvalAttempts)).entries()) {
+            if (attempt.generation < current.generation) yield* clearApprovalAttempt(key);
+          }
+          yield* reconcileRequests(true);
+          if (current.supportsRequestNotices) {
+            yield* Queue.offer(current.events, {
+              type: "request_notices",
+              notices: yield* store.pendingRequestNotices(BRIEFING_NOTICES),
+            });
+          }
+          yield* Effect.forEach((yield* Ref.get(confirmations)).values(), (pending) =>
+            Deferred.isDone(pending.decided).pipe(
+              Effect.flatMap((done) =>
+                done || pending.generation !== current.generation
+                  ? Effect.void
+                  : Queue.offer(current.events, { type: "confirm", request: pending.request }).pipe(
+                      Effect.asVoid,
+                    ),
+              ),
+            ),
+          );
+        }).pipe(noticeLock.withPermits(1));
         yield* store.markDelivered(pending.map((notice) => notice.id));
-        // A new generation cannot execute actions proposed by the retired call.
-        yield* Effect.forEach([...(yield* Ref.get(confirmations)).values()], (pending) =>
-          pending.generation < current.generation
-            ? resolveConfirmation(pending.request.id, false)
-            : Effect.void,
-        );
 
         const rotateAt = Duration.toMillis(ROTATE_AFTER);
         yield* Effect.sleep(Duration.millis(rotateAt - Duration.toMillis(PREWARM_LEAD))).pipe(

@@ -6,6 +6,7 @@ import type {
   VoiceSessionEndReason,
   VoiceSessionEvent,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 
 /**
  * `connecting` waits for connected audio, `live` has audio playing (a
@@ -68,6 +69,8 @@ export interface VoiceSessionState {
   readonly transcript: { readonly text: string; readonly done: boolean } | null;
   /** Newest first. */
   readonly notices: ReadonlyArray<VoiceNotice>;
+  /** The live generation sent a snapshot, so individual attention notices are stale. */
+  readonly hasRequestSnapshot: boolean;
   readonly confirms: ReadonlyArray<VoiceConfirmRequest>;
   readonly message: string | null;
 }
@@ -116,6 +119,16 @@ export const RECONNECT_DELAYS_MS: ReadonlyArray<number> = [1_000, 3_000, 8_000];
 
 const MAX_NOTICES = 20;
 
+function isRequestNotice(notice: VoiceNotice): boolean {
+  return notice.kind === "input" || notice.kind === "approval";
+}
+
+function newestNotices(notices: ReadonlyArray<VoiceNotice>): ReadonlyArray<VoiceNotice> {
+  return [...notices]
+    .sort((a, b) => DateTime.toEpochMillis(b.createdAt) - DateTime.toEpochMillis(a.createdAt))
+    .slice(0, MAX_NOTICES);
+}
+
 export const INITIAL_VOICE_SESSION_STATE: VoiceSessionState = {
   status: "idle",
   startupLog: [],
@@ -130,6 +143,7 @@ export const INITIAL_VOICE_SESSION_STATE: VoiceSessionState = {
   muted: false,
   transcript: null,
   notices: [],
+  hasRequestSnapshot: false,
   confirms: [],
   message: null,
 };
@@ -267,6 +281,7 @@ function applyServerEvent(
         generation: event.generation,
         sessionThreadId: event.sessionThreadId,
         focusThreadId: null,
+        hasRequestSnapshot: false,
         message: null,
       };
     case "startup":
@@ -277,9 +292,22 @@ function applyServerEvent(
       return { ...state, attempt: state.attempt + 1, openDelayMs: 0 };
     case "ended":
       return applyEnded(state, attempt, event.reason, event.message ?? null, at);
+    case "request_notices":
+      if (attempt !== state.liveAttempt) return state;
+      return {
+        ...state,
+        hasRequestSnapshot: true,
+        notices: newestNotices([
+          ...event.notices.filter(isRequestNotice),
+          ...state.notices.filter((notice) => !isRequestNotice(notice)),
+        ]),
+      };
     case "notice":
+      if (attempt !== state.liveAttempt) return state;
+      // Older servers send individual pending cards. Once a snapshot arrives, it owns them.
+      if (state.hasRequestSnapshot && isRequestNotice(event.notice)) return state;
       if (state.notices.some((notice) => notice.id === event.notice.id)) return state;
-      return { ...state, notices: [event.notice, ...state.notices].slice(0, MAX_NOTICES) };
+      return { ...state, notices: newestNotices([event.notice, ...state.notices]) };
     case "confirm":
       if (state.confirms.some((request) => request.id === event.request.id)) return state;
       return { ...state, confirms: [...state.confirms, event.request] };

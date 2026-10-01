@@ -1,4 +1,10 @@
-import { EnvironmentId, ThreadId, type VoiceSessionEvent } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  RuntimeRequestId,
+  ThreadId,
+  type VoiceNotice,
+  type VoiceSessionEvent,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -45,6 +51,26 @@ function run(...actions: ReadonlyArray<VoiceSessionAction>): VoiceSessionState {
       : next;
   }, INITIAL_VOICE_SESSION_STATE);
 }
+
+function notice(
+  id: string,
+  kind: VoiceNotice["kind"],
+  timestamp = 0,
+  requestId?: string,
+): VoiceNotice {
+  return {
+    id,
+    kind,
+    threadId: ThreadId.make("t1"),
+    threadTitle: "Fix login",
+    text: id,
+    createdAt: DateTime.makeUnsafe(timestamp),
+    ...(requestId === undefined ? {} : { requestId: RuntimeRequestId.make(requestId) }),
+  };
+}
+
+const requests = (attempt: number, notices: ReadonlyArray<VoiceNotice>): VoiceSessionAction =>
+  server(attempt, { type: "request_notices", notices });
 
 describe("voiceSessionReducer", () => {
   it("keeps startup visible until audio connects and ignores cancelled or stale progress", () => {
@@ -207,6 +233,172 @@ describe("voiceSessionReducer", () => {
     expect(
       voiceSessionReducer(state, { type: "confirm-removed", requestId: "c1" }).confirms,
     ).toEqual([]);
+  });
+
+  it("clears a question as soon as the answer's settled snapshot arrives", () => {
+    const completed = notice("completed", "completed");
+    const question = notice("question", "input", 1, "question-1");
+    const approval = notice("approval", "approval", 2, "approval-1");
+    const pending = run(
+      start,
+      answer(1),
+      server(1, { type: "notice", notice: completed }),
+      requests(1, [question, approval]),
+    );
+    expect(pending.notices).toEqual([approval, question, completed]);
+
+    const answered = voiceSessionReducer(pending, requests(1, [approval]));
+    expect(answered.notices).toEqual([approval, completed]);
+    expect(voiceSessionReducer(answered, requests(1, [])).notices).toEqual([completed]);
+  });
+
+  it("accepts older servers' attention notices until each generation sends a snapshot", () => {
+    const question = notice("legacy-input", "input", 1);
+    const approval = notice("approval", "approval", 2, "approval-1");
+    const legacy = run(
+      start,
+      answer(1),
+      server(1, { type: "notice", notice: question }),
+      server(1, { type: "notice", notice: approval }),
+    );
+    expect(legacy.notices).toEqual([approval, question]);
+    expect(voiceSessionReducer(legacy, server(1, { type: "notice", notice: question }))).toBe(
+      legacy,
+    );
+
+    const settled = voiceSessionReducer(legacy, requests(1, []));
+    const rotating = voiceSessionReducer(settled, server(1, { type: "rotate" }));
+    expect(voiceSessionReducer(rotating, server(1, { type: "notice", notice: question }))).toBe(
+      rotating,
+    );
+    const next = voiceSessionReducer(rotating, answer(2));
+    expect(voiceSessionReducer(next, requests(1, []))).toBe(next);
+    const nextApproval = notice("legacy-approval", "approval", 3);
+    expect(
+      voiceSessionReducer(next, server(2, { type: "notice", notice: nextApproval })).notices,
+    ).toEqual([nextApproval]);
+  });
+
+  it("clears legacy and identified requests missed while reconnecting, retaining history", () => {
+    const completed = notice("completed", "completed");
+    const failed = notice("failed", "failed", 1);
+    const live = run(start, answer(1));
+    const pending: VoiceSessionState = {
+      ...live,
+      notices: [
+        notice("legacy-input", "input", 4),
+        notice("known-approval", "approval", 3, "approval-1"),
+        notice("known-input", "input", 2, "question-1"),
+        notice("legacy-approval", "approval", 2),
+        failed,
+        completed,
+      ],
+    };
+    const reconnecting = voiceSessionReducer(pending, ended(1, "closed"));
+    const reconnected = voiceSessionReducer(reconnecting, answer(2));
+    expect(voiceSessionReducer(reconnected, requests(2, [])).notices).toEqual([failed, completed]);
+  });
+
+  it("shows a later distinct question in the same thread after the first is answered", () => {
+    const first = notice("question-1", "input", 1, "request-1");
+    const second = notice("question-2", "input", 2, "request-2");
+    const state = run(start, answer(1), requests(1, [first]), requests(1, []));
+    expect(voiceSessionReducer(state, requests(1, [second])).notices).toEqual([second]);
+  });
+
+  it("uses the live stream during rotation and ignores its events after the new answer", () => {
+    const first = notice("question-1", "input", 1, "request-1");
+    const second = notice("question-2", "input", 2, "request-2");
+    const rotating = run(start, answer(1), server(1, { type: "rotate" }));
+    const pending = voiceSessionReducer(rotating, requests(1, [first]));
+    expect(pending.notices).toEqual([first]);
+    expect(voiceSessionReducer(pending, requests(2, []))).toBe(pending);
+
+    const replaced = voiceSessionReducer(pending, answer(2));
+    const current = voiceSessionReducer(replaced, requests(2, [second]));
+    expect(voiceSessionReducer(current, requests(1, []))).toBe(current);
+    expect(voiceSessionReducer(current, requests(1, [first]))).toBe(current);
+    expect(voiceSessionReducer(current, server(1, { type: "notice", notice: first }))).toBe(
+      current,
+    );
+    expect(
+      voiceSessionReducer(
+        current,
+        server(1, { type: "notice", notice: notice("old-completed", "completed", 3) }),
+      ),
+    ).toBe(current);
+
+    const settled = voiceSessionReducer(current, requests(2, []));
+    expect(voiceSessionReducer(settled, server(2, { type: "notice", notice: second }))).toBe(
+      settled,
+    );
+    expect(voiceSessionReducer(settled, requests(1, [first]))).toBe(settled);
+    expect(voiceSessionReducer(settled, answer(1))).toBe(settled);
+  });
+
+  it("ignores snapshots and history from a lost stream while reconnecting", () => {
+    const pending = run(
+      start,
+      answer(1),
+      requests(1, [notice("question", "input", 1, "request-1")]),
+      ended(1, "closed"),
+    );
+    expect(voiceSessionReducer(pending, requests(1, []))).toBe(pending);
+    expect(voiceSessionReducer(pending, requests(2, []))).toBe(pending);
+    expect(
+      voiceSessionReducer(
+        pending,
+        server(1, { type: "notice", notice: notice("completed", "completed") }),
+      ),
+    ).toBe(pending);
+  });
+
+  it("does not restore settled requests from delayed individual attention notices", () => {
+    const question = notice("question", "input", 1, "request-1");
+    const state = run(start, answer(1), requests(1, [question]), requests(1, []));
+    for (const delayed of [
+      question,
+      notice("approval", "approval", 2, "approval-1"),
+      notice("legacy-input", "input", 3),
+      notice("legacy-approval", "approval", 4),
+    ]) {
+      expect(voiceSessionReducer(state, server(1, { type: "notice", notice: delayed }))).toBe(
+        state,
+      );
+    }
+    const completed = notice("completed", "completed", 5);
+    const failed = notice("failed", "failed", 6);
+    expect(
+      [completed, failed].reduce(
+        (previous, item) =>
+          voiceSessionReducer(previous, server(1, { type: "notice", notice: item })),
+        state,
+      ).notices,
+    ).toEqual([failed, completed]);
+  });
+
+  it("orders snapshots and delayed history by DateTime and caps the combined list", () => {
+    const history = Array.from({ length: 15 }, (_, index) =>
+      notice(`completed-${index}`, "completed", index * 1_000),
+    );
+    const pending = Array.from({ length: 15 }, (_, index) =>
+      notice(`question-${index}`, "input", (index + 15) * 1_000, `request-${index}`),
+    );
+    const initial = run(
+      start,
+      answer(1),
+      ...history.map((item) => server(1, { type: "notice", notice: item })),
+    );
+    const snapshot = voiceSessionReducer(initial, requests(1, pending));
+    expect(snapshot.notices).toEqual([...pending.toReversed(), ...history.slice(-5).toReversed()]);
+    const delayed = notice("delayed-failure", "failed", 20_500);
+    const withHistory = voiceSessionReducer(
+      snapshot,
+      server(1, { type: "notice", notice: delayed }),
+    );
+    expect(withHistory.notices).toHaveLength(20);
+    expect(withHistory.notices.indexOf(delayed)).toBe(9);
+    expect(withHistory.notices.at(-1)?.id).toBe("completed-11");
   });
 
   it("keeps the assistant's current line from the live generation only", () => {

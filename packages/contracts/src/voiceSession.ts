@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  NonNegativeInt,
+  RuntimeRequestId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 
 /** SDP must pass through byte for byte, so it is never trimmed. */
 const Sdp = Schema.String.check(Schema.isNonEmpty());
@@ -20,6 +25,8 @@ export const VoiceSessionOpenInput = Schema.Struct({
   startupProgress: Schema.optional(Schema.Boolean),
   /** Thread the user opened the call from, briefed first. */
   focusThreadId: Schema.optional(ThreadId),
+  /** Clients opt in before the server sends the request_notices event. */
+  supportsRequestNotices: Schema.optional(Schema.Boolean),
 });
 export type VoiceSessionOpenInput = typeof VoiceSessionOpenInput.Type;
 
@@ -33,6 +40,8 @@ export const VoiceNotice = Schema.Struct({
   kind: VoiceNoticeKind,
   threadId: ThreadId,
   threadTitle: Schema.String,
+  /** Runtime question or approval this notice belongs to. */
+  requestId: Schema.optional(RuntimeRequestId),
   /** One short sentence, written to be read aloud. */
   text: Schema.String,
   createdAt: Schema.DateTimeUtc,
@@ -83,6 +92,8 @@ export const VoiceSessionEvent = Schema.Union([
     sdpAnswer: Sdp,
   }),
   Schema.Struct({ type: Schema.Literal("notice"), notice: VoiceNotice }),
+  /** Authoritative pending questions and approvals, including after reconnect. */
+  Schema.Struct({ type: Schema.Literal("request_notices"), notices: Schema.Array(VoiceNotice) }),
   Schema.Struct({ type: Schema.Literal("confirm"), request: VoiceConfirmRequest }),
   Schema.Struct({
     type: Schema.Literal("confirm_resolved"),

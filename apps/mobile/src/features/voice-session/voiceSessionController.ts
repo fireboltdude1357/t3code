@@ -236,6 +236,7 @@ async function runGeneration(
   const atom = openStreamAtom(environmentId, {
     sdpOffer: peer.offerSdp,
     startupProgress: true,
+    supportsRequestNotices: true,
     ...(focusThreadId === null ? {} : { focusThreadId }),
   });
   const unsubscribe = appAtomRegistry.subscribe(

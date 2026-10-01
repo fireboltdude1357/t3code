@@ -1,10 +1,11 @@
-import { VoiceAgendaItem, VoiceNotice, type ThreadId } from "@t3tools/contracts";
+import { RuntimeRequestId, ThreadId, VoiceAgendaItem, VoiceNotice } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 /** One final transcript part from a realtime session. */
@@ -50,6 +51,16 @@ export interface VoiceStoreShape {
     notice: VoiceNotice & { readonly dedupeKey: string },
   ) => Effect.Effect<boolean>;
   readonly markDelivered: (noticeIds: ReadonlyArray<string>) => Effect.Effect<void>;
+  readonly resolveRequestNotice: (
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+  ) => Effect.Effect<void>;
+  /** Active questions and approvals, including notices already delivered. Newest first. */
+  readonly pendingRequestNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
+  /** Restores known pending notices and resolves absent notices, including unknown legacy IDs. */
+  readonly reconcileRequestNotices: (
+    pending: ReadonlyArray<{ readonly threadId: ThreadId; readonly requestId: RuntimeRequestId }>,
+  ) => Effect.Effect<void>;
   /** Oldest first. */
   readonly undeliveredNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
   /** Newest first. */
@@ -75,7 +86,16 @@ const decodeAgenda = Schema.decodeUnknownEffect(
 );
 const decodeNotices = Schema.decodeUnknownEffect(
   Schema.Array(
-    VoiceNotice.mapFields((fields) => ({ ...fields, createdAt: Schema.DateTimeUtcFromString })),
+    VoiceNotice.mapFields((fields) => ({
+      ...fields,
+      requestId: Schema.NullOr(Schema.String).pipe(
+        Schema.decodeTo(fields.requestId, {
+          decode: SchemaGetter.transform((value) => value ?? undefined),
+          encode: SchemaGetter.transform((value) => value ?? null),
+        }),
+      ),
+      createdAt: Schema.DateTimeUtcFromString,
+    })),
   ),
 );
 const decodeTranscript = Schema.decodeUnknownEffect(
@@ -86,6 +106,12 @@ const decodeTranscript = Schema.decodeUnknownEffect(
       text: Schema.String,
       at: Schema.DateTimeUtcFromString,
     }),
+  ),
+);
+
+const encodePendingRequests = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ threadId: ThreadId, requestId: RuntimeRequestId })),
   ),
 );
 
@@ -112,7 +138,7 @@ export const layer = Layer.effect(
       opened_at AS openedAt, closed_at AS closedAt
     `);
     const noticeColumns = sql.literal(`
-      notice_id AS id, kind, thread_id AS threadId, thread_title AS threadTitle, text,
+      notice_id AS id, kind, thread_id AS threadId, thread_title AS threadTitle, request_id AS requestId, text,
       created_at AS createdAt
     `);
 
@@ -201,9 +227,9 @@ export const layer = Layer.effect(
     const recordNotice: VoiceStoreShape["recordNotice"] = (notice) =>
       sql`
         INSERT INTO voice_notice_ledger
-          (notice_id, dedupe_key, kind, thread_id, thread_title, text, created_at, delivered_at)
+          (notice_id, dedupe_key, kind, thread_id, thread_title, request_id, text, created_at, delivered_at, resolved_at)
         VALUES (${notice.id}, ${notice.dedupeKey}, ${notice.kind}, ${notice.threadId},
-          ${notice.threadTitle}, ${notice.text}, ${iso(notice.createdAt)}, NULL)
+          ${notice.threadTitle}, ${notice.requestId ?? null}, ${notice.text}, ${iso(notice.createdAt)}, NULL, NULL)
         ON CONFLICT(dedupe_key) DO NOTHING
         RETURNING notice_id
       `.pipe(
@@ -222,10 +248,89 @@ export const layer = Layer.effect(
             `;
           }).pipe(Effect.orDie);
 
+    const resolvedAgendaDetail = (kind: VoiceNotice["kind"]) =>
+      kind === "input"
+        ? "The question was answered or closed."
+        : "The approval request was answered or closed.";
+
+    const refreshResolvedAgenda = Effect.fnUntraced(function* (
+      notices: ReadonlyArray<Pick<VoiceNotice, "threadId" | "kind" | "text">>,
+    ) {
+      for (const notice of notices) {
+        const detail = resolvedAgendaDetail(notice.kind);
+        yield* sql`
+          UPDATE voice_agenda SET detail = ${detail}
+          WHERE kind = 'thread' AND status = 'open'
+            AND thread_id = ${notice.threadId} AND detail = ${notice.text}
+            AND NOT EXISTS (
+              SELECT 1 FROM voice_notice_ledger AS pending
+              WHERE pending.thread_id = voice_agenda.thread_id
+                AND pending.text = voice_agenda.detail
+                AND pending.kind IN ('input', 'approval') AND pending.resolved_at IS NULL
+            )
+        `;
+      }
+    });
+
+    const resolveRequestNotice: VoiceStoreShape["resolveRequestNotice"] = (threadId, requestId) =>
+      Effect.gen(function* () {
+        const now = iso(yield* DateTime.now);
+        const resolved = yield* sql<Pick<VoiceNotice, "threadId" | "kind" | "text">>`
+          UPDATE voice_notice_ledger SET resolved_at = ${now}
+          WHERE thread_id = ${threadId} AND request_id = ${requestId}
+            AND kind IN ('input', 'approval') AND resolved_at IS NULL
+          RETURNING thread_id AS threadId, kind, text
+        `;
+        yield* refreshResolvedAgenda(resolved);
+      }).pipe(sql.withTransaction, Effect.orDie);
+
+    const pendingRequestNotices: VoiceStoreShape["pendingRequestNotices"] = (limit) =>
+      sql`
+        SELECT ${noticeColumns} FROM voice_notice_ledger
+        WHERE kind IN ('input', 'approval') AND resolved_at IS NULL
+        ORDER BY created_at DESC, notice_id DESC
+        LIMIT ${limit}
+      `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
+
+    const reconcileRequestNotices: VoiceStoreShape["reconcileRequestNotices"] = (pending) =>
+      Effect.gen(function* () {
+        const now = iso(yield* DateTime.now);
+        const pendingJson = encodePendingRequests(pending);
+        const restored = yield* sql<Pick<VoiceNotice, "threadId" | "kind" | "text">>`
+          UPDATE voice_notice_ledger SET resolved_at = NULL
+          WHERE kind IN ('input', 'approval') AND resolved_at IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM json_each(${pendingJson}) AS pending
+              WHERE json_extract(pending.value, '$.threadId') = voice_notice_ledger.thread_id
+                AND json_extract(pending.value, '$.requestId') = voice_notice_ledger.request_id
+            )
+          RETURNING thread_id AS threadId, kind, text
+        `;
+        for (const notice of restored) {
+          yield* sql`
+            UPDATE voice_agenda SET detail = ${notice.text}
+            WHERE kind = 'thread' AND status = 'open'
+              AND thread_id = ${notice.threadId} AND detail = ${resolvedAgendaDetail(notice.kind)}
+          `;
+        }
+        const resolved = yield* sql<Pick<VoiceNotice, "threadId" | "kind" | "text">>`
+          UPDATE voice_notice_ledger SET resolved_at = ${now}
+          WHERE kind IN ('input', 'approval') AND resolved_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM json_each(${pendingJson}) AS pending
+              WHERE json_extract(pending.value, '$.threadId') = voice_notice_ledger.thread_id
+                AND json_extract(pending.value, '$.requestId') = voice_notice_ledger.request_id
+            )
+          RETURNING thread_id AS threadId, kind, text
+        `;
+        yield* refreshResolvedAgenda(resolved);
+      }).pipe(sql.withTransaction, Effect.orDie);
+
     const undeliveredNotices: VoiceStoreShape["undeliveredNotices"] = (limit) =>
       sql`
         SELECT ${noticeColumns} FROM voice_notice_ledger
         WHERE delivered_at IS NULL
+          AND (kind NOT IN ('input', 'approval') OR resolved_at IS NULL)
         ORDER BY created_at ASC, notice_id ASC
         LIMIT ${limit}
       `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
@@ -233,6 +338,7 @@ export const layer = Layer.effect(
     const recentNotices: VoiceStoreShape["recentNotices"] = (limit) =>
       sql`
         SELECT ${noticeColumns} FROM voice_notice_ledger
+        WHERE kind NOT IN ('input', 'approval') OR resolved_at IS NULL
         ORDER BY created_at DESC, notice_id DESC
         LIMIT ${limit}
       `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
@@ -262,6 +368,9 @@ export const layer = Layer.effect(
       listAgenda,
       recordNotice,
       markDelivered,
+      resolveRequestNotice,
+      pendingRequestNotices,
+      reconcileRequestNotices,
       undeliveredNotices,
       recentNotices,
       appendTranscript,
