@@ -18,6 +18,7 @@ import {
   type Project,
   type VoiceNotice,
   type VoiceAgendaItem,
+  type ServerProvider,
   type VoiceConfirmRequest,
   VoiceMcpLaunchResult,
   VoiceMcpInterruptResult,
@@ -52,6 +53,7 @@ import {
 import { ProjectService } from "../../../project/ProjectService.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../../McpInvocationContext.ts";
 import type { ProjectionRecords } from "../../../orchestration-v2/ProjectionStore.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { VoiceToolkitRegistrationLive } from "../../McpHttpServer.ts";
 import { VoiceToolkitHandlersLive } from "./handlers.ts";
 import { VoiceToolkit } from "./tools.ts";
@@ -138,6 +140,18 @@ const question = (id: string): OrchestrationV2TurnItem => ({
     },
   ],
 });
+// Only the fields the launch model lookup reads.
+const claudeProvider = (instanceId: string, overrides: Partial<ServerProvider> = {}) =>
+  ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: "claudeAgent",
+    enabled: true,
+    installed: true,
+    status: "ready",
+    auth: { status: "authenticated" },
+    models: [{ slug: "claude-opus-5-5" }],
+    ...overrides,
+  }) as unknown as ServerProvider;
 
 interface HarnessOptions {
   readonly transcript?: ReadonlyArray<VoiceTranscriptEntry>;
@@ -151,6 +165,7 @@ interface HarnessOptions {
   readonly agenda?: ReadonlyArray<VoiceAgendaItem>;
   readonly binding?: "detached" | "stopped" | "error" | "missing_thread";
   readonly runtimeLive?: boolean;
+  readonly providers?: ReadonlyArray<ServerProvider>;
 }
 
 const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: HarnessOptions = {}) {
@@ -305,9 +320,23 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
         Effect.sync(() => {
           expect(input.projectId).toBe(WORK_PROJECT);
           expect(input.initialMessage?.text).toBe("Review the change");
+          expect(input.modelSelection).toEqual({
+            instanceId: "claude_vibeproxy",
+            model: "claude-opus-5-5",
+            options: [{ id: "effort", value: "high" }],
+          });
+          expect(input.runtimeMode).toBe("full-access");
           launches += 1;
           return { threadId: ThreadId.make("new-thread"), projection: { runs: [] } } as never;
         }),
+    }),
+    Layer.mock(ProviderRegistry)({
+      getProviders: Effect.succeed(
+        options.providers ?? [
+          claudeProvider("claudeAgent", { enabled: false }),
+          claudeProvider("claude_vibeproxy"),
+        ],
+      ),
     }),
     Layer.mock(ProjectService)({
       getById: (projectId) =>
@@ -646,6 +675,23 @@ it.effect("launch returns a pending readback and executes only after voice_appro
     const duplicate = yield* harness.call("voice_approve", { requestId: "pending-1" });
     expect(duplicate.result).toMatchObject({ status: "unavailable" });
     expect(harness.launches()).toBe(1);
+  }),
+);
+
+it.effect("launch refuses when no working Claude provider offers Opus 5.5", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness({
+      providers: [claudeProvider("claude_vibeproxy", { models: [] })],
+    });
+    const result = yield* harness.call("voice_launch", {
+      projectId: WORK_PROJECT,
+      title: "Audit",
+      message: "Review",
+    });
+    expect(result.isFailure).toBe(true);
+    expect(result.encodedResult).toMatchObject({ code: "invalid_request" });
+    expect(harness.confirmations()).toBe(0);
+    expect(harness.launches()).toBe(0);
   }),
 );
 

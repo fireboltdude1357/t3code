@@ -141,7 +141,7 @@ const VoiceSendTool = Tool.make("voice_send", {
 const VoiceLaunchTool = Tool.make("voice_launch", {
   ...shared,
   description:
-    "Start a new thread in a project's root checkout with a first message. Returns needs_approval with a requestId and exact readback. Read it word for word, wait for a fresh spoken yes, then call voice_approve. The user can also tap Approve on the phone.",
+    "Start a new thread in a project's root checkout with a first message. The thread runs Claude Opus 5.5 on high with full access. Returns needs_approval with a requestId and exact readback. Read it word for word, wait for a fresh spoken yes, then call voice_approve. The user can also tap Approve on the phone.",
   parameters: VoiceMcpLaunchInput,
   success: VoiceMcpLaunchResult,
 })
