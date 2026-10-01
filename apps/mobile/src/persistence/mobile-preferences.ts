@@ -17,6 +17,7 @@ const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 
 export interface Preferences {
+  readonly voiceStartupAudio?: "ringing" | "jazz" | "silence";
   readonly liveActivitiesEnabled?: boolean;
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
@@ -93,6 +94,7 @@ export class MobilePreferencesStore extends Context.Service<
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
+    voiceStartupAudio?: Preferences["voiceStartupAudio"];
     liveActivitiesEnabled?: boolean;
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
@@ -117,6 +119,13 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListWorkingShelfExpanded?: boolean;
   } = {};
 
+  if (
+    parsed.voiceStartupAudio === "ringing" ||
+    parsed.voiceStartupAudio === "jazz" ||
+    parsed.voiceStartupAudio === "silence"
+  ) {
+    preferences.voiceStartupAudio = parsed.voiceStartupAudio;
+  }
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
   }

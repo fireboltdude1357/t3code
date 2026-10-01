@@ -10,12 +10,11 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Ref from "effect/Ref";
 
 import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
-import { isSpokenConfirmation } from "../../../orchestration-v2/voice/VoiceConfirmation.ts";
+import { confirmationReadback } from "../../../orchestration-v2/voice/VoiceConfirmation.ts";
 import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
 import { VoiceStore } from "../../../orchestration-v2/voice/VoiceStore.ts";
 import { ProjectService } from "../../../project/ProjectService.ts";
@@ -26,12 +25,6 @@ import { VoiceToolkit } from "./tools.ts";
 const DEFAULT_THREADS_LIMIT = 30;
 const DEFAULT_READ_LIMIT = 10;
 const MAX_MESSAGE_CHARS = 1_500;
-/** How far back the spoken yes for a send may be. */
-const CONFIRMATION_TRANSCRIPT_ENTRIES = 40;
-
-/** A spoken yes older than this no longer approves a send. */
-const CONFIRMATION_MAX_AGE_MS = 2 * 60_000;
-
 const NEEDS_SPOKEN_YES =
   "Nothing was sent. Read the message back to the user word for word, naming the thread it goes to, wait for them to say yes, then call voice_send again with exactly that text.";
 
@@ -64,9 +57,6 @@ const make = Effect.gen(function* () {
   const providerSessions = yield* ProviderSessionManagerV2;
   const launches = yield* ThreadLaunchService;
   const projects = yield* ProjectService;
-  /** The user replies that already approved a send, so one yes can't approve two. */
-  const usedYes = yield* Ref.make<ReadonlySet<string>>(new Set());
-
   /** Refuses every caller except a live voice session thread. */
   const requireVoiceSession = Effect.gen(function* () {
     const scope = yield* McpInvocationContext;
@@ -273,26 +263,16 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         const target = yield* requireThread(input.threadId);
-        // Only this call's words count, and only a recent yes. A new call is a
-        // new generation, so nothing said before a restart can approve a send.
-        const transcript = (yield* store.recentTranscript(CONFIRMATION_TRANSCRIPT_ENTRIES)).filter(
-          (entry) => entry.generation === session.generation,
-        );
-        const reply = transcript.findLast((entry) => entry.role === "user");
-        const now = DateTime.toEpochMillis(yield* DateTime.now);
         if (
-          reply === undefined ||
-          now - DateTime.toEpochMillis(reply.at) > CONFIRMATION_MAX_AGE_MS ||
-          !isSpokenConfirmation(transcript, input.text, target.title)
+          !(yield* voice.claimSpokenSend({
+            sessionThreadId: session.sessionThreadId,
+            text: input.text,
+            targetTitle: target.title,
+          }))
         )
           return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES };
-        // Check and claim in one step, so parallel calls can't share a yes.
-        const replyKey = `${reply.generation}:${DateTime.toEpochMillis(reply.at)}`;
-        const claimed = yield* Ref.modify(usedYes, (used) =>
-          used.has(replyKey) ? [false, used] : [true, new Set(used).add(replyKey)],
-        );
-        if (!claimed) return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES };
         const commandId = yield* newCommandId();
+        yield* requireVoiceSession;
         const result = yield* threads
           .sendToThread({
             projectId: target.projectId,
@@ -315,6 +295,27 @@ const make = Effect.gen(function* () {
         };
       }),
 
+    voice_confirmations: () =>
+      Effect.gen(function* () {
+        const session = yield* requireVoiceSession;
+        const requests = yield* voice.pendingConfirmations(session.sessionThreadId);
+        return {
+          requests: requests.map((request) => ({
+            request: { ...request, expiresAt: DateTime.formatIso(request.expiresAt) },
+            readback: confirmationReadback(request),
+          })),
+        };
+      }),
+
+    voice_approve: (input) =>
+      Effect.gen(function* () {
+        const session = yield* requireVoiceSession;
+        return yield* voice.approveSpoken({
+          sessionThreadId: session.sessionThreadId,
+          requestId: input.requestId,
+        });
+      }),
+
     voice_launch: (input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
@@ -333,61 +334,82 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
-        const approved = yield* voice.requestConfirmation({
+        const sessionThread = yield* requireThread(session.sessionThreadId);
+        const commandId = yield* newCommandId();
+        const request = yield* voice.proposeAction({
+          sessionThreadId: session.sessionThreadId,
           action: "launch",
           title: `Start "${input.title}" in ${project.title}?`,
           detail: input.message,
+          execute: Effect.gen(function* () {
+            const messageId = MessageId.make(commandId);
+            yield* launches.launch({
+              commandId,
+              threadId: ThreadId.make(commandId),
+              projectId: project.id,
+              title: input.title,
+              modelSelection: project.defaultModelSelection ?? sessionThread.modelSelection,
+              runtimeMode: DEFAULT_RUNTIME_MODE,
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              workspaceStrategy: { type: "root" },
+              initialMessage: {
+                messageId,
+                senderThreadId: session.sessionThreadId,
+                text: input.message,
+                attachments: [],
+              },
+              createdBy: "agent",
+              creationSource: "mcp",
+            });
+            return `Started "${input.title}" in ${project.title}.`;
+          }).pipe(Effect.orDie),
         });
-        if (!approved) return { status: "denied" as const };
-        const sessionThread = yield* requireThread(session.sessionThreadId);
-        const commandId = yield* newCommandId();
-        const messageId = MessageId.make(commandId);
-        const result = yield* launches
-          .launch({
-            commandId,
-            threadId: ThreadId.make(commandId),
-            projectId: project.id,
-            title: input.title,
-            modelSelection: project.defaultModelSelection ?? sessionThread.modelSelection,
-            runtimeMode: DEFAULT_RUNTIME_MODE,
-            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            workspaceStrategy: { type: "root" },
-            initialMessage: {
-              messageId,
-              senderThreadId: session.sessionThreadId,
-              text: input.message,
-              attachments: [],
-            },
-            createdBy: "agent",
-            creationSource: "mcp",
-          })
-          .pipe(Effect.mapError(orchestrationError("Could not start the thread.")));
-        const run = result.projection.runs.find(
-          (candidate) => candidate.userMessageId === messageId,
-        );
-        return { status: "launched" as const, threadId: result.threadId, runId: run?.id ?? null };
+        return Option.isNone(request)
+          ? { status: "denied" as const }
+          : {
+              status: "needs_approval" as const,
+              request: { ...request.value, expiresAt: DateTime.formatIso(request.value.expiresAt) },
+              readback: confirmationReadback(request.value),
+            };
       }),
 
     voice_interrupt: (input) =>
       Effect.gen(function* () {
-        yield* requireVoiceSession;
+        const session = yield* requireVoiceSession;
         const target = yield* requireThread(input.threadId);
-        const approved = yield* voice.requestConfirmation({
+        const runId = target.activeRunId;
+        if (runId === null) return { threadId: target.id, status: "no_active_run" as const };
+        const commandId = yield* newCommandId();
+        const request = yield* voice.proposeAction({
+          sessionThreadId: session.sessionThreadId,
           action: "interrupt",
           threadId: target.id,
           title: `Stop "${target.title}"?`,
-          detail: "Stops the thread's running turn.",
+          detail: "Stops the thread's current running turn.",
+          execute: Effect.gen(function* () {
+            const current = yield* requireThread(target.id);
+            if (current.activeRunId !== runId)
+              return yield* Effect.die("The thread's running turn changed.");
+            const result = yield* threads.interruptThread({
+              projectId: target.projectId,
+              commandId,
+              threadId: target.id,
+              runId,
+              reason: "Stopped from the voice session.",
+            });
+            return result.type === "interrupt_requested"
+              ? `Requested interruption of "${target.title}".`
+              : `"${target.title}" is no longer running.`;
+          }).pipe(Effect.orDie),
         });
-        if (!approved) return { threadId: target.id, status: "denied" as const };
-        const result = yield* threads
-          .interruptThread({
-            projectId: target.projectId,
-            commandId: yield* newCommandId(),
-            threadId: target.id,
-            reason: "Stopped from the voice session.",
-          })
-          .pipe(Effect.mapError(orchestrationError(`Could not stop thread ${target.id}.`)));
-        return { threadId: target.id, status: result.type };
+        return Option.isNone(request)
+          ? { threadId: target.id, status: "denied" as const }
+          : {
+              status: "needs_approval" as const,
+              threadId: target.id,
+              request: { ...request.value, expiresAt: DateTime.formatIso(request.value.expiresAt) },
+              readback: confirmationReadback(request.value),
+            };
       }),
   });
 });

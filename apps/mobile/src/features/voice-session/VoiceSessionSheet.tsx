@@ -23,6 +23,8 @@ import {
   useVoiceSession,
   voiceSessionRespondCommand,
 } from "./voiceSessionController";
+import { VoiceStartupPanel } from "./VoiceStartupPanel";
+import { STARTUP_LABELS } from "./voiceSessionState";
 import { isVoiceSessionActive, type VoiceSessionState } from "./voiceSessionState";
 
 /** Title, icon and body text for the session's current status. */
@@ -34,7 +36,11 @@ export function voiceSessionPresentation(state: VoiceSessionState): {
   switch (state.status) {
     case "idle":
     case "connecting":
-      return { icon: "waveform", title: "Connecting", body: "Briefing the orchestrator." };
+      return {
+        icon: "waveform",
+        title: "Connecting",
+        body: STARTUP_LABELS[state.startupLog.at(-1)?.stage ?? "microphone"],
+      };
     case "reconnecting":
       return {
         icon: "waveform",
@@ -159,6 +165,9 @@ function ConfirmCard(props: {
         ) : null}
         {error !== null ? <Text className="text-sm text-danger-foreground">{error}</Text> : null}
       </View>
+      <Text className="text-xs leading-normal text-foreground-muted">
+        After the agent reads back this action, say yes or approve below.
+      </Text>
       <View className="flex-row gap-3">
         <Pressable
           accessibilityRole="button"
@@ -302,6 +311,9 @@ export function VoiceSessionSheet() {
       </View>
 
       <ScrollView className="flex-1" contentContainerClassName="gap-3 px-4 pb-4">
+        {state.status !== "live" && state.startupLog.length > 0 ? (
+          <VoiceStartupPanel state={state} />
+        ) : null}
         {environmentId !== null
           ? state.confirms.map((request) => (
               <ConfirmCard key={request.id} environmentId={environmentId} request={request} />
@@ -325,9 +337,9 @@ export function VoiceSessionSheet() {
             />
           ) : null}
           <CallButton
-            accessibilityLabel="Hang up"
+            accessibilityLabel={state.status === "live" ? "Hang up" : "Cancel call startup"}
             icon="phone.down.fill"
-            label="Hang up"
+            label={state.status === "live" ? "Hang up" : "Cancel"}
             tone="danger"
             onPress={hangUp}
           />

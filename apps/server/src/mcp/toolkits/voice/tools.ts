@@ -1,6 +1,9 @@
 import {
   OrchestratorMcpFailure,
   VoiceMcpAgendaResult,
+  VoiceMcpApproveInput,
+  VoiceMcpApproveResult,
+  VoiceMcpConfirmationsResult,
   VoiceMcpInterruptInput,
   VoiceMcpInterruptResult,
   VoiceMcpLaunchInput,
@@ -138,7 +141,7 @@ const VoiceSendTool = Tool.make("voice_send", {
 const VoiceLaunchTool = Tool.make("voice_launch", {
   ...shared,
   description:
-    "Start a new thread in a project's root checkout with a first message. The user must tap Approve on the phone; this waits for it and returns denied otherwise.",
+    "Start a new thread in a project's root checkout with a first message. Returns needs_approval with a requestId and exact readback. Read it word for word, wait for a fresh spoken yes, then call voice_approve. The user can also tap Approve on the phone.",
   parameters: VoiceMcpLaunchInput,
   success: VoiceMcpLaunchResult,
 })
@@ -149,12 +152,33 @@ const VoiceLaunchTool = Tool.make("voice_launch", {
 const VoiceInterruptTool = Tool.make("voice_interrupt", {
   ...shared,
   description:
-    "Stop a thread's running turn. The user must tap Approve on the phone; this waits for it and returns denied otherwise.",
+    "Stop a thread's running turn. Returns needs_approval with a requestId and exact readback. Read it word for word, wait for a fresh spoken yes, then call voice_approve. The user can also tap Approve on the phone.",
   parameters: VoiceMcpInterruptInput,
   success: VoiceMcpInterruptResult,
 })
   .annotate(Tool.Title, "Stop a thread")
   .annotate(Tool.Destructive, true);
+
+const VoiceConfirmationsTool = Tool.make("voice_confirmations", {
+  ...shared,
+  description:
+    "Get pending action approvals and their exact readbacks. Read one readback word for word, wait for a fresh spoken yes, then call voice_approve with that requestId. Taps remain available.",
+  success: VoiceMcpConfirmationsResult,
+})
+  .annotate(Tool.Title, "Get pending voice approvals")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const VoiceApproveTool = Tool.make("voice_approve", {
+  ...shared,
+  description:
+    "Approve one pending action by requestId after its exact readback and a fresh spoken yes. The server validates the current call transcript, action identity and expiry. This resolves the same approval as a phone tap.",
+  parameters: VoiceMcpApproveInput,
+  success: VoiceMcpApproveResult,
+})
+  .annotate(Tool.Title, "Approve a voice action")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true);
 
 export const VoiceToolkit = Toolkit.make(
   VoiceThreadsTool,
@@ -168,4 +192,6 @@ export const VoiceToolkit = Toolkit.make(
   VoiceSendTool,
   VoiceLaunchTool,
   VoiceInterruptTool,
+  VoiceConfirmationsTool,
+  VoiceApproveTool,
 );
