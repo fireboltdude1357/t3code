@@ -7,6 +7,7 @@ import {
   type VoiceConfirmAction,
   type VoiceConfirmRequest,
   type VoiceNotice,
+  type VoiceMcpApproveResult,
   type VoiceSessionEndReason,
   type VoiceSessionEvent,
   type VoiceSessionOpenInput,
@@ -32,6 +33,11 @@ import { ServerConfig } from "../../config.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import type { ProviderAdapterV2RealtimeCall } from "../ProviderAdapter.ts";
 import { ThreadManagementService } from "../ThreadManagementService.ts";
+import {
+  confirmationReadback,
+  makeVoiceConfirmationGate,
+  sameConfirmationReadback,
+} from "./VoiceConfirmation.ts";
 import { buildBriefing } from "./VoiceBriefing.ts";
 import { composeNoticeBatch, isUrgentBatch, noticeForEvent } from "./VoiceNotificationPolicy.ts";
 import { VoiceSessionRegistry } from "./VoiceSessionRegistry.ts";
@@ -56,6 +62,26 @@ export interface VoiceOrchestratorShape {
   /** The phone's Approve or Deny for a pending confirmation. */
   readonly respond: (input: VoiceSessionRespondInput) => Effect.Effect<VoiceSessionRespondResult>;
   /** The live session whose session thread is `threadId`, if any. */
+  readonly proposeAction: (input: {
+    readonly sessionThreadId?: ThreadId;
+    readonly action: VoiceConfirmAction;
+    readonly threadId?: ThreadId;
+    readonly title: string;
+    readonly detail: string;
+    readonly execute: Effect.Effect<string>;
+  }) => Effect.Effect<Option.Option<VoiceConfirmRequest>>;
+  readonly pendingConfirmations: (
+    sessionThreadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<VoiceConfirmRequest>>;
+  readonly approveSpoken: (input: {
+    readonly sessionThreadId: ThreadId;
+    readonly requestId: string;
+  }) => Effect.Effect<VoiceMcpApproveResult>;
+  readonly claimSpokenSend: (input: {
+    readonly sessionThreadId: ThreadId;
+    readonly text: string;
+    readonly targetTitle: string;
+  }) => Effect.Effect<boolean>;
   readonly liveSession: (threadId: ThreadId) => Effect.Effect<Option.Option<LiveVoiceSession>>;
   /**
    * Shows an Approve/Deny card on the phone and waits for it. Resolves false
@@ -82,6 +108,8 @@ export const ROTATE_AFTER = Duration.minutes(40);
 const PREWARM_LEAD = Duration.minutes(2);
 /** Keep in step with the `expiresAt` shown on the card. */
 const CONFIRM_TIMEOUT = Duration.minutes(2);
+/** Transcript parts can split a reply, so spoken writes wait for two seconds without activity. */
+const CONFIRM_QUIET = Duration.seconds(2);
 /** Notices that arrive together are spoken as one batch. */
 const NOTICE_BATCH_WINDOW = Duration.seconds(10);
 const NOTICE_BATCH_MAX = 8;
@@ -110,7 +138,7 @@ export const VOICE_SESSION_PROMPT = [
   'Lines that start with "Update from T3:" are news about other threads, timed by the system for a pause. Say them briefly and let the user decide whether to dig in.',
   "When a tangent wraps up, come back to open agenda items from your briefing or the agent.",
   "To send or queue a message to a thread: get a draft, read it back word for word, name the thread it goes to, and ask whether to send it. Only after a clear yes, hand off so the agent can send. If anything changes, read the new draft back and ask again.",
-  "Launching a thread, interrupting one, and approvals need a tap on the phone. Say so, and wait.",
+  "For launch, interrupt, or runtime approvals, ask the background agent for the pending action and its exact readback. Speak the returned readback verbatim as your entire approval question. Keep its opening action phrase and its final question, Do you approve this action? Do not summarize, reorder, introduce, or paraphrase it. Then wait for the full user reply. After a clear yes, hand off to call voice_approve for that request. A phone Approve tap is also available. Never treat a partial yes followed by an objection as approval.",
   "You cannot do anything yourself. Never say something was sent, launched or approved until the agent confirms it.",
 ].join("\n");
 
@@ -162,11 +190,19 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
 
   const uuid = crypto.randomUUIDv4.pipe(Effect.orDie);
+  const scope = yield* Effect.scope;
+  const gate = makeVoiceConfirmationGate();
   const state = yield* Ref.make<State>({ live: undefined, warm: undefined });
   const confirmations = yield* Ref.make(
     new Map<
       string,
-      { readonly request: VoiceConfirmRequest; readonly decided: Deferred.Deferred<boolean> }
+      {
+        readonly request: VoiceConfirmRequest;
+        readonly decided: Deferred.Deferred<boolean>;
+        readonly createdAt: DateTime.Utc;
+        readonly generation: number;
+        readonly execute: Effect.Effect<string>;
+      }
     >(),
   );
   const voiceProjectId = yield* Ref.make<ProjectId | undefined>(undefined);
@@ -195,9 +231,66 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const requestConfirmation: VoiceOrchestratorShape["requestConfirmation"] = (input) =>
+  const currentSession = (sessionThreadId: ThreadId) =>
+    Ref.get(state).pipe(
+      Effect.map(({ live }) => (live?.sessionThreadId === sessionThreadId ? live : undefined)),
+    );
+
+  const resolveConfirmation = (requestId: string, approved: boolean) =>
     Effect.gen(function* () {
-      if ((yield* Ref.get(state)).live === undefined) return false;
+      const pending = yield* Ref.modify(confirmations, (current) => {
+        const pending = current.get(requestId);
+        const updated = new Map(current);
+        updated.delete(requestId);
+        return [pending, updated];
+      });
+      if (pending === undefined) return { accepted: false, completed: false, completion: "" };
+      const now = yield* DateTime.now;
+      const live = (yield* Ref.get(state)).live;
+      const allowed =
+        approved &&
+        live?.generation === pending.generation &&
+        DateTime.toEpochMillis(now) < DateTime.toEpochMillis(pending.request.expiresAt);
+      let completion = "";
+      const completed =
+        allowed &&
+        (yield* pending.execute.pipe(
+          Effect.map((message) => {
+            completion = message;
+            return true;
+          }),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("voice-session.action-failed", { requestId, cause }).pipe(
+              Effect.as(false),
+            ),
+          ),
+        ));
+      yield* Deferred.succeed(pending.decided, completed);
+      yield* offerToLive({ type: "confirm_resolved", requestId, approved: completed });
+      if (allowed) {
+        const active = (yield* Ref.get(state)).live;
+        if (active?.generation === pending.generation) {
+          yield* active.call
+            .appendSpeech(
+              completed
+                ? `Update from T3: ${completion}`
+                : "Update from T3: The approved action failed. Check the thread before trying again.",
+            )
+            .pipe(Effect.ignore);
+        }
+      }
+      return { accepted: true, completed, completion };
+    });
+
+  const beginConfirmation = (input: Parameters<VoiceOrchestratorShape["proposeAction"]>[0]) =>
+    Effect.gen(function* () {
+      const live = (yield* Ref.get(state)).live;
+      if (
+        live === undefined ||
+        (input.sessionThreadId !== undefined && input.sessionThreadId !== live.sessionThreadId)
+      )
+        return Option.none();
+      const createdAt = yield* DateTime.now;
       const id = `voice-confirm:${yield* uuid}`;
       const decided = yield* Deferred.make<boolean>();
       const request: VoiceConfirmRequest = {
@@ -206,36 +299,135 @@ export const make = Effect.gen(function* () {
         ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
         title: input.title,
         detail: input.detail,
-        expiresAt: DateTime.add(yield* DateTime.now, { minutes: 2 }),
+        expiresAt: DateTime.add(createdAt, { minutes: 2 }),
       };
-      yield* Ref.update(confirmations, (current) => new Map(current).set(id, { request, decided }));
-      yield* offerToLive({ type: "confirm", request });
-      const approved = yield* Deferred.await(decided).pipe(
-        Effect.timeoutOption(CONFIRM_TIMEOUT),
-        Effect.map(Option.getOrElse(() => false)),
-        Effect.ensuring(
-          Ref.update(confirmations, (current) => {
-            const updated = new Map(current);
-            updated.delete(id);
-            return updated;
-          }),
-        ),
+      yield* Ref.update(confirmations, (current) =>
+        new Map(current).set(id, {
+          request,
+          decided,
+          createdAt,
+          generation: live.generation,
+          execute: input.execute,
+        }),
       );
-      yield* offerToLive({ type: "confirm_resolved", requestId: id, approved });
-      return approved;
+      yield* offerToLive({ type: "confirm", request });
+      yield* Effect.sleep(CONFIRM_TIMEOUT).pipe(
+        Effect.andThen(resolveConfirmation(id, false)),
+        Effect.forkIn(scope),
+      );
+      return Option.some({ request, decided });
+    });
+
+  const proposeAction: VoiceOrchestratorShape["proposeAction"] = (input) =>
+    beginConfirmation(input).pipe(Effect.map(Option.map(({ request }) => request)));
+
+  const requestConfirmation: VoiceOrchestratorShape["requestConfirmation"] = (input) =>
+    Effect.gen(function* () {
+      const pending = yield* beginConfirmation({
+        ...input,
+        execute: Effect.succeed("Action approved."),
+      });
+      return Option.isNone(pending) ? false : yield* Deferred.await(pending.value.decided);
     });
 
   const respond: VoiceOrchestratorShape["respond"] = ({ requestId, approved }) =>
-    Ref.get(confirmations).pipe(
-      Effect.flatMap((current) => {
-        const pending = current.get(requestId);
-        return pending === undefined
-          ? Effect.succeed({ accepted: false })
-          : Deferred.succeed(pending.decided, approved).pipe(
-              Effect.map((accepted) => ({ accepted })),
-            );
-      }),
-    );
+    resolveConfirmation(requestId, approved).pipe(Effect.map(({ accepted }) => ({ accepted })));
+
+  const pendingConfirmations: VoiceOrchestratorShape["pendingConfirmations"] = (sessionThreadId) =>
+    Effect.gen(function* () {
+      const live = yield* currentSession(sessionThreadId);
+      if (live === undefined) return [];
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      return [...(yield* Ref.get(confirmations)).values()]
+        .filter(
+          (pending) =>
+            pending.generation === live.generation &&
+            DateTime.toEpochMillis(pending.request.expiresAt) > now,
+        )
+        .map(({ request }) => request);
+    });
+
+  const isSpokenQuiet = (live: Generation) =>
+    Effect.gen(function* () {
+      const current = (yield* Ref.get(state)).live;
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      return (
+        current === live &&
+        now - (yield* Ref.get(live.lastActivity)) >= Duration.toMillis(CONFIRM_QUIET)
+      );
+    });
+
+  const awaitSpokenQuiet = (live: Generation) =>
+    Effect.gen(function* () {
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const wait = (yield* Ref.get(live.lastActivity)) + Duration.toMillis(CONFIRM_QUIET) - now;
+      if (wait > 0) yield* Effect.sleep(Duration.millis(wait));
+      // Further activity fails this attempt rather than starting an unbounded retry loop.
+      return yield* isSpokenQuiet(live);
+    });
+
+  const claimSpokenSend: VoiceOrchestratorShape["claimSpokenSend"] = (input) =>
+    Effect.gen(function* () {
+      const live = yield* currentSession(input.sessionThreadId);
+      if (live === undefined || !(yield* awaitSpokenQuiet(live))) return false;
+      const transcript = yield* store.recentTranscript(80);
+      if (!(yield* isSpokenQuiet(live))) return false;
+      const now = yield* DateTime.now;
+      return gate.claim({
+        transcript,
+        generation: live.generation,
+        now,
+        draft: input.text,
+        targetTitle: input.targetTitle,
+      });
+    });
+
+  const approveSpoken: VoiceOrchestratorShape["approveSpoken"] = (input) =>
+    Effect.gen(function* () {
+      const live = yield* currentSession(input.sessionThreadId);
+      const pending = (yield* Ref.get(confirmations)).get(input.requestId);
+      const quiet = live !== undefined && (yield* awaitSpokenQuiet(live));
+      const now = yield* DateTime.now;
+      if (
+        live === undefined ||
+        pending === undefined ||
+        pending.generation !== live.generation ||
+        DateTime.toEpochMillis(now) >= DateTime.toEpochMillis(pending.request.expiresAt)
+      ) {
+        return { status: "unavailable", requestId: input.requestId };
+      }
+      const readback = confirmationReadback(pending.request);
+      // Identical pending readbacks cannot be distinguished by a spoken yes.
+      const matching = [...(yield* Ref.get(confirmations)).values()].filter(
+        (candidate) =>
+          candidate.generation === live.generation &&
+          sameConfirmationReadback(candidate.request, pending.request),
+      );
+      const transcript = yield* store.recentTranscript(80);
+      if (
+        !quiet ||
+        matching.length !== 1 ||
+        !(yield* isSpokenQuiet(live)) ||
+        !gate.claim({
+          transcript,
+          generation: live.generation,
+          now,
+          draft: readback,
+          notBefore: DateTime.makeUnsafe(DateTime.toEpochMillis(pending.createdAt) + 1),
+          exactReadback: true,
+        })
+      ) {
+        return {
+          status: "needs_spoken_yes",
+          requestId: input.requestId,
+          instruction: `Nothing was approved. Read this action back word for word, wait for the user's complete reply and a fresh yes, then call voice_approve for this request. ${readback}`,
+        };
+      }
+      const result = yield* resolveConfirmation(input.requestId, true);
+      return result.completed
+        ? { status: "approved", requestId: input.requestId, completion: result.completion }
+        : { status: result.accepted ? "failed" : "unavailable", requestId: input.requestId };
+    });
 
   /** Session threads, subagents and archived threads are never announced. */
   const threadInfo = (threadId: ThreadId) =>
@@ -254,7 +446,7 @@ export const make = Effect.gen(function* () {
     });
 
   /**
-   * On-screen yes for another thread's approval request, answered in place.
+   * A spoken or tapped yes for another thread's approval, answered in place.
    * The card shows what is being approved; a request with nothing to show
    * gets no card and stays for the user in its thread, as does a denial.
    */
@@ -264,7 +456,13 @@ export const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const request = event.payload;
-      if (request.responseCapability.type !== "live" || request.kind === "user_input") return;
+      if (
+        request.status !== "pending" ||
+        request.responseCapability.type !== "live" ||
+        request.kind === "user_input"
+      )
+        return;
+      const providerSessionId = request.responseCapability.providerSessionId;
       const records = yield* threads.getThreadRecords(event.threadId, ["turnItems"], {
         turnItemTypes: ["approval_request"],
       });
@@ -273,19 +471,43 @@ export const make = Effect.gen(function* () {
       );
       const prompt = item?.type === "approval_request" ? item.prompt?.trim() : undefined;
       if (prompt === undefined || prompt.length === 0) return;
-      const approved = yield* requestConfirmation({
+      yield* proposeAction({
         action: "runtime_approval",
         threadId: event.threadId,
         title: `${threadTitle} needs an approval`,
         detail: prompt,
-      });
-      if (!approved) return;
-      yield* threads.dispatch({
-        type: "runtime-request.respond",
-        commandId: CommandId.make(`server:voice-session:approve:${yield* uuid}`),
-        threadId: event.threadId,
-        requestId: request.id,
-        decision: "accept",
+        execute: Effect.gen(function* () {
+          const current = yield* threads.getThreadRecords(
+            event.threadId,
+            ["runtimeRequests", "turnItems"],
+            { turnItemTypes: ["approval_request"] },
+          );
+          const liveRequest = current.runtimeRequests.find(
+            (candidate) => candidate.id === request.id,
+          );
+          const currentItem = current.turnItems.find(
+            (candidate) =>
+              candidate.type === "approval_request" && candidate.requestId === request.id,
+          );
+          const currentPrompt =
+            currentItem?.type === "approval_request" ? currentItem.prompt?.trim() : undefined;
+          if (
+            currentPrompt !== prompt ||
+            liveRequest?.status !== "pending" ||
+            liveRequest.responseCapability.type !== "live" ||
+            liveRequest.responseCapability.providerSessionId !== providerSessionId
+          ) {
+            return yield* Effect.die("The runtime approval is no longer current.");
+          }
+          yield* threads.dispatch({
+            type: "runtime-request.respond",
+            commandId: CommandId.make(`server:voice-session:approve:${yield* uuid}`),
+            threadId: event.threadId,
+            requestId: request.id,
+            decision: "accept",
+          });
+          return `${threadTitle}'s runtime request was approved.`;
+        }).pipe(Effect.orDie),
       });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -446,9 +668,14 @@ export const make = Effect.gen(function* () {
       Effect.catchCause((cause) => Effect.logWarning("voice-session.prewarm-failed", { cause })),
     );
 
-  const open: VoiceOrchestratorShape["open"] = (input) =>
+  const openGeneration = (
+    input: VoiceSessionOpenInput,
+    startupEvents: Queue.Queue<VoiceSessionEvent>,
+  ) =>
     Stream.unwrap(
       Effect.gen(function* () {
+        if (input.startupProgress === true)
+          yield* Queue.offer(startupEvents, { type: "startup", stage: "preparing-session" });
         const projectId = yield* voiceProject;
         const generation = yield* store.nextGeneration;
         const prepared = yield* Effect.acquireRelease(
@@ -461,6 +688,8 @@ export const make = Effect.gen(function* () {
           ),
           ({ sessionThreadId }) => sessions.release(sessionThreadId),
         );
+        if (input.startupProgress === true)
+          yield* Queue.offer(startupEvents, { type: "startup", stage: "briefing" });
         const { briefing, pending, focus, agenda } = yield* briefingFor(
           generation,
           input.focusThreadId,
@@ -469,6 +698,8 @@ export const make = Effect.gen(function* () {
         const markActivity = DateTime.now.pipe(
           Effect.flatMap((now) => Ref.set(lastActivity, DateTime.toEpochMillis(now))),
         );
+        if (input.startupProgress === true)
+          yield* Queue.offer(startupEvents, { type: "startup", stage: "starting-realtime" });
         const call = yield* Effect.acquireRelease(
           prepared.startRealtimeCall({
             providerThread: prepared.providerThread,
@@ -478,12 +709,13 @@ export const make = Effect.gen(function* () {
             agentStartInstructions: agentBriefing(focus, agenda),
             onActivity: markActivity,
             onTranscript: ({ role, text }) =>
-              DateTime.now.pipe(
+              markActivity.pipe(
+                Effect.andThen(DateTime.now),
                 Effect.flatMap((at) => store.appendTranscript({ generation, role, text, at })),
-                Effect.andThen(markActivity),
               ),
           }),
           (started) => started.stop.pipe(Effect.ignore),
+          { interruptible: true },
         );
         const current: Generation = {
           generation,
@@ -497,13 +729,24 @@ export const make = Effect.gen(function* () {
         // Registered before `current` goes live, so it can never be left live.
         // Hanging up (not rotating) also drops a warm thread nobody will use.
         yield* Effect.addFinalizer(() =>
-          Ref.modify(state, (existing) =>
-            existing.live === current
-              ? [existing.warm, { live: undefined, warm: undefined }]
-              : [undefined, existing],
-          ).pipe(
-            Effect.flatMap((warm) =>
-              warm === undefined ? Effect.void : sessions.release(warm.sessionThreadId),
+          Ref.get(confirmations).pipe(
+            Effect.flatMap((pending) =>
+              Effect.forEach([...pending.values()], (entry) =>
+                entry.generation === generation
+                  ? resolveConfirmation(entry.request.id, false)
+                  : Effect.void,
+              ),
+            ),
+            Effect.andThen(
+              Ref.modify(state, (existing) =>
+                existing.live === current
+                  ? [existing.warm, { live: undefined, warm: undefined }]
+                  : [undefined, existing],
+              ).pipe(
+                Effect.flatMap((warm) =>
+                  warm === undefined ? Effect.void : sessions.release(warm.sessionThreadId),
+                ),
+              ),
             ),
           ),
         );
@@ -518,9 +761,11 @@ export const make = Effect.gen(function* () {
           yield* Deferred.succeed(previous.end, { reason: "rotated" });
         }
         yield* store.markDelivered(pending.map((notice) => notice.id));
-        // Cards still waiting for a tap carry over to the new generation.
-        yield* Effect.forEach((yield* Ref.get(confirmations)).values(), ({ request }) =>
-          Queue.offer(current.events, { type: "confirm", request }),
+        // A new generation cannot execute actions proposed by the retired call.
+        yield* Effect.forEach([...(yield* Ref.get(confirmations)).values()], (pending) =>
+          pending.generation === current.generation
+            ? Effect.void
+            : resolveConfirmation(pending.request.id, false),
         );
 
         const rotateAt = Duration.toMillis(ROTATE_AFTER);
@@ -581,10 +826,31 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const open: VoiceOrchestratorShape["open"] = (input) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const events = yield* Effect.acquireRelease(
+          Queue.unbounded<VoiceSessionEvent>(),
+          Queue.shutdown,
+        );
+        // Setup runs while the consumer receives progress. Its resources and
+        // workers share this stream's scope, including cancellation during setup.
+        yield* openGeneration(input, events).pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkScoped,
+        );
+        return Stream.fromQueue(events).pipe(Stream.takeUntil((event) => event.type === "ended"));
+      }),
+    );
+
   return VoiceOrchestrator.of({
     open,
     respond,
     requestConfirmation,
+    proposeAction,
+    pendingConfirmations,
+    approveSpoken,
+    claimSpokenSend,
     liveSession: (threadId) =>
       Ref.get(state).pipe(
         Effect.map(({ live }) =>

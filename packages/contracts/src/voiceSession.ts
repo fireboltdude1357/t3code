@@ -16,6 +16,8 @@ const Sdp = Schema.String.check(Schema.isNonEmpty());
  */
 export const VoiceSessionOpenInput = Schema.Struct({
   sdpOffer: Sdp,
+  /** Opt in because older clients cannot decode startup events. */
+  startupProgress: Schema.optional(Schema.Boolean),
   /** Thread the user opened the call from, briefed first. */
   focusThreadId: Schema.optional(ThreadId),
 });
@@ -56,12 +58,24 @@ export type VoiceConfirmRequest = typeof VoiceConfirmRequest.Type;
 export const VoiceSessionEndReason = Schema.Literals(["hung_up", "rotated", "closed", "error"]);
 export type VoiceSessionEndReason = typeof VoiceSessionEndReason.Type;
 
+/** Startup work currently running, with no provider output or session content. */
+export const VoiceSessionStartupStage = Schema.Literals([
+  "preparing-session",
+  "briefing",
+  "starting-realtime",
+]);
+export type VoiceSessionStartupStage = typeof VoiceSessionStartupStage.Type;
+
 /**
- * Events on the `voiceSession.open` stream. `answer` comes first and `ended`
- * last. `rotate` asks the phone to open the next generation with a fresh offer
- * before this one gets too long. Unsubscribing hangs up this generation.
+ * Events on the `voiceSession.open` stream. `startup` precedes `answer`, and
+ * `ended` comes last. `rotate` asks the phone to open the next generation
+ * with a fresh offer before this one gets too long. Unsubscribing hangs up this generation.
  */
 export const VoiceSessionEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("startup"),
+    stage: VoiceSessionStartupStage,
+  }),
   Schema.Struct({
     type: Schema.Literal("answer"),
     generation: NonNegativeInt,

@@ -57,6 +57,8 @@ export const VOICE_SESSION_TOOLS = [
   "voice_send",
   "voice_launch",
   "voice_interrupt",
+  "voice_confirmations",
+  "voice_approve",
   "t3_project_list",
   "t3_environment_read",
 ];

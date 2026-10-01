@@ -67,7 +67,7 @@ export const SESSION_AGENT_INSTRUCTIONS = [
   "Do not edit files.",
   "When the user asks you to remember or come back to something, open a topic with voice_topic_open. Close it when it is done.",
   "To send or queue a message to a thread, call voice_send only after the voice model read the exact draft back and the user said yes. The server checks the transcript and refuses otherwise; if refused, reply with the draft so it can be read back.",
-  "voice_launch and voice_interrupt put an Approve button on the user's phone and wait for it. Tell the user to tap it.",
+  "voice_launch and voice_interrupt return a pending request and exact readback without executing it. Return only the exact readback as your approval response, without a preface, summary, or reordered words. Tell the voice model to speak that text verbatim if it asks how to request approval. After the user's complete reply is a clear yes, call voice_approve with the pending requestId. voice_confirmations lists runtime approvals and other pending actions with their readbacks. Read one action at a time. A tap on the phone remains available. Never approve on a partial yes followed by an objection. Only status approved means the action completed; needs_approval or needs_spoken_yes means it did not.",
   "Reply to this message with just: Ready.",
 ].join("\n");
 
