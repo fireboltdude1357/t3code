@@ -460,11 +460,27 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       ),
     [selectedEnvironmentServerConfig?.settings, selectedProject, t3ProjectFile],
   );
-  // A thread without a project runs in a plain folder, so worktree mode
-  // would leave it unsendable: it is always local and offers no choice.
+  // Live git status of the project root. It carries the ref actually checked
+  // out there (listRefs' `current` flag is served from a cache that can lag an
+  // out-of-band `git switch` by minutes) and whether the root is a repository
+  // at all. Detached HEAD and non-repository projects report no ref. The
+  // status family is deduplicated per (environmentId, cwd) with the thread rows.
+  const projectGitStatus = useEnvironmentQuery(
+    selectedProject !== null && selectedProject.workspaceRoot !== ""
+      ? vcsEnvironment.status({
+          environmentId: selectedProject.environmentId,
+          input: { cwd: selectedProject.workspaceRoot },
+        })
+      : null,
+  );
+  const currentCheckoutBranchName = projectGitStatus.data?.refName ?? null;
+  // A thread without a project, or in a folder that is not a git repository,
+  // runs in a plain folder. Worktree mode would leave it unsendable, so it is
+  // always local and offers no choice, as on web.
   const canChooseWorkspace = !(
     selectedProject !== null &&
-    isScratchProject(selectedProject, selectedEnvironmentServerConfig?.scratchWorkspaceRoot)
+    (projectGitStatus.data?.isRepo === false ||
+      isScratchProject(selectedProject, selectedEnvironmentServerConfig?.scratchWorkspaceRoot))
   );
   const defaultWorkspaceMode: WorkspaceMode = canChooseWorkspace
     ? projectSettings.settings.defaultThreadEnvMode
@@ -679,23 +695,6 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       ),
     [allBranchRefs],
   );
-  // The ref actually checked out in the project root, serialized onto new
-  // local threads. It comes from the live status stream rather than listRefs'
-  // `current` flag, which is served from a cache that can lag an out-of-band
-  // `git switch` by minutes — and from the same value the PR badge compares
-  // against. Detached HEAD and non-repository projects report no ref, so this
-  // stays null instead of fabricating a branch. The status family is
-  // deduplicated per (environmentId, cwd) with the thread rows.
-  const projectGitStatus = useEnvironmentQuery(
-    branchTarget.environmentId !== null && branchTarget.cwd !== null
-      ? vcsEnvironment.status({
-          environmentId: branchTarget.environmentId,
-          input: { cwd: branchTarget.cwd },
-        })
-      : null,
-  );
-  const currentCheckoutBranchName = projectGitStatus.data?.refName ?? null;
-
   const filteredBranches = useMemo(
     () => filterNewTaskBranches(allBranchRefs, branchQuery),
     [allBranchRefs, branchQuery],
@@ -836,7 +835,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   ]);
 
   const selectBranch = useCallback(
-    (branch: VcsRef) => {
+    (branch: Pick<VcsRef, "name" | "worktreePath">) => {
       if (!selectedProject || !selectedProjectDraftKey) {
         return;
       }
@@ -902,16 +901,22 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     }
     // The default may only exist as origin/<default> (isRemote), which
     // availableBranches filters out — search the unfiltered refs for it.
+    // listRefs is fetched once per draft, so a project cloned while its draft
+    // was open has no refs; the live checkout branch still names a base, as
+    // web's base-branch picker does.
     const preferredBranch =
       allBranchRefs.find((branch) => branch.isDefault) ??
       availableBranches.find((branch) => branch.current) ??
-      null;
+      (currentCheckoutBranchName !== null
+        ? { name: currentCheckoutBranchName, worktreePath: null }
+        : null);
     if (preferredBranch) {
       selectBranch(preferredBranch);
     }
   }, [
     allBranchRefs,
     availableBranches,
+    currentCheckoutBranchName,
     defaultWorkspaceModeSettled,
     selectBranch,
     selectedBranchName,
