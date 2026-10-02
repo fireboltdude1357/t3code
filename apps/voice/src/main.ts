@@ -84,15 +84,13 @@ const app = Layer.unwrap(
       listen: `${config.host}:${config.port}`,
       home,
     });
-    return HttpRouter.serve(Http.routes).pipe(
-      Layer.provide(Layer.mergeAll(orchestrator, registry, TailnetIdentity.layer)),
-      Layer.provide(
-        NodeHttpServer.layer(() => NodeHttp.createServer(), {
-          host: config.host,
-          port: config.port,
-        }),
-      ),
-    );
+    // The server starts listening only after T3 is connected and the
+    // orchestrator is up, so no request lands on a half-built sidecar.
+    const listener = NodeHttpServer.layer(() => NodeHttp.createServer(), {
+      host: config.host,
+      port: config.port,
+    }).pipe(Layer.provideMerge(Layer.mergeAll(orchestrator, registry, TailnetIdentity.layer)));
+    return HttpRouter.serve(Http.routes).pipe(Layer.provide(listener));
   }),
 );
 
