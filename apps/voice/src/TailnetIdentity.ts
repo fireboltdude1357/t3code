@@ -47,13 +47,14 @@ export const layer = Layer.effect(
     );
     const cache = yield* Ref.make(new Map<string, { owned: boolean; at: number }>());
 
+    /** Undefined when `whois` failed; that answer is refused but never cached. */
     const lookup = (address: string) =>
       tailscale(["whois", "--json", address]).pipe(
         Effect.flatMap(decodeWhois),
-        Effect.map((whois) => whois.Node.User === owner),
+        Effect.map((whois): boolean | undefined => whois.Node.User === owner),
         Effect.catchCause((cause) =>
           Effect.logWarning("voice.tailnet.whois-failed", { address, cause }).pipe(
-            Effect.as(false),
+            Effect.as(undefined),
           ),
         ),
       );
@@ -69,6 +70,7 @@ export const layer = Layer.effect(
           if (cached !== undefined && now - cached.at < Duration.toMillis(CACHE_TTL))
             return cached.owned;
           const owned = yield* lookup(address);
+          if (owned === undefined) return false;
           yield* Ref.update(cache, (current) => new Map(current).set(address, { owned, at: now }));
           return owned;
         }),

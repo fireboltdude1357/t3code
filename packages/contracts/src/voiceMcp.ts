@@ -144,6 +144,8 @@ export const VoiceMcpSendResult = Schema.Union([
     /** Nothing was sent; `instruction` says what to do first. */
     status: Schema.Literal("needs_spoken_yes"),
     instruction: Schema.String,
+    /** The exact text the user must hear and say yes to before this send. */
+    readback: Schema.String,
   }),
 ]);
 export type VoiceMcpSendResult = typeof VoiceMcpSendResult.Type;

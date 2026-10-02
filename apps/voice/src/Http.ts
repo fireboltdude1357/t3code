@@ -36,6 +36,33 @@ const infoRoute = HttpRouter.add(
   ),
 );
 
+/** Names the sidecar is reached by: loopback, MagicDNS, or a tailnet address. */
+const isTrustedHostname = (hostname: string) =>
+  hostname === "localhost" ||
+  hostname === "127.0.0.1" ||
+  hostname === "[::1]" ||
+  hostname.endsWith(".ts.net") ||
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(hostname);
+
+const hostnameOf = (host: string) => host.replace(/:\d+$/, "").toLowerCase();
+
+/**
+ * Browsers don't apply CORS to WebSockets, so the source address alone would
+ * let any web page on an owner device drive the call. A browser always sends
+ * `Origin`; the phone's native socket sends none or its own URL. So an
+ * `Origin`, when present, must be this host, and `Host` must be a loopback or
+ * tailnet name, which also stops DNS rebinding.
+ */
+export const isTrustedUpgrade = (host: string | undefined, origin: string | undefined) => {
+  if (host === undefined || !isTrustedHostname(hostnameOf(host))) return false;
+  if (origin === undefined) return true;
+  try {
+    return new URL(origin).host.toLowerCase() === host.toLowerCase();
+  } catch {
+    return false;
+  }
+};
+
 const forbidden = HttpServerResponse.jsonUnsafe(
   { error: "forbidden", message: "Voice calls are limited to this tailnet's owner." },
   { status: 403 },
@@ -52,6 +79,13 @@ const rpcRoute = HttpRouter.add(
     const request = yield* HttpServerRequest.HttpServerRequest;
     const identity = yield* TailnetIdentity;
     const address = Option.getOrUndefined(request.remoteAddress);
+    if (!isTrustedUpgrade(request.headers.host, request.headers.origin)) {
+      yield* Effect.logWarning("voice.rpc.rejected-origin", {
+        host: request.headers.host,
+        origin: request.headers.origin,
+      });
+      return forbidden;
+    }
     if (!(yield* identity.isOwner(address))) {
       yield* Effect.logWarning("voice.rpc.rejected", { address });
       return forbidden;

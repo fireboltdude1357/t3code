@@ -17,7 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import { T3Client } from "../T3Client.ts";
-import { confirmationReadback } from "../VoiceConfirmation.ts";
+import { confirmationReadback, sendReadback } from "../VoiceConfirmation.ts";
 import { VoiceOrchestrator } from "../VoiceOrchestrator.ts";
 import { VoiceStore } from "../VoiceStore.ts";
 import { VoiceToolkit } from "./tools.ts";
@@ -27,7 +27,7 @@ const DEFAULT_THREADS_LIMIT = 30;
 const DEFAULT_READ_LIMIT = 10;
 const MAX_MESSAGE_CHARS = 1_500;
 const NEEDS_SPOKEN_YES =
-  "Nothing was sent. Read the message back to the user word for word, naming the thread it goes to, wait for them to say yes, then call voice_send again with exactly that text.";
+  "Nothing was sent. Return only the readback, unchanged, for the voice model to speak verbatim. Wait for the user's complete reply and a fresh yes, then call voice_send again with the same threadId and text.";
 
 /** Threads the voice orchestrator starts run Opus 5.5 on high with full access. */
 const LAUNCH_MODEL = "claude-opus-5-5";
@@ -260,8 +260,8 @@ const make = Effect.gen(function* () {
         return { closed: yield* store.closeItem(input.id) };
       }),
 
-    // The gate is the user's own words: the draft must match something they
-    // said yes to in the call transcript.
+    // The gate is the user's own words: they must have said yes to the exact
+    // code-owned readback of this draft and thread in the call transcript.
     voice_send: (input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
@@ -273,7 +273,11 @@ const make = Effect.gen(function* () {
             targetTitle: target.title,
           }))
         )
-          return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES };
+          return {
+            status: "needs_spoken_yes" as const,
+            instruction: NEEDS_SPOKEN_YES,
+            readback: sendReadback(target.title, input.text),
+          };
         yield* requireVoiceSession;
         const id = yield* commandId;
         const queued = input.mode === "queue";

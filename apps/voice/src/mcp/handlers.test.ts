@@ -32,7 +32,11 @@ import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 
 import { T3Client } from "../T3Client.ts";
-import { confirmationReadback, makeVoiceConfirmationGate } from "../VoiceConfirmation.ts";
+import {
+  confirmationReadback,
+  makeVoiceConfirmationGate,
+  sendReadback,
+} from "../VoiceConfirmation.ts";
 import { VoiceOrchestrator } from "../VoiceOrchestrator.ts";
 import { VoiceStore, type VoiceTranscriptEntry } from "../VoiceStore.ts";
 import { VoiceToolkitHandlersLive } from "./handlers.ts";
@@ -195,7 +199,9 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
             : Option.none(),
         ),
       claimSpokenSend: ({ text, targetTitle }) =>
-        Effect.sync(() => gate.claim({ transcript, generation: 1, now, draft: text, targetTitle })),
+        Effect.sync(() =>
+          gate.claim({ transcript, generation: 1, now, readback: sendReadback(targetTitle, text) }),
+        ),
       pendingConfirmations: () =>
         Effect.succeed([...pending.values()].map(({ request }) => request)),
       proposeAction: (input) =>
@@ -222,8 +228,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
               transcript,
               generation: 1,
               now,
-              draft: confirmationReadback(action.request),
-              exactReadback: true,
+              readback: confirmationReadback(action.request),
             })
           )
             return {
@@ -562,12 +567,28 @@ describe("voice toolkit handlers", () => {
     }),
   );
 
-  it.effect("does not send without a spoken yes", () =>
+  it.effect("returns the exact readback and does not send without a spoken yes to it", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ transcript: [] });
-      const result = yield* harness.call("voice_send", { threadId: TARGET_THREAD, text: DRAFT });
-      expect(result.result).toMatchObject({ status: "needs_spoken_yes" });
-      expect(harness.dispatched).toEqual([]);
+      for (const transcript of [
+        [],
+        // A lead-in that negates, or one that adds a condition, voids the readback.
+        [
+          said("assistant", `I won't send it yet. Send to Target: ${DRAFT} Should I send it?`),
+          said("user", "Yes"),
+        ],
+        [
+          said("assistant", `Send to Target: ${DRAFT} Once CI is green. Should I send it?`),
+          said("user", "Yes"),
+        ],
+      ]) {
+        const harness = yield* makeHarness({ transcript });
+        const result = yield* harness.call("voice_send", { threadId: TARGET_THREAD, text: DRAFT });
+        expect(result.result).toMatchObject({
+          status: "needs_spoken_yes",
+          readback: `Send to Target: ${DRAFT} Should I send it?`,
+        });
+        expect(harness.dispatched).toEqual([]);
+      }
     }),
   );
 
@@ -589,7 +610,7 @@ describe("voice toolkit handlers", () => {
         const harness = yield* makeHarness({
           transcript: [
             said("user", "Tell the target thread to rebase onto main and rerun the tests."),
-            said("assistant", `I'll send to Target: "${DRAFT}" Should I send it?`),
+            said("assistant", sendReadback("Target", DRAFT)),
             said("user", "Yes, send it."),
           ],
         });

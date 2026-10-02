@@ -3,14 +3,10 @@ import * as DateTime from "effect/DateTime";
 
 import type { VoiceTranscriptEntry } from "./VoiceStore.ts";
 
-/** The read-back must also name the target thread, so a yes can't be redirected. */
-const MIN_TITLE_RECALL = 0.5;
 /** A yes is a short reply; anything longer is a conversation, not a confirmation. */
 const MAX_REPLY_WORDS = 10;
-/** Earlier assistant entries up to this long may precede a readback as filler. */
-const MAX_ACK_WORDS = 6;
 
-/** Only these separate preparation entries may precede an exact action readback. */
+/** Only these separate preparation entries may precede an exact readback. */
 const PRE_READBACK_ACKS = new Set(
   [
     "I'll prepare that action",
@@ -49,6 +45,18 @@ const REDIRECT_WORDS = new Set([
   "wait",
   "actually",
   "and",
+  "wont",
+  "cant",
+  "cannot",
+  "shouldnt",
+  "wouldnt",
+  "isnt",
+  "doesnt",
+  "unless",
+  "until",
+  "if",
+  "only",
+  "without",
 ]);
 
 /** A question asks the user something new, so it can't be skipped or talked through. */
@@ -108,29 +116,6 @@ function words(text: string): string[] {
     .filter((word) => word !== "");
 }
 
-/** Share of `wanted` words (counting repeats) found anywhere in `text`. */
-function recall(wanted: ReadonlyArray<string>, text: ReadonlyArray<string>): number {
-  const available = new Map<string, number>();
-  for (const word of text) available.set(word, (available.get(word) ?? 0) + 1);
-  let matched = 0;
-  for (const word of wanted) {
-    const count = available.get(word) ?? 0;
-    if (count > 0) {
-      matched++;
-      available.set(word, count - 1);
-    }
-  }
-  return matched / wanted.length;
-}
-
-/** Whether `needle` appears in `haystack` as one unbroken run of words. */
-function containsRun(haystack: ReadonlyArray<string>, needle: ReadonlyArray<string>): boolean {
-  for (let start = 0; start + needle.length <= haystack.length; start++) {
-    if (needle.every((word, offset) => haystack[start + offset] === word)) return true;
-  }
-  return false;
-}
-
 function isAffirmative(reply: string): boolean {
   const replyWords = words(reply);
   return (
@@ -142,21 +127,52 @@ function isAffirmative(reply: string): boolean {
 }
 
 /**
- * The code-owned spoken-yes gate for voice sends. True only when an
- * assistant entry reads back the whole draft, word for word and in order
- * (and names `targetTitle` when given), and everything the user said after
+ * The code-owned spoken-yes gate. True only when the latest run of assistant
+ * entries is exactly `readback` (ignoring case and punctuation, after skipping
+ * whole harmless filler entries before it), and everything the user said after
  * it is a short, plain yes.
  *
  * The voice model often talks over the yes ("Okay, sending that"), so
- * assistant statements after the read-back are allowed. Any assistant
+ * assistant statements after the readback are allowed. Any assistant
  * question ends the window, since the user's next words may answer it.
- * A read-back the user hasn't answered yet fails.
+ * A readback the user hasn't answered yet fails.
  */
+/** Longest statement that may lead into a readback in the same breath. */
+const MAX_INLINE_PREFIX_WORDS = 10;
+
+const questionCount = (text: string) => text.match(/[?？]/g)?.length ?? 0;
+
+/**
+ * Whether `run` is the readback, said once or more ("...Should I send it?
+ * Send to ...Should I send it?"), optionally after a short lead-in in the same
+ * breath ("Sure, I'll prepare it for the main thread."). GPT-Live does both
+ * live. The lead-in may not ask anything or carry a redirecting word, so
+ * nothing but the readback can be what the user's yes answers.
+ */
+function isReadbackRun(run: string, readback: string): boolean {
+  const said = words(run);
+  const wanted = words(readback);
+  let end = said.length;
+  let copies = 0;
+  while (
+    end >= wanted.length &&
+    wanted.every((word, i) => said[end - wanted.length + i] === word)
+  ) {
+    end -= wanted.length;
+    copies++;
+  }
+  if (copies === 0) return false;
+  const leadIn = said.slice(0, end);
+  return (
+    leadIn.length <= MAX_INLINE_PREFIX_WORDS &&
+    !leadIn.some((word) => REDIRECT_WORDS.has(word)) &&
+    questionCount(run) === copies * questionCount(readback)
+  );
+}
+
 function confirmationEvidence(
   transcript: ReadonlyArray<VoiceTranscriptEntry>,
-  draft: string,
-  targetTitle?: string,
-  exactReadback = false,
+  readback: string,
 ):
   | {
       readonly readBack: VoiceTranscriptEntry;
@@ -164,61 +180,45 @@ function confirmationEvidence(
       readonly replies: ReadonlyArray<VoiceTranscriptEntry>;
     }
   | undefined {
-  const draftWords = words(draft);
-  if (draftWords.length === 0) return undefined;
-  const titleWords = targetTitle === undefined ? [] : words(targetTitle);
+  const wanted = words(readback).join(" ");
+  if (wanted === "") return undefined;
 
-  // A read-back can arrive split across consecutive assistant entries, so
-  // each run of them is checked as one. The latest run with the draft wins.
+  // A readback can arrive split across consecutive assistant entries, so
+  // each run of them is checked as one. The latest matching run wins.
   let readBackEnd = -1;
   let readBackStart = -1;
-  let readBack: string[] = [];
   for (let end = transcript.length - 1; end >= 0 && readBackEnd === -1; end--) {
     if (transcript[end]?.role !== "assistant") continue;
     let start = end;
     while (start > 0 && transcript[start - 1]?.role === "assistant") start--;
-    let candidateStart = start;
-    while (candidateStart <= end) {
-      const run = words(
-        transcript
+    // An exact run (after skipped separate filler entries) wins; only when there
+    // is none may the readback come after a lead-in in the same breath.
+    for (const lenient of [false, true]) {
+      for (let candidateStart = start; candidateStart <= end; candidateStart++) {
+        const run = transcript
           .slice(candidateStart, end + 1)
           .map((entry) => entry.text)
-          .join(" "),
-      );
-      if (exactReadback ? run.join(" ") === draftWords.join(" ") : containsRun(run, draftWords)) {
-        readBackEnd = end;
-        readBackStart = candidateStart;
-        readBack = run;
-        break;
+          .join(" ");
+        if (lenient ? isReadbackRun(run, readback) : words(run).join(" ") === wanted) {
+          readBackEnd = end;
+          readBackStart = candidateStart;
+          break;
+        }
+        // Keep entry boundaries: only whole earlier entries are skipped: known
+        // preparation phrases, or statements ("Let me check that main thread real
+        // quick.") with no question and no redirecting word. Only the readback is
+        // executed, and the user still answers it, so it must be the rest of the run.
+        const earlierText = transcript[candidateStart]!.text;
+        const earlier = words(earlierText);
+        const isFiller =
+          !asksQuestion(earlierText) && !earlier.some((word) => REDIRECT_WORDS.has(word));
+        if (!(PRE_READBACK_ACKS.has(earlier.join(" ")) || isFiller)) break;
       }
-      // Keep entry boundaries: an acknowledgement in the same part as a negation or
-      // another action is never removed. Only whole earlier entries are skipped: known
-      // preparation phrases, or short statements ("Looking now.") with no question and
-      // no redirecting word. The user still answers the exact readback, which must be
-      // the rest of the run.
-      const earlierText = transcript[candidateStart]!.text;
-      const earlier = words(earlierText);
-      const isFiller =
-        earlier.length <= MAX_ACK_WORDS &&
-        !asksQuestion(earlierText) &&
-        !earlier.some((word) => REDIRECT_WORDS.has(word));
-      if (!exactReadback || !(PRE_READBACK_ACKS.has(earlier.join(" ")) || isFiller)) break;
-      candidateStart++;
+      if (readBackEnd !== -1) break;
     }
     end = start;
   }
   if (readBackEnd === -1) return undefined;
-  if (titleWords.length > 0 && recall(titleWords, readBack) < MIN_TITLE_RECALL) return undefined;
-
-  // An action's readback is not a message-send readback, even when it contains the same draft.
-  if (
-    !exactReadback &&
-    ["Launch a thread", "Interrupt a thread", "Approve a runtime request"].some((prefix) =>
-      containsRun(readBack, words(prefix)),
-    ) &&
-    containsRun(readBack, words("Do you approve this action"))
-  )
-    return undefined;
 
   const reply: VoiceTranscriptEntry[] = [];
   for (const entry of transcript.slice(readBackEnd + 1)) {
@@ -240,12 +240,13 @@ function confirmationEvidence(
     : undefined;
 }
 
-export function isSpokenConfirmation(
-  transcript: ReadonlyArray<VoiceTranscriptEntry>,
-  draft: string,
-  targetTitle?: string,
-): boolean {
-  return confirmationEvidence(transcript, draft, targetTitle) !== undefined;
+/**
+ * The exact text the voice model must speak before a send. Code owns it, so a
+ * yes covers this draft and this thread and nothing else.
+ */
+export function sendReadback(targetTitle: string, draft: string): string {
+  const body = draft.trim();
+  return `Send to ${targetTitle.trim()}: ${/[.!?？]$/.test(body) ? body : `${body}.`} Should I send it?`;
 }
 
 /** The action and its full details must be spoken before a yes can approve it. */
@@ -276,21 +277,15 @@ export function makeVoiceConfirmationGate() {
       readonly transcript: ReadonlyArray<VoiceTranscriptEntry>;
       readonly generation: number;
       readonly now: DateTime.Utc;
-      readonly draft: string;
-      readonly targetTitle?: string;
+      /** The exact readback the user must have answered. */
+      readonly readback: string;
       readonly notBefore?: DateTime.Utc;
-      readonly exactReadback?: boolean;
     }): boolean {
       const now = DateTime.toEpochMillis(input.now);
       const oldest = now - 120_000;
       for (const [key, at] of used) if (at < oldest) used.delete(key);
       const transcript = input.transcript.filter((entry) => entry.generation === input.generation);
-      const evidence = confirmationEvidence(
-        transcript,
-        input.draft,
-        input.targetTitle,
-        input.exactReadback,
-      );
+      const evidence = confirmationEvidence(transcript, input.readback);
       if (evidence === undefined) return false;
       const readBackAt = DateTime.toEpochMillis(evidence.readBack.at);
       if (

@@ -46,6 +46,8 @@ export const VOICE_MCP_SERVER = "voice";
 const SETUP_TIMEOUT = "120 seconds";
 const ANSWER_TIMEOUT = "30 seconds";
 const RELEASE_REQUEST_TIMEOUT = "10 seconds";
+/** How long `thread/realtime/stop` may take before the call is ended locally. */
+const STOP_TIMEOUT = "5 seconds";
 
 /**
  * The child environment: the parent's, minus anything that could bill the
@@ -346,9 +348,12 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
   const stopCall = (connection: Connection, threadId: string) =>
     Effect.gen(function* () {
       if (!(yield* Ref.get(connection.calls)).has(threadId)) return;
+      // Stop runs in finalizers, so a child that is alive but not answering
+      // must not hold up release; the local call ends either way.
       yield* connection.client.raw
         .request("thread/realtime/stop", { threadId })
         .pipe(
+          Effect.timeout(STOP_TIMEOUT),
           Effect.ensuring(endCall(connection, threadId, { type: "closed", reason: "stopped" })),
         );
     }).pipe(toSessionError("Failed to stop the voice call."));

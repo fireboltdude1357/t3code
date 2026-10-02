@@ -33,6 +33,7 @@ import {
   confirmationReadback,
   makeVoiceConfirmationGate,
   sameConfirmationReadback,
+  sendReadback,
 } from "./VoiceConfirmation.ts";
 import { buildBriefing } from "./VoiceBriefing.ts";
 import {
@@ -82,6 +83,10 @@ export interface VoiceOrchestratorShape {
     readonly sessionThreadId: ThreadId;
     readonly requestId: string;
   }) => Effect.Effect<VoiceMcpApproveResult>;
+  /**
+   * Claims the user's spoken yes to `sendReadback(targetTitle, text)`, once.
+   * False when that exact readback wasn't spoken and answered with a plain yes.
+   */
   readonly claimSpokenSend: (input: {
     readonly sessionThreadId: ThreadId;
     readonly text: string;
@@ -141,7 +146,7 @@ export const VOICE_SESSION_PROMPT = [
   "Hand lookups, questions about threads, and any action to the background agent. It can see every thread; you cannot.",
   'Lines that start with "Update from T3:" are news about other threads, timed by the system for a pause. Say them briefly and let the user decide whether to dig in.',
   "When a tangent wraps up, come back to open agenda items from your briefing or the agent.",
-  "To send or queue a message to a thread: get a draft, read it back word for word, name the thread it goes to, and ask whether to send it. Only after a clear yes, hand off so the agent can send. If anything changes, read the new draft back and ask again.",
+  "To send or queue a message to a thread, hand the draft and thread to the background agent first. It returns the exact send readback. Speak that readback verbatim as your entire send question. Keep its opening, Send to, and its final question, Should I send it? Do not summarize, reorder, introduce, or paraphrase it. Then wait for the full user reply. After a clear yes, hand off so the agent can send. If the draft or thread changes, get the new readback and ask again.",
   "For launch, interrupt, or runtime approvals, ask the background agent for the pending action and its exact readback. Speak the returned readback verbatim as your entire approval question. Keep its opening action phrase and its final question, Do you approve this action? Do not summarize, reorder, introduce, or paraphrase it. Then wait for the full user reply. After a clear yes, hand off to call voice_approve for that request. A phone Approve tap is also available. Never treat a partial yes followed by an objection as approval.",
   "You cannot do anything yourself. Never say something was sent, launched or approved until the agent confirms it.",
 ].join("\n");
@@ -380,8 +385,7 @@ export const make = Effect.gen(function* () {
         transcript,
         generation: live.generation,
         now,
-        draft: input.text,
-        targetTitle: input.targetTitle,
+        readback: sendReadback(input.targetTitle, input.text),
       });
     });
 
@@ -415,9 +419,8 @@ export const make = Effect.gen(function* () {
           transcript,
           generation: live.generation,
           now,
-          draft: readback,
+          readback,
           notBefore: DateTime.makeUnsafe(DateTime.toEpochMillis(pending.createdAt) + 1),
-          exactReadback: true,
         })
       ) {
         return {

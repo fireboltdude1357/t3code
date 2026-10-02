@@ -29,7 +29,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { layerMemory as DatabaseMemory } from "./Database.ts";
 import { T3Client, type T3ThreadChange } from "./T3Client.ts";
-import { confirmationReadback } from "./VoiceConfirmation.ts";
+import { confirmationReadback, sendReadback } from "./VoiceConfirmation.ts";
 import {
   layer as orchestratorLayer,
   ROTATE_AFTER,
@@ -1435,10 +1435,7 @@ it.effect(
         assert.strictEqual((yield* orchestrator.approveSpoken(session)).status, "needs_spoken_yes");
 
         // The same holds for a send.
-        yield* harness.speak(
-          "assistant",
-          "I'll send to Work: Review the change. Should I send it?",
-        );
+        yield* harness.speak("assistant", sendReadback("Work", "Review the change"));
         yield* harness.speak("user", "Yes");
         const sending = yield* orchestrator.claimSpokenSend(sendDraft).pipe(Effect.forkScoped);
         yield* TestClock.adjust("1 second");
@@ -1446,6 +1443,13 @@ it.effect(
         yield* TestClock.adjust("1 second");
         assert.isFalse(yield* Fiber.join(sending));
         yield* TestClock.adjust("1 second");
+        assert.isFalse(yield* orchestrator.claimSpokenSend(sendDraft));
+        // A fresh exact readback and a plain yes do send, once.
+        yield* harness.speak("assistant", sendReadback("Work", "Review the change"));
+        yield* harness.speak("user", "Yes");
+        const resent = yield* orchestrator.claimSpokenSend(sendDraft).pipe(Effect.forkScoped);
+        yield* TestClock.adjust("2 seconds");
+        assert.isTrue(yield* Fiber.join(resent));
         assert.isFalse(yield* orchestrator.claimSpokenSend(sendDraft));
 
         // Speech still in progress (no final part yet) also fails the attempt.

@@ -19,7 +19,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/unstable/http/HttpClient";
@@ -94,19 +93,41 @@ const WebSocketTicket = Schema.Struct({ ticket: Schema.String });
 const toClientError = (message: string) => (cause: unknown) =>
   new T3ClientError({ message, cause });
 
-/** Applies one shell stream item to the in-memory shell. */
-const applyShellItem = (
+/** Whether a thread's run status or pending request differs, which is what notices react to. */
+const movedSince = (before: OrchestrationV2ThreadShell, after: OrchestrationV2ThreadShell) =>
+  before.status !== after.status ||
+  before.latestRunId !== after.latestRunId ||
+  before.pendingRuntimeRequest?.id !== after.pendingRuntimeRequest?.id;
+
+/**
+ * Applies one shell stream item to the in-memory shell.
+ *
+ * An authoritative snapshot (the first frame of each subscription) replaces
+ * the mirror. On a reconnect it also reports threads that moved while the
+ * sidecar was away, so a run that finished meanwhile is still announced.
+ * Enrichment snapshots (`resolvedRepositoryIdentityRoots` set) carry only
+ * repository identity for some projects and no threads; the sidecar doesn't
+ * use that, so they change nothing.
+ */
+export const applyShellItem = (
   shell: Map<ThreadId, OrchestrationV2ThreadShell>,
   projects: Map<string, OrchestrationProjectShell>,
   item: OrchestrationV2ShellStreamItem,
+  reconnect: boolean,
 ): ReadonlyArray<T3ThreadChange> => {
   switch (item.kind) {
     case "snapshot": {
+      if (item.resolvedRepositoryIdentityRoots !== undefined) return [];
+      const before = new Map(shell);
       shell.clear();
       projects.clear();
       for (const project of item.snapshot.projects) projects.set(project.id, project);
       for (const thread of item.snapshot.threads) shell.set(thread.id, thread);
-      return [];
+      if (!reconnect) return [];
+      return item.snapshot.threads.flatMap((thread) => {
+        const previous = before.get(thread.id);
+        return previous !== undefined && movedSince(previous, thread) ? [{ previous, thread }] : [];
+      });
     }
     case "project.updated": {
       projects.set(item.project.id, item.project);
@@ -142,6 +163,8 @@ export const make = (config: T3ClientConfig) =>
     const resyncs = yield* PubSub.unbounded<void>();
     const current = yield* Ref.make<WsClient | undefined>(undefined);
     const connected = yield* Deferred.make<WsClient>();
+    /** Failed attempts since the last synced connection; drives the backoff. */
+    const failures = yield* Ref.make(0);
 
     const ticket = HttpClientRequest.post(`${origin}/api/auth/websocket-ticket`).pipe(
       HttpClientRequest.bearerToken(config.token),
@@ -178,9 +201,13 @@ export const make = (config: T3ClientConfig) =>
       yield* client["orchestration.subscribeShell"]({}).pipe(
         Stream.runForEach((item) =>
           Effect.gen(function* () {
-            const applied = applyShellItem(threads, projects, item);
-            if (item.kind === "snapshot") {
+            const authoritative =
+              item.kind === "snapshot" && item.resolvedRepositoryIdentityRoots === undefined;
+            const reconnect = yield* Deferred.isDone(connected);
+            const applied = applyShellItem(threads, projects, item, reconnect);
+            if (authoritative) {
               yield* Ref.set(current, client);
+              yield* Ref.set(failures, 0);
               yield* Deferred.succeed(connected, client);
               yield* Effect.logInfo("voice.t3.synced", { threads: threads.size });
               yield* PubSub.publish(resyncs, undefined);
@@ -192,16 +219,18 @@ export const make = (config: T3ClientConfig) =>
       return yield* new T3ClientError({ message: "The T3 shell stream ended." });
     }).pipe(Effect.scoped, Effect.provide(socketProtocol));
 
+    // Reconnects forever. The wait doubles from 1s up to 15s and starts over
+    // after any connection that synced, so a routine T3 restart reconnects fast.
     yield* session.pipe(
-      Effect.tapCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.void
-          : Effect.logWarning("voice.t3.disconnected", { cause: Cause.pretty(cause) }),
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          if (Cause.hasInterruptsOnly(cause)) return yield* Effect.interrupt;
+          yield* Effect.logWarning("voice.t3.disconnected", { cause: Cause.pretty(cause) });
+          const attempt = yield* Ref.getAndUpdate(failures, (n) => n + 1);
+          yield* Effect.sleep(Duration.seconds(Math.min(15, 2 ** attempt)));
+        }),
       ),
-      // Back off from 1s, but never wait more than 15s between attempts.
-      Effect.retry(
-        Schedule.min([Schedule.exponential(Duration.seconds(1)), Schedule.spaced("15 seconds")]),
-      ),
+      Effect.forever,
       Effect.forkScoped,
     );
 

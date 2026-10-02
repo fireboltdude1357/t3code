@@ -140,7 +140,7 @@ const VoiceTopicCloseTool = Tool.make("voice_topic_close", {
 const VoiceSendTool = Tool.make("voice_send", {
   ...shared,
   description:
-    "Send a message to a thread. First read the exact text back to the user word for word and wait for their spoken yes; without it nothing is sent and you get status needs_spoken_yes.",
+    "Send a message to a thread. Call it first: nothing is sent until the user has said yes to the exact readback, so the first call returns status needs_spoken_yes with that readback. Have the voice model speak it verbatim, wait for a fresh yes, then call again with the same threadId and text.",
   parameters: VoiceMcpSendInput,
   success: VoiceMcpSendResult,
 })
