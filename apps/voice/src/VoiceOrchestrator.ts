@@ -175,6 +175,12 @@ interface Generation extends LiveVoiceSession {
   readonly end: Deferred.Deferred<GenerationEnd>;
   /** Epoch millis of the last transcript delta from either side. */
   readonly lastActivity: Ref.Ref<number>;
+  /**
+   * Epoch millis of the last user speech. Spoken approvals wait for this to go
+   * quiet so the user's reply is complete; the voice model's own filler ("one
+   * moment") must not void a yes.
+   */
+  readonly lastUserActivity: Ref.Ref<number>;
 }
 
 interface State {
@@ -350,14 +356,14 @@ export const make = Effect.gen(function* () {
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       return (
         current === live &&
-        now - (yield* Ref.get(live.lastActivity)) >= Duration.toMillis(CONFIRM_QUIET)
+        now - (yield* Ref.get(live.lastUserActivity)) >= Duration.toMillis(CONFIRM_QUIET)
       );
     });
 
   const awaitSpokenQuiet = (live: Generation) =>
     Effect.gen(function* () {
       const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const wait = (yield* Ref.get(live.lastActivity)) + Duration.toMillis(CONFIRM_QUIET) - now;
+      const wait = (yield* Ref.get(live.lastUserActivity)) + Duration.toMillis(CONFIRM_QUIET) - now;
       if (wait > 0) yield* Effect.sleep(Duration.millis(wait));
       // Further activity fails this attempt rather than starting an unbounded retry loop.
       return yield* isSpokenQuiet(live);
@@ -869,9 +875,16 @@ export const make = Effect.gen(function* () {
           input.focusThreadId,
         );
         const lastActivity = yield* Ref.make(0);
-        const markActivity = DateTime.now.pipe(
-          Effect.flatMap((now) => Ref.set(lastActivity, DateTime.toEpochMillis(now))),
-        );
+        const lastUserActivity = yield* Ref.make(0);
+        const markActivity = (role: "user" | "assistant") =>
+          DateTime.now.pipe(
+            Effect.map(DateTime.toEpochMillis),
+            Effect.flatMap((now) =>
+              Ref.set(lastActivity, now).pipe(
+                Effect.andThen(role === "user" ? Ref.set(lastUserActivity, now) : Effect.void),
+              ),
+            ),
+          );
         if (input.startupProgress === true)
           yield* Queue.offer(startupEvents, { type: "startup", stage: "starting-realtime" });
         const call = yield* Effect.acquireRelease(
@@ -882,7 +895,7 @@ export const make = Effect.gen(function* () {
             agentStartInstructions: agentBriefing(focus, agenda),
             onActivity: markActivity,
             onTranscript: ({ role, text }) =>
-              markActivity.pipe(
+              markActivity(role).pipe(
                 Effect.andThen(DateTime.now),
                 Effect.flatMap((at) => store.appendTranscript({ generation, role, text, at })),
               ),
@@ -899,6 +912,7 @@ export const make = Effect.gen(function* () {
           events: yield* Queue.unbounded<VoiceSessionEvent>(),
           end: yield* Deferred.make<GenerationEnd>(),
           lastActivity,
+          lastUserActivity,
         };
         // Registered before `current` goes live, so it can never be left live.
         // Hanging up (not rotating) also drops a warm thread nobody will use.

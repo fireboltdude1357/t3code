@@ -46,8 +46,8 @@ export interface StartRealtimeCallInput {
   }>;
   /** Developer instructions for the backing agent when the session starts. */
   readonly agentStartInstructions?: string;
-  /** Called whenever either side is speaking (transcript deltas). */
-  readonly onActivity?: Effect.Effect<void>;
+  /** Called whenever either side is speaking (transcript deltas), with who it is. */
+  readonly onActivity?: (role: "user" | "assistant") => Effect.Effect<void>;
   /** Called with each final transcript part while the session is live. */
   readonly onTranscript?: (part: {
     readonly role: "user" | "assistant";

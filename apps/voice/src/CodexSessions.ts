@@ -96,7 +96,7 @@ export const sessionThreadStartParams = (input: {
 interface RealtimeCallState {
   readonly answer: Deferred.Deferred<string, VoiceSessionError>;
   readonly ended: Deferred.Deferred<RealtimeCallEnd>;
-  readonly onActivity: Effect.Effect<void> | undefined;
+  readonly onActivity: ((role: "user" | "assistant") => Effect.Effect<void>) | undefined;
   readonly onTranscript: StartRealtimeCallInput["onTranscript"];
 }
 
@@ -222,7 +222,12 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
       );
       yield* client.handleServerNotification("thread/realtime/transcript/delta", (payload) =>
         callFor(payload.threadId).pipe(
-          Effect.flatMap((call) => call?.onActivity ?? Effect.void),
+          Effect.flatMap((call) =>
+            call?.onActivity === undefined ||
+            (payload.role !== "user" && payload.role !== "assistant")
+              ? Effect.void
+              : call.onActivity(payload.role),
+          ),
           guarded("voice.codex.realtime-activity-failed"),
         ),
       );

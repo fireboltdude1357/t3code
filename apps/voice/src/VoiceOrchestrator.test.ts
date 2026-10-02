@@ -1455,7 +1455,7 @@ it.effect(
         const active = yield* orchestrator.approveSpoken(session).pipe(Effect.forkScoped);
         yield* TestClock.adjust("1 second");
         const start = yield* Ref.get(harness.lastStart);
-        yield* start?.onActivity ?? Effect.void;
+        yield* start?.onActivity?.("user") ?? Effect.void;
         yield* TestClock.adjust("1 second");
         assert.strictEqual((yield* Fiber.join(active)).status, "needs_spoken_yes");
         assert.strictEqual(yield* Ref.get(executed), 0);
@@ -1464,6 +1464,36 @@ it.effect(
         assert.strictEqual(yield* Ref.get(executed), 1);
       }),
     ),
+);
+
+it.effect("the voice model's own filler during the quiet window does not void a yes", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      const { answer, events } = yield* openCall;
+      const executed = yield* Ref.make(0);
+      yield* orchestrator.proposeAction({
+        action: "launch",
+        title: "Start Audit in Work?",
+        detail: "Review the change",
+        execute: Ref.update(executed, (n) => n + 1).pipe(Effect.as("Started Audit.")),
+      });
+      const { request } = yield* takeUntilType(events, "confirm");
+      yield* TestClock.adjust(Duration.millis(1));
+      yield* harness.speak("assistant", confirmationReadback(request));
+      yield* harness.speak("user", "Yes, I approve this action");
+      const approving = yield* orchestrator
+        .approveSpoken({ sessionThreadId: answer.sessionThreadId, requestId: request.id })
+        .pipe(Effect.forkScoped);
+      yield* TestClock.adjust("1 second");
+      // Seen live: GPT-Live says "one moment, submitting that now" while the agent approves.
+      const start = yield* Ref.get(harness.lastStart);
+      yield* start?.onActivity?.("assistant") ?? Effect.void;
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual((yield* Fiber.join(approving)).status, "approved");
+      assert.strictEqual(yield* Ref.get(executed), 1);
+    }),
+  ),
 );
 
 it.effect("a stale originating session cannot propose an action in a new generation", () =>
