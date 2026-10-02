@@ -28,36 +28,38 @@ function SubscriptionUsage(
   "widget";
   // The extension evaluates this function without the app's module scope.
   const family = environment.widgetFamily;
-  // Gallery snapshots can render an old timeline entry after it has expired.
-  const now = Math.max(environment.date?.getTime() ?? 0, Date.now());
   const accessory = family === "accessoryRectangular";
   const compact =
     family === "systemSmall" || accessory || environment.levelOfDetail === "simplified";
-  // Budget short cards for two quotas per provider, including their secondary text.
+  // Medium fits three quotas per provider because the check time sits beside the name.
   const dense = family === "systemSmall" || family === "systemMedium";
-  const limit = family === "systemExtraLarge" ? 6 : family === "systemLarge" ? 4 : 2;
+  const limit = family === "systemExtraLarge" ? 6 : family === "systemLarge" ? 4 : dense ? 3 : 2;
   const monochrome =
     environment.widgetRenderingMode !== "fullColor" || environment.isLuminanceReduced;
   const providers = props.providers ?? [
-    { name: "Codex", detail: "Open T3 to connect", windows: [], expiresAt: 0 },
-    { name: "Claude", detail: "Open T3 to connect", windows: [], expiresAt: 0 },
+    { name: "Codex", detail: "Open T3 to connect", windows: [], checkedAt: 0 },
+    { name: "Claude", detail: "Open T3 to connect", windows: [], checkedAt: 0 },
   ];
+  // Reserve a detail row in every column only when one of them has something to say.
+  const hasDetail = providers.some((provider) => provider.detail !== "Subscription remaining");
+  const today = (environment.date ?? new Date()).toDateString();
   const columns = providers.map((provider) => {
-    const stale = provider.windows.length > 0 && now >= provider.expiresAt;
     const period =
       environment.configuration?.[provider.name === "Claude" ? "claudePeriod" : "codexPeriod"] ??
       "auto";
-    const windows = stale
-      ? []
-      : provider.windows.filter((window) => period === "auto" || window.kind === period);
+    const windows = provider.windows.filter(
+      (window) => period === "auto" || window.kind === period,
+    );
     // Lock Screen widgets surface the tightest selected limit.
     const tightest = windows.reduce<(typeof windows)[number] | undefined>(
       (result, window) => (!result || window.remaining < result.remaining ? window : result),
       undefined,
     );
+    // Model-scoped limits ("Weekly · Fable") come after the provider-wide weekly.
     const compactWindows = [
       windows.find((window) => window.kind === "session"),
-      windows.find((window) => window.kind === "weekly"),
+      windows.find((window) => window.kind === "weekly" && !window.label.includes(" · ")) ??
+        windows.find((window) => window.kind === "weekly"),
     ].filter((window) => window !== undefined);
     const shown =
       accessory || environment.levelOfDetail === "simplified"
@@ -72,11 +74,18 @@ function SubscriptionUsage(
                 ...windows.filter((window) => !compactWindows.includes(window)),
               ].slice(0, limit)
             : windows.slice(0, limit);
-    const detail = stale
-      ? "Open T3 to refresh"
-      : period !== "auto" && windows.length === 0 && provider.windows.length > 0
+    const detail =
+      period !== "auto" && windows.length === 0 && provider.windows.length > 0
         ? `No ${period} limit reported`
         : provider.detail;
+    const checked = provider.checkedAt
+      ? new Date(provider.checkedAt).toLocaleString(
+          undefined,
+          new Date(provider.checkedAt).toDateString() === today
+            ? { hour: "numeric", minute: "2-digit" }
+            : { month: "short", day: "numeric" },
+        )
+      : "";
     const barModifiers = [
       progressViewStyle("linear"),
       frame({ height: 4 }),
@@ -119,7 +128,7 @@ function SubscriptionUsage(
             >
               {tightest
                 ? `${tightest.remaining}% left`
-                : period !== "auto" && !stale && provider.windows.length > 0
+                : period !== "auto" && provider.windows.length > 0
                   ? "N/A"
                   : "Open T3"}
             </Text>
@@ -140,16 +149,31 @@ function SubscriptionUsage(
           fixedSize({ horizontal: false, vertical: true }),
         ]}
       >
-        <Text
-          modifiers={[
-            font({ textStyle: compact ? "caption" : "headline", weight: "bold" }),
-            lineLimit(1),
-            foregroundStyle("primary"),
-          ]}
-        >
-          {provider.name}
-        </Text>
-        {!compact || shown.length === 0 ? (
+        <HStack spacing={4}>
+          <Text
+            modifiers={[
+              font({ textStyle: compact ? "caption" : "headline", weight: "bold" }),
+              lineLimit(1),
+              foregroundStyle("primary"),
+            ]}
+          >
+            {provider.name}
+          </Text>
+          <Spacer />
+          {checked ? (
+            <Text
+              modifiers={[
+                font({ textStyle: "caption2" }),
+                foregroundStyle("secondary"),
+                lineLimit(1),
+                accessibilityLabel(`Checked ${checked}`),
+              ]}
+            >
+              {checked}
+            </Text>
+          ) : null}
+        </HStack>
+        {shown.length === 0 || (!compact && hasDetail) ? (
           <Text
             modifiers={[
               font({ textStyle: "caption2" }),
@@ -212,7 +236,6 @@ function SubscriptionUsage(
           </VStack>
         ))}
         {!compact &&
-        !stale &&
         (period === "auto" ? (provider.totalWindows ?? windows.length) : windows.length) > limit ? (
           <Text
             modifiers={[
@@ -249,15 +272,6 @@ function SubscriptionUsage(
         </HStack>
       )}
       {!accessory ? <Spacer /> : null}
-      {!accessory ? (
-        <Text
-          modifiers={[font({ textStyle: "caption2" }), foregroundStyle("secondary"), lineLimit(1)]}
-        >
-          {props.checkedAt
-            ? `As of ${new Date(props.checkedAt).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" })}`
-            : "Tap to connect in T3"}
-        </Text>
-      ) : null}
     </VStack>
   );
 }

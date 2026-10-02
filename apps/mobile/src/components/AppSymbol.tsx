@@ -72,6 +72,7 @@ import IconLayoutSidebar from "@tabler/icons-react-native/IconLayoutSidebar";
 import IconLayoutSidebarRight from "@tabler/icons-react-native/IconLayoutSidebarRight";
 import IconLetterSpacing from "@tabler/icons-react-native/IconLetterSpacing";
 import IconMicrophone from "@tabler/icons-react-native/IconMicrophone";
+import IconMicrophoneOff from "@tabler/icons-react-native/IconMicrophoneOff";
 import IconLink from "@tabler/icons-react-native/IconLink";
 import IconListNumbers from "@tabler/icons-react-native/IconListNumbers";
 import IconMenu2 from "@tabler/icons-react-native/IconMenu2";
@@ -81,9 +82,11 @@ import IconMoon from "@tabler/icons-react-native/IconMoon";
 import IconNetwork from "@tabler/icons-react-native/IconNetwork";
 import IconPalette from "@tabler/icons-react-native/IconPalette";
 import IconPencil from "@tabler/icons-react-native/IconPencil";
+import IconPhoneOff from "@tabler/icons-react-native/IconPhoneOff";
 import IconPhoto from "@tabler/icons-react-native/IconPhoto";
 import IconPin from "@tabler/icons-react-native/IconPin";
 import IconPinnedOff from "@tabler/icons-react-native/IconPinnedOff";
+import IconPlayerPauseFilled from "@tabler/icons-react-native/IconPlayerPauseFilled";
 import IconPlayerPlay from "@tabler/icons-react-native/IconPlayerPlay";
 import IconPlayerStopFilled from "@tabler/icons-react-native/IconPlayerStopFilled";
 import IconPlus from "@tabler/icons-react-native/IconPlus";
@@ -107,6 +110,7 @@ import IconTypography from "@tabler/icons-react-native/IconTypography";
 import IconUpload from "@tabler/icons-react-native/IconUpload";
 import IconUserCircle from "@tabler/icons-react-native/IconUserCircle";
 import IconUsers from "@tabler/icons-react-native/IconUsers";
+import IconWaveSine from "@tabler/icons-react-native/IconWaveSine";
 import IconWifiOff from "@tabler/icons-react-native/IconWifiOff";
 import IconWorld from "@tabler/icons-react-native/IconWorld";
 import IconX from "@tabler/icons-react-native/IconX";
@@ -188,13 +192,16 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   macstudio: IconDeviceDesktop,
   magnifyingglass: IconSearch,
   mic: IconMicrophone,
+  "mic.slash": IconMicrophoneOff,
   paintbrush: IconPalette,
   pencil: IconPencil,
   "person.crop.circle": IconUserCircle,
   "person.2": IconUsers,
+  "phone.down.fill": IconPhoneOff,
   photo: IconPhoto,
   pin: IconPin,
   "pin.slash": IconPinnedOff,
+  "pause.fill": IconPlayerPauseFilled,
   play: IconPlayerPlay,
   plus: IconPlus,
   minus: IconMinus,
@@ -224,6 +231,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "textformat.size.smaller": IconTextDecrease,
   "tray.and.arrow.up": IconUpload,
   trash: IconTrash,
+  waveform: IconWaveSine,
   "wifi.slash": IconWifiOff,
   xmark: IconX,
   "xmark.circle.fill": IconCircleXFilled,

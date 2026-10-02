@@ -417,3 +417,14 @@ export function ComposerDictationStartAction(props: {
     />
   );
 }
+
+/** Opens the voice orchestrator focused on this thread. Sits between the mic and send for one-handed reach. */
+export function ComposerVoiceCallAction(props: { readonly onPress: () => void }) {
+  return (
+    <VoiceActionButton
+      accessibilityLabel="Talk to the orchestrator about this thread"
+      icon="waveform"
+      onPress={props.onPress}
+    />
+  );
+}

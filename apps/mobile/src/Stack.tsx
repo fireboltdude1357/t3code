@@ -10,7 +10,7 @@ import {
   createNativeStackScreen,
   type NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   Platform,
   Pressable,
@@ -43,6 +43,8 @@ import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentCompo
 import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { DevicePreviewRouteScreen } from "./features/devices/DevicePreviewRouteScreen";
+import { VoiceSessionMiniBar } from "./features/voice-session/VoiceSessionMiniBar";
+import { VoiceSessionSheet } from "./features/voice-session/VoiceSessionSheet";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
@@ -548,6 +550,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "ThreadQueue",
   "ThreadReviewComment",
   "ThreadDevicePreview",
+  "VoiceSession",
   "ThreadSettingsSheet",
 ]);
 
@@ -610,6 +613,7 @@ function RootStackLayout(props: {
       params: { incomingShareId: transition.shareIdToPresent },
     });
   }, [navigation, pendingShare, props.state]);
+  const openVoiceSession = useCallback(() => navigation.navigate("VoiceSession"), [navigation]);
 
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
@@ -622,6 +626,10 @@ function RootStackLayout(props: {
         >
           {props.children}
           <HardwareKeyboardCommandOverlay />
+          <VoiceSessionMiniBar
+            sheetOpen={props.state.routes[props.state.index]?.name === "VoiceSession"}
+            onOpenSheet={openVoiceSession}
+          />
         </AdaptiveWorkspaceLayout>
       </ExistingThreadSettingsRouteProvider>
     </HardwareKeyboardCommandProvider>
@@ -719,6 +727,22 @@ const RootStackConfig = createNativeStackNavigator({
           : FORM_SHEET_PRESENTATION_OPTIONS),
         sheetAllowedDetents: Platform.OS === "android" ? undefined : [0.55, 0.92],
         sheetGrabberVisible: Platform.OS !== "android",
+      },
+    }),
+    VoiceSession: createNativeStackScreen({
+      screen: VoiceSessionSheet,
+      // No deep link: a URL must never open a live microphone call.
+      options: {
+        gestureEnabled: true,
+        headerShown: false,
+        ...(Platform.OS === "android"
+          ? { presentation: "fullScreenModal" as const }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [0.65, 0.95],
+              sheetInitialDetentIndex: 1,
+              sheetGrabberVisible: true,
+            }),
       },
     }),
     ThreadFiles: createNativeStackScreen({

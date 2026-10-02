@@ -1,13 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/unstable/reactivity";
 import * as Linking from "expo-linking";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Platform } from "react-native";
 import { environmentCatalog } from "../connection/catalog";
 import { environmentPresentations } from "../state/presentation";
 import { publishSubscriptionUsage } from "./publishSubscriptionUsage";
 import { useSubscriptionUsage } from "./useSubscriptionUsage";
-import { buildSubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
+import { buildSubscriptionUsageSnapshot, keepLastLimits } from "./subscriptionUsageSnapshot";
 
 // Isolate quota changes from the much busier thread/config presentation stream.
 const snapshotAtom = Atom.make((get) =>
@@ -22,11 +22,15 @@ const snapshotAtom = Atom.make((get) =>
 export function SubscriptionUsageCoordinator() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const snapshot = useAtomValue(snapshotAtom);
+  const published = useRef<ReturnType<typeof keepLastLimits>>(undefined);
   useSubscriptionUsage(catalog.isReady);
   useEffect(() => {
     if (!catalog.isReady) return;
+    const next = keepLastLimits(published.current, snapshot);
+    if (!next) return;
+    published.current = next;
     void Promise.resolve()
-      .then(() => publishSubscriptionUsage(snapshot))
+      .then(() => publishSubscriptionUsage(next))
       .catch((error: unknown) => {
         console.warn("Could not update subscription usage widget", error);
       });

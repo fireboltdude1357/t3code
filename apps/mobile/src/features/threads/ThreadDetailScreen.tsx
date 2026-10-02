@@ -130,6 +130,8 @@ import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
+import { startVoiceSession } from "../voice-session/voiceSessionController";
+import { useVoiceSidecarEnvironmentId } from "../voice-session/voiceSidecar";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
 export interface ThreadDetailScreenProps {
@@ -317,6 +319,27 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       threadId: props.selectedThread.id,
     });
   }, [navigation, props.environmentId, props.selectedThread.id]);
+  // Opens the orchestrator focused on this thread, or just shows the sheet
+  // when a session is already running.
+  // Only threads in the voice sidecar's environment can take the call.
+  const voiceSidecarEnvironmentId = useVoiceSidecarEnvironmentId();
+  const canStartVoiceCall =
+    props.connectionStateLabel === "connected" && props.environmentId === voiceSidecarEnvironmentId;
+  const startVoiceCall = useMemo(
+    () =>
+      canStartVoiceCall
+        ? () => {
+            Keyboard.dismiss();
+            void Haptics.selectionAsync();
+            startVoiceSession({
+              environmentId: props.environmentId,
+              focusThreadId: props.selectedThread.id,
+            });
+            navigation.navigate("VoiceSession");
+          }
+        : null,
+    [canStartVoiceCall, navigation, props.environmentId, props.selectedThread.id],
+  );
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
   const liveKeyboardHeight = useKeyboardState((state) => state.height);
@@ -1326,6 +1349,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onNativePasteText={props.onNativePasteText}
                       onRemoveDraftImage={props.onRemoveDraftImage}
                       onStopThread={props.onStopThread}
+                      onStartVoiceCall={startVoiceCall}
                       onSendMessage={handleSendMessage}
                       onShowUsageLimits={showUsageLimits}
                       canSwitchProvider={props.canSwitchThreadProvider}
