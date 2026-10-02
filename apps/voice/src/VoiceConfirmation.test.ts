@@ -380,8 +380,32 @@ function saidForTime(
   return { generation: 1, role, text, at: DateTime.makeUnsafe(at) };
 }
 
+it("a long hand-off filler after the yes keeps the approval, a new draft does not", () => {
+  const withFiller = timed(
+    say(
+      ["assistant", "Checking that now."],
+      ["assistant", actionReadback],
+      ["user", "Yes, I approve this action"],
+      // Seen live against the sidecar on 2026-10-02.
+      ["assistant", "Okay, one moment. Got it, submitting that approval now."],
+    ),
+  );
+  assert.isTrue(makeVoiceConfirmationGate().claim(claimAction(withFiller)));
+  const withNewDraft = timed(
+    say(
+      ["assistant", actionReadback],
+      ["user", "Yes, I approve this action"],
+      ["assistant", "Actually, should I also delete the old audit thread first?"],
+    ),
+  );
+  assert.isFalse(makeVoiceConfirmationGate().claim(claimAction(withNewDraft)));
+});
+
 it("accepts the separate preparation phrases observed in the live approval flow", () => {
   for (const preparation of [
+    // Both seen live against the sidecar on 2026-10-02.
+    "Okay, checking one more thing.",
+    "Checking that now.",
     "Let me get that ready...",
     "Let me check on that",
     "Just a sec",

@@ -29,6 +29,67 @@ const PRE_READBACK_ACKS = new Set(
   ].map((text) => words(text).join(" ")),
 );
 
+/**
+ * Short filler GPT-Live says before reading an action back ("Okay, checking one
+ * more thing."). An earlier entry made only of these words carries no meaning
+ * the user could be agreeing to, so it may be skipped. "Do not" or "also
+ * delete" contain words outside it and still block the readback.
+ */
+const FILLER_VOCABULARY = new Set([
+  "okay",
+  "ok",
+  "alright",
+  "all",
+  "right",
+  "sure",
+  "got",
+  "it",
+  "one",
+  "moment",
+  "sec",
+  "second",
+  "just",
+  "a",
+  "let",
+  "me",
+  "check",
+  "checking",
+  "that",
+  "this",
+  "on",
+  "now",
+  "more",
+  "thing",
+  "quick",
+  "get",
+  "ready",
+]);
+
+/**
+ * Filler the voice model may say after the user's yes while it hands off
+ * ("Okay, one moment. Got it, submitting that approval now."). Made only of
+ * these words, an entry can't be a new draft, so it doesn't end the window.
+ */
+const AFTER_YES_FILLER = new Set([
+  ...FILLER_VOCABULARY,
+  "submitting",
+  "approving",
+  "approval",
+  "sending",
+  "launching",
+  "starting",
+  "stopping",
+  "im",
+  "the",
+  "your",
+  "will",
+  "ill",
+  "do",
+  "doing",
+  "go",
+]);
+const MAX_AFTER_YES_FILLER_WORDS = 14;
+
 /** Words that carry the yes. A reply needs at least one. */
 const YES_WORDS = new Set([
   "yes",
@@ -167,12 +228,13 @@ function confirmationEvidence(
         break;
       }
       // Keep entry boundaries: an acknowledgement in the same part as a negation or
-      // another action is never removed. Only a whole, known preparation entry is skipped.
-      if (
-        !exactReadback ||
-        !PRE_READBACK_ACKS.has(words(transcript[candidateStart]!.text).join(" "))
-      )
-        break;
+      // another action is never removed. Only whole earlier entries are skipped: known
+      // preparation phrases, or short filler made of FILLER_VOCABULARY. The user still
+      // answers the exact readback, which must be the rest of the run.
+      const earlier = words(transcript[candidateStart]!.text);
+      const isFiller =
+        earlier.length <= MAX_ACK_WORDS && earlier.every((word) => FILLER_VOCABULARY.has(word));
+      if (!exactReadback || !(PRE_READBACK_ACKS.has(earlier.join(" ")) || isFiller)) break;
       candidateStart++;
     }
     end = start;
@@ -192,8 +254,14 @@ function confirmationEvidence(
 
   const reply: VoiceTranscriptEntry[] = [];
   for (const entry of transcript.slice(readBackEnd + 1)) {
-    if (entry.role === "user") reply.push(entry);
-    else if (words(entry.text).length > MAX_ACK_WORDS) return undefined;
+    if (entry.role === "user") {
+      reply.push(entry);
+      continue;
+    }
+    const said = words(entry.text);
+    const isFiller =
+      said.length <= MAX_AFTER_YES_FILLER_WORDS && said.every((word) => AFTER_YES_FILLER.has(word));
+    if (said.length > MAX_ACK_WORDS && !isFiller) return undefined;
   }
   return isAffirmative(reply.map((entry) => entry.text).join(" "))
     ? {
