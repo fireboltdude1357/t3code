@@ -21,13 +21,6 @@ export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapsh
       if (event.source === "SubscriptionUsage" && tapUrl) void Linking.openURL(tapUrl);
     });
   }
+  // Limits never expire on the widget; the "As of" line shows their age.
   widget.updateSnapshot(snapshot);
-  // Android has no timeline; an alarm re-renders the stored snapshot at each
-  // deadline so stale readings flip to "Open T3 to refresh" unattended.
-  requireOptionalNativeModule<{ schedule: (name: string, deadlines: number[]) => void }>(
-    "T3WidgetExpiry",
-  )?.schedule(
-    "SubscriptionUsage",
-    snapshot.providers.map((provider) => provider.expiresAt).filter((at) => at > 0),
-  );
 }

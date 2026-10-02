@@ -21,6 +21,7 @@ const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
 // Android layers are rendered by scripts/export-android-icons.ts from the Icon Composer sources.
 // The wordmark sits inside the adaptive safe zone; the variant artwork is a full-bleed background.
 const androidAdaptiveForeground = "./assets/android-icon-foreground.png";
+const voiceInputMicrophonePermission = "Allow T3 Code to use your microphone for voice input.";
 
 if (
   isIosPersonalTeamBuild &&
@@ -29,6 +30,24 @@ if (
 ) {
   throw new Error(
     "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.t3code when T3CODE_IOS_PERSONAL_TEAM=1.",
+  );
+}
+
+// Fork identity. Forks that build with their own Expo account and Apple team
+// set these in .env.local; when unset, everything resolves to the upstream
+// T3 Tools identity, so upstream builds are unchanged.
+const easOwner = repoEnv.T3CODE_EAS_OWNER?.trim() || "pingdotgg";
+const easProjectId =
+  repoEnv.T3CODE_EAS_PROJECT_ID?.trim() || "d763fcb8-d37c-41ea-a773-b54a0ab4a454";
+const appleTeamId = repoEnv.T3CODE_IOS_APPLE_TEAM_ID?.trim() || "ARK85ZXQ4Z";
+// Replaces the com.t3tools.t3code base while keeping the per-variant suffix,
+// so a fork's dev/preview/production installs stay distinct from each other
+// and from the store app.
+const appIdPrefix = repoEnv.T3CODE_APP_ID_PREFIX?.trim() || undefined;
+
+if (appIdPrefix && !IOS_BUNDLE_IDENTIFIER_PATTERN.test(appIdPrefix)) {
+  throw new Error(
+    "T3CODE_APP_ID_PREFIX must be a reverse-DNS identifier such as com.example.t3code.",
   );
 }
 
@@ -110,9 +129,15 @@ function resolveAppVariant(value: string | undefined): AppVariant {
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
+const variantAppIdSuffix = { development: ".dev", preview: ".preview", production: "" }[
+  APP_VARIANT
+];
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
-  : variant.iosBundleIdentifier;
+  : appIdPrefix
+    ? `${appIdPrefix}${variantAppIdSuffix}`
+    : variant.iosBundleIdentifier;
+const androidPackage = appIdPrefix ? `${appIdPrefix}${variantAppIdSuffix}` : variant.androidPackage;
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -241,7 +266,7 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   updates: {
     enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    url: `https://u.expo.dev/${easProjectId}`,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -252,16 +277,16 @@ const config: ExpoConfig = {
     // showcase capture build requires full screen (see infoPlist below).
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
-    // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
-    // does not fall back to a personal team (which cannot sign app groups,
-    // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
+    // Pin code signing to one team so non-interactive `expo run:ios` does not
+    // fall back to a personal team (which cannot sign app groups, Sign in with
+    // Apple, or push notification entitlements).
+    appleTeamId,
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
       `webcredentials:${variant.relyingParty}`,
     ],
     entitlements: {
-      "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
+      "keychain-access-groups": [`$(AppIdentifierPrefix)${iosBundleIdentifier}`],
     },
     infoPlist: {
       NSAppTransportSecurity: {
@@ -271,6 +296,9 @@ const config: ExpoConfig = {
         "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
       NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
       ITSAppUsesNonExemptEncryption: false,
+      // Keeps a voice orchestrator call talking while the phone is locked or
+      // another app is in front.
+      UIBackgroundModes: ["audio", "voip"],
       // The App Store screenshot harness rotates the iPad interface from
       // inside the app (CI denies osascript the Accessibility access that
       // Simulator menu scripting needs), and iPadOS ignores programmatic
@@ -290,7 +318,7 @@ const config: ExpoConfig = {
   },
   android: {
     icon: variant.assets.appIcon,
-    package: variant.androidPackage,
+    package: androidPackage,
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
@@ -372,8 +400,8 @@ const config: ExpoConfig = {
     [
       "expo-audio",
       {
-        microphonePermission: "Allow T3 Code to use your microphone for voice input.",
-        recordAudioAndroid: false,
+        microphonePermission: voiceInputMicrophonePermission,
+        recordAudioAndroid: true,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
       },
@@ -382,12 +410,18 @@ const config: ExpoConfig = {
       "expo-camera",
       {
         cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
-        microphonePermission: false,
+        microphonePermission: voiceInputMicrophonePermission,
         barcodeScannerEnabled: true,
-        recordAudioAndroid: false,
+        recordAudioAndroid: true,
       },
     ],
-    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
+    [
+      "expo-image-picker",
+      {
+        photosPermission: false,
+        microphonePermission: voiceInputMicrophonePermission,
+      },
+    ],
     [
       "expo-splash-screen",
       {
@@ -471,10 +505,10 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: easProjectId,
     },
   },
-  owner: "pingdotgg",
+  owner: easOwner,
 };
 
 export default config;
