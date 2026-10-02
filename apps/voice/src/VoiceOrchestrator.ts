@@ -396,9 +396,11 @@ export const make = Effect.gen(function* () {
       const live = yield* currentSession(input.sessionThreadId);
       if (live === undefined) return false;
       const now = yield* DateTime.now;
-      const key = `${input.threadId.length}:${input.threadId}${input.mode}:${input.text}`;
+      // One issued send per thread and mode: a retry whose readback sounds the
+      // same keeps its first issue time, so a yes already given still counts.
+      // A different draft replaces it and needs a fresh readback and yes.
+      const key = `${input.threadId.length}:${input.threadId}${input.mode}`;
       // Sends expire with their generation and after the confirmation timeout.
-      // A send not issued yet with this readback is issued now and can't claim.
       const { issued, current } = yield* Ref.modify(issuedSends, (sends) => {
         const current = new Map(
           [...sends].filter(
@@ -409,7 +411,10 @@ export const make = Effect.gen(function* () {
           ),
         );
         const existing = current.get(key);
-        const issued = existing?.readback === input.readback ? existing : undefined;
+        const issued =
+          existing !== undefined && soundsSame(existing.readback, input.readback)
+            ? existing
+            : undefined;
         if (issued === undefined)
           current.set(key, {
             generation: live.generation,
@@ -715,7 +720,8 @@ export const make = Effect.gen(function* () {
    */
   const handleChange = ({ previous, thread }: T3ThreadChange) =>
     Effect.gen(function* () {
-      // A thread seen for the first time since (re)connecting has no "before".
+      // A thread first seen through a live update has no "before"; a reconnect
+      // snapshot reports threads that appeared while away against an idle one.
       if (previous === undefined) return;
       const info = infoOf(thread.id, thread);
       const finished =

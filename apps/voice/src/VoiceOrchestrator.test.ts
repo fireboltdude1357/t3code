@@ -1570,14 +1570,31 @@ it.effect("a spoken send yes counts only for a send voice_send already issued", 
       assert.isFalse(yield* claimAfterQuiet(toOther));
       assert.isTrue(yield* claimAfterQuiet(toWork));
 
-      // Two issued sends that sound the same can't be told apart by a yes.
+      // A retry for the same thread that only re-punctuates keeps its issue,
+      // so the yes to the readback still counts (no two-minute lockout).
       const plain = send(workThreadId, "Work", "Ship it");
       const punctuated = send(workThreadId, "Work", "Ship it!");
       assert.isFalse(yield* claimAfterQuiet(plain));
       assert.isFalse(yield* claimAfterQuiet(punctuated));
       yield* sayYesTo(plain.readback);
-      assert.isFalse(yield* claimAfterQuiet(plain));
-      assert.isFalse(yield* claimAfterQuiet(punctuated));
+      assert.isTrue(yield* claimAfterQuiet(punctuated));
+
+      // A changed draft for the same thread replaces the issue and needs its own yes.
+      const first = send(workThreadId, "Work", "Rebase onto main");
+      assert.isFalse(yield* claimAfterQuiet(first));
+      yield* sayYesTo(first.readback);
+      const changed = send(workThreadId, "Work", "Rebase onto dev");
+      assert.isFalse(yield* claimAfterQuiet(changed));
+      assert.isFalse(yield* claimAfterQuiet(first));
+
+      // Two threads whose readbacks sound the same still can't be told apart.
+      const here = send(workThreadId, "Twin", "Deploy now");
+      const there = send(ThreadId.make("thread-twin"), "Twin", "Deploy now");
+      assert.isFalse(yield* claimAfterQuiet(here));
+      assert.isFalse(yield* claimAfterQuiet(there));
+      yield* sayYesTo(here.readback);
+      assert.isFalse(yield* claimAfterQuiet(here));
+      assert.isFalse(yield* claimAfterQuiet(there));
     }),
   ),
 );

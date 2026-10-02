@@ -67,22 +67,17 @@ const isPlainStatement = (text: string) =>
   !asksQuestion(text) && !words(text).some((word) => REDIRECT_WORDS.has(word));
 
 /**
- * A reply opening with one of these asks something ("Is that okay"), even when
- * the transcript drops the question mark. "Do" is left out: "Do it" is a yes.
+ * A question's word order: "is" or "do" followed by its subject ("Is that
+ * okay", "Do you approve"). It catches a question anywhere in the reply even
+ * when the transcript drops the question mark, while "Do it" and "Yes it is"
+ * stay yeses. Other question words aren't allowed reply words at all.
  */
-const INTERROGATIVE_OPENERS = new Set([
-  "is",
-  "are",
-  "can",
-  "could",
-  "should",
-  "would",
-  "will",
-  "what",
-  "why",
-  "how",
-  "does",
-]);
+const QUESTION_SUBJECTS: Partial<Record<string, ReadonlySet<string>>> = {
+  is: new Set(["i", "you", "it", "this", "that"]),
+  do: new Set(["i", "you"]),
+};
+const asksInWords = (said: ReadonlyArray<string>) =>
+  said.some((word, i) => QUESTION_SUBJECTS[word]?.has(said[i + 1] ?? "") ?? false);
 
 /** Words that carry the yes. A reply needs at least one. */
 const YES_WORDS = new Set([
@@ -143,7 +138,7 @@ function isAffirmative(replies: ReadonlyArray<VoiceTranscriptEntry>): boolean {
   const replyWords = words(replies.map((entry) => entry.text).join(" "));
   return (
     replyWords.length > 0 &&
-    !INTERROGATIVE_OPENERS.has(replyWords[0]!) &&
+    !asksInWords(replyWords) &&
     replyWords.length <= MAX_REPLY_WORDS &&
     replyWords.every((word) => REPLY_VOCABULARY.has(word)) &&
     replyWords.some((word) => YES_WORDS.has(word))
@@ -222,27 +217,30 @@ function confirmationEvidence(
     while (earliestEnd > start && isPlainStatement(transcript[earliestEnd]!.text)) earliestEnd--;
     // An exact run (after skipped separate filler entries) wins; only when there
     // is none may the readback come after a lead-in in the same breath.
+    // Earlier whole entries in the block must be harmless: known preparation
+    // phrases, or statements ("Let me check that main thread real quick.") with
+    // no question and no redirecting word. "Do not." before a readback voids it.
+    const harmless = (index: number) => {
+      const text = transcript[index]!.text;
+      return PRE_READBACK_ACKS.has(words(text).join(" ")) || isPlainStatement(text);
+    };
+    // The shortest run wins, so a lead-in said before the readback was issued
+    // never counts as its start. An exact run wins over one with a same-breath
+    // lead-in or a repeated readback.
     search: for (const lenient of [false, true]) {
       for (let runEnd = end; runEnd >= earliestEnd; runEnd--) {
-        for (let candidateStart = start; candidateStart <= runEnd; candidateStart++) {
+        for (let candidateStart = runEnd; candidateStart >= start; candidateStart--) {
           const run = transcript
             .slice(candidateStart, runEnd + 1)
             .map((entry) => entry.text)
             .join(" ");
           if (lenient ? isReadbackRun(run, readback) : words(run).join(" ") === wanted) {
+            for (let earlier = start; earlier < candidateStart; earlier++)
+              if (!harmless(earlier)) break search;
             readBackEnd = runEnd;
             readBackStart = candidateStart;
             break search;
           }
-          // Keep entry boundaries: only whole earlier entries are skipped: known
-          // preparation phrases, or statements ("Let me check that main thread real
-          // quick.") with no question and no redirecting word. Only the readback is
-          // executed, and the user still answers it, so it must be the rest of the run.
-          const earlierText = transcript[candidateStart]!.text;
-          if (
-            !(PRE_READBACK_ACKS.has(words(earlierText).join(" ")) || isPlainStatement(earlierText))
-          )
-            break;
         }
       }
     }
@@ -250,16 +248,21 @@ function confirmationEvidence(
   }
   if (readBackEnd === -1) return undefined;
 
+  const after = transcript.slice(readBackEnd + 1);
+  const lastUser = after.findLastIndex((entry) => entry.role === "user");
   const reply: VoiceTranscriptEntry[] = [];
-  for (const entry of transcript.slice(readBackEnd + 1)) {
+  for (const [index, entry] of after.entries()) {
     if (entry.role === "user") {
       reply.push(entry);
       continue;
     }
     // The voice model talks while it hands off ("Okay. Approving now. Thanks.
     // I'll submit that."). Any question ends the window, however short: the
-    // user's later words might answer it rather than the readback.
+    // user's later words might answer it rather than the readback. Before the
+    // user's last words, a redirect ("Actually, queue it instead.") ends it too;
+    // after them, nothing the model says can change what the yes answered.
     if (asksQuestion(entry.text)) return undefined;
+    if (index < lastUser && !isPlainStatement(entry.text)) return undefined;
   }
   return isAffirmative(reply)
     ? {

@@ -200,9 +200,13 @@ it("rejects a question as the reply, with or without its question mark", () => {
     "Is that okay",
     "Is this okay",
     "Should I send it",
+    "Do I send it",
+    "Do you approve this action",
+    "Yes is that okay",
   ])
     assert.isFalse(sends(say(["assistant", readBack], ["user", reply])), reply);
   assert.isFalse(sends(say(["assistant", readBack], ["user", "Yes"], ["user", "Okay?"])));
+  assert.isFalse(sends(say(["assistant", readBack], ["user", "Yes"], ["user", "Is that okay"])));
   for (const reply of [
     "Yes That is right",
     "That is right. Send it.",
@@ -210,8 +214,29 @@ it("rejects a question as the reply, with or without its question mark", () => {
     "Yes, I approve this action",
     "Yes, please",
     "Do it",
+    "Yes it is",
   ])
     assert.isTrue(sends(say(["assistant", readBack], ["user", reply])), reply);
+});
+
+it("a lead-in spoken before the readback was issued doesn't move the readback's start", () => {
+  // Seen live: "One sec, let me prep that." came before voice_send issued the
+  // readback, then the readback twice in one entry. notBefore is the issue time.
+  const issuedAt = 1_500;
+  const transcript = [
+    saidForTime("assistant", "One sec, let me prep that.", 1_000),
+    saidForTime("assistant", `${readBack} ${readBack}`, 2_000),
+    saidForTime("user", "Yes. That is right.", 3_000),
+  ];
+  assert.isTrue(
+    makeVoiceConfirmationGate().claim({
+      transcript,
+      generation: 1,
+      now: DateTime.makeUnsafe(6_000),
+      readback: readBack,
+      notBefore: DateTime.makeUnsafe(issuedAt + 1),
+    }),
+  );
 });
 
 it("accepts a plain statement between the readback and the yes, not a question or redirect", () => {
@@ -234,6 +259,27 @@ it("accepts a plain statement between the readback and the yes, not a question o
       sends(say(["assistant", readBack], ["assistant", after], ["user", "Yes"])),
       after,
     );
+  // A redirect between two user replies changes what the later yes answers.
+  assert.isFalse(
+    sends(
+      say(
+        ["assistant", readBack],
+        ["user", "Okay"],
+        ["assistant", "Actually, queue it instead."],
+        ["user", "Yes"],
+      ),
+    ),
+  );
+  // After the user's last words the model can say anything; it can't change the yes.
+  assert.isTrue(
+    sends(
+      say(
+        ["assistant", readBack],
+        ["user", "Yes"],
+        ["assistant", "Okay, sending that and I'll let you know."],
+      ),
+    ),
+  );
 });
 
 it("rejects a missing readback, a yes before it, or a question after it", () => {

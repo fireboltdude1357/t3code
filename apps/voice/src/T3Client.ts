@@ -41,9 +41,10 @@ export interface T3Shell {
 }
 
 /**
- * A change to one thread's shell. `previous` is undefined the first time the
- * client sees the thread after a (re)connect, so a fresh snapshot never looks
- * like a burst of new activity.
+ * A change to one thread's shell. `previous` is undefined when a live update
+ * shows a thread for the first time. The first snapshot reports nothing, so a
+ * fresh start never looks like a burst of activity; a reconnect snapshot
+ * reports threads that appeared meanwhile against an idle `previous`.
  */
 export interface T3ThreadChange {
   readonly previous: OrchestrationV2ThreadShell | undefined;
