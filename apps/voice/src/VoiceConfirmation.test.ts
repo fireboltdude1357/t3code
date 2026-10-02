@@ -391,6 +391,15 @@ it("a long hand-off filler after the yes keeps the approval, a new draft does no
     ),
   );
   assert.isTrue(makeVoiceConfirmationGate().claim(claimAction(withFiller)));
+  const otherWording = timed(
+    say(
+      ["assistant", "Looking now."],
+      ["assistant", actionReadback],
+      ["user", "Yes, I approve this action."],
+      ["assistant", "Okay. Approving now. Thanks. I’ll submit that."],
+    ),
+  );
+  assert.isTrue(makeVoiceConfirmationGate().claim(claimAction(otherWording)));
   const withNewDraft = timed(
     say(
       ["assistant", actionReadback],

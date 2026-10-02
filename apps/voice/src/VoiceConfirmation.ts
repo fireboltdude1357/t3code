@@ -30,65 +30,29 @@ const PRE_READBACK_ACKS = new Set(
 );
 
 /**
- * Short filler GPT-Live says before reading an action back ("Okay, checking one
- * more thing."). An earlier entry made only of these words carries no meaning
- * the user could be agreeing to, so it may be skipped. "Do not" or "also
- * delete" contain words outside it and still block the readback.
+ * Words that change what a short earlier entry means ("Do not.", "Also delete
+ * the project."). Such an entry is never skipped before a readback.
  */
-const FILLER_VOCABULARY = new Set([
-  "okay",
-  "ok",
-  "alright",
-  "all",
-  "right",
-  "sure",
-  "got",
-  "it",
-  "one",
-  "moment",
-  "sec",
-  "second",
-  "just",
-  "a",
-  "let",
-  "me",
-  "check",
-  "checking",
-  "that",
-  "this",
-  "on",
-  "now",
-  "more",
-  "thing",
-  "quick",
-  "get",
-  "ready",
+const REDIRECT_WORDS = new Set([
+  "no",
+  "not",
+  "dont",
+  "never",
+  "cancel",
+  "stop",
+  "delete",
+  "remove",
+  "also",
+  "but",
+  "instead",
+  "except",
+  "wait",
+  "actually",
+  "and",
 ]);
 
-/**
- * Filler the voice model may say after the user's yes while it hands off
- * ("Okay, one moment. Got it, submitting that approval now."). Made only of
- * these words, an entry can't be a new draft, so it doesn't end the window.
- */
-const AFTER_YES_FILLER = new Set([
-  ...FILLER_VOCABULARY,
-  "submitting",
-  "approving",
-  "approval",
-  "sending",
-  "launching",
-  "starting",
-  "stopping",
-  "im",
-  "the",
-  "your",
-  "will",
-  "ill",
-  "do",
-  "doing",
-  "go",
-]);
-const MAX_AFTER_YES_FILLER_WORDS = 14;
+/** A question asks the user something new, so it can't be skipped or talked through. */
+const asksQuestion = (text: string) => /[?？]/.test(text);
 
 /** Words that carry the yes. A reply needs at least one. */
 const YES_WORDS = new Set([
@@ -229,11 +193,15 @@ function confirmationEvidence(
       }
       // Keep entry boundaries: an acknowledgement in the same part as a negation or
       // another action is never removed. Only whole earlier entries are skipped: known
-      // preparation phrases, or short filler made of FILLER_VOCABULARY. The user still
-      // answers the exact readback, which must be the rest of the run.
-      const earlier = words(transcript[candidateStart]!.text);
+      // preparation phrases, or short statements ("Looking now.") with no question and
+      // no redirecting word. The user still answers the exact readback, which must be
+      // the rest of the run.
+      const earlierText = transcript[candidateStart]!.text;
+      const earlier = words(earlierText);
       const isFiller =
-        earlier.length <= MAX_ACK_WORDS && earlier.every((word) => FILLER_VOCABULARY.has(word));
+        earlier.length <= MAX_ACK_WORDS &&
+        !asksQuestion(earlierText) &&
+        !earlier.some((word) => REDIRECT_WORDS.has(word));
       if (!exactReadback || !(PRE_READBACK_ACKS.has(earlier.join(" ")) || isFiller)) break;
       candidateStart++;
     }
@@ -258,10 +226,10 @@ function confirmationEvidence(
       reply.push(entry);
       continue;
     }
-    const said = words(entry.text);
-    const isFiller =
-      said.length <= MAX_AFTER_YES_FILLER_WORDS && said.every((word) => AFTER_YES_FILLER.has(word));
-    if (said.length > MAX_ACK_WORDS && !isFiller) return undefined;
+    // The voice model talks while it hands off ("Okay. Approving now. Thanks.
+    // I'll submit that."). Only a new question ends the window: the user's later
+    // words might answer it rather than the readback.
+    if (words(entry.text).length > MAX_ACK_WORDS && asksQuestion(entry.text)) return undefined;
   }
   return isAffirmative(reply.map((entry) => entry.text).join(" "))
     ? {
