@@ -7,7 +7,7 @@ import type { VoiceTranscriptEntry } from "./VoiceStore.ts";
 const MIN_TITLE_RECALL = 0.5;
 /** A yes is a short reply; anything longer is a conversation, not a confirmation. */
 const MAX_REPLY_WORDS = 10;
-/** Assistant entries after the read-back up to this long are acknowledgements. */
+/** Earlier assistant entries up to this long may precede a readback as filler. */
 const MAX_ACK_WORDS = 6;
 
 /** Only these separate preparation entries may precede an exact action readback. */
@@ -148,8 +148,8 @@ function isAffirmative(reply: string): boolean {
  * it is a short, plain yes.
  *
  * The voice model often talks over the yes ("Okay, sending that"), so
- * assistant entries after the read-back are allowed when they are short
- * acknowledgements. A longer one ends the window: it may be a new draft.
+ * assistant statements after the read-back are allowed. Any assistant
+ * question ends the window, since the user's next words may answer it.
  * A read-back the user hasn't answered yet fails.
  */
 function confirmationEvidence(
@@ -227,9 +227,9 @@ function confirmationEvidence(
       continue;
     }
     // The voice model talks while it hands off ("Okay. Approving now. Thanks.
-    // I'll submit that."). Only a new question ends the window: the user's later
-    // words might answer it rather than the readback.
-    if (words(entry.text).length > MAX_ACK_WORDS && asksQuestion(entry.text)) return undefined;
+    // I'll submit that."). Any question ends the window, however short: the
+    // user's later words might answer it rather than the readback.
+    if (asksQuestion(entry.text)) return undefined;
   }
   return isAffirmative(reply.map((entry) => entry.text).join(" "))
     ? {

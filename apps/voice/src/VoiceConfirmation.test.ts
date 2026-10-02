@@ -408,6 +408,15 @@ it("a long hand-off filler after the yes keeps the approval, a new draft does no
     ),
   );
   assert.isFalse(makeVoiceConfirmationGate().claim(claimAction(withNewDraft)));
+  // A short question takes the next yes too (CodeRabbit, PR #11).
+  const withShortQuestion = timed(
+    say(
+      ["assistant", actionReadback],
+      ["assistant", "Also delete the old thread?"],
+      ["user", "Yes"],
+    ),
+  );
+  assert.isFalse(makeVoiceConfirmationGate().claim(claimAction(withShortQuestion)));
 });
 
 it("accepts the separate preparation phrases observed in the live approval flow", () => {

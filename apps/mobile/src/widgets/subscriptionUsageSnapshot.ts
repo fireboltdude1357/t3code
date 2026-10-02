@@ -160,8 +160,7 @@ export function keepLastLimits(
         ) ?? provider),
   );
   if (providers.every((provider) => provider.windows.length === 0)) return undefined;
-  const carried = providers.some((provider, index) => provider !== next.providers[index]);
   // "As of" reflects the oldest limits on screen.
-  const checked = [next.checkedAt, carried ? (previous?.checkedAt ?? 0) : 0].filter((at) => at > 0);
+  const checked = providers.map((provider) => provider.checkedAt).filter((at) => at > 0);
   return { ...next, checkedAt: checked.length > 0 ? Math.min(...checked) : 0, providers };
 }
