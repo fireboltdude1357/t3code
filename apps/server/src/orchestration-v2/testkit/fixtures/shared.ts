@@ -73,8 +73,31 @@ export const OPENCODE2_INTERRUPT_PROMPT =
   "Run the shell command `sleep 60 && echo LATE` with the bash tool, then reply DONE.";
 export const OPENCODE2_PERMISSION_PROMPT =
   "Run the shell command `echo FIRST` with the bash tool. After it completes, run `echo SECOND` with the bash tool. Then reply with what happened.";
+export const OPENCODE2_STEER_PROMPT =
+  "Run the shell command `sleep 12 && echo A` with the bash tool, then reply DONE_A.";
+export const OPENCODE2_STEER_TEXT = "Also mention the word STEERED in your final reply.";
+export const OPENCODE2_QUEUED_PROMPT = "Reply exactly QUEUED_B.";
+export const OPENCODE2_CANCELLED_PROMPT = "Reply exactly QUEUED_C.";
+export const OPENCODE2_REVERT_FIRST_PROMPT =
+  "Create a file named reverted.txt containing the word ALPHA using the write tool, then reply DONE.";
+export const OPENCODE2_REVERT_SECOND_PROMPT =
+  "Overwrite reverted.txt so it contains the word BETA using the write tool, then reply DONE.";
 export const OPENCODE2_QUESTION_PROMPT =
   "Before doing anything, use the question tool to ask me which color I prefer, offering the options red and blue. After I answer, reply with only the chosen color.";
+export const OPENCODE2_SUBAGENT_PROMPT =
+  "Use the subagent tool to delegate to the explore subagent with the prompt: 'List the files in the current directory and report their names.' Wait for it, then summarize its answer in one line.";
+export const OPENCODE2_NESTED_BACKGROUND_PROMPT =
+  "Use the subagent tool (foreground, do not set background) to delegate to the general subagent with this exact prompt: 'Use the subagent tool with background set to true to delegate to the general subagent with the prompt: Run the shell command `sleep 25` with the shell tool, then reply exactly GRANDCHILD_OK. As soon as it is launched, reply exactly MIDDLE_OK and end your turn without waiting for it.' Wait for that subagent to return, then reply exactly ROOT_OK.";
+export const OPENCODE2_BACKGROUND_PROMPT =
+  "Use the subagent tool with background enabled to delegate to the general subagent with the prompt: 'Run the shell command `sleep 20` with the bash tool and then reply exactly CHILD_OK.' As soon as it is launched, reply exactly PARENT_OK and end your turn without waiting for it.";
+export const OPENCODE2_COMPACTION_FIRST_PROMPT = "Remember the codeword PAPAYA. Reply OK.";
+export const OPENCODE2_COMPACTION_RECALL_PROMPT = "What was the codeword? One word.";
+export const OPENCODE2_RESTART_PROMPT =
+  "Run the shell command `sleep 25 && echo RESUMED` with the bash tool, then reply with its output.";
+export const OPENCODE2_RESTART_RECALL_PROMPT =
+  "What did I last ask you to run? Answer in one short sentence.";
+export const OPENCODE2_COMMAND_PROMPT = "/hello WORLD";
+export const OPENCODE2_SKILL_PROMPT = "Use $greet to say hi in three words.";
 export const TURN_INTERRUPT_PROMPT =
   "Do not answer immediately. First run the local shell command `sleep 30`, then respond with exactly: interrupt fixture should not finish naturally.";
 export const TURN_INTERRUPT_MID_TOOL_PROMPT =
@@ -1163,11 +1186,54 @@ export function assertProviderNativeSubagentRootTurns(result: OrchestratorV2Scen
           ? [event.payload.status]
           : [],
       );
+      const rootActivity = activity(rootEvents.map((event) => event.status));
+      const subagentActivity = activity(subagentStatuses);
+      // A subagent can be woken after its call ended, to answer the report of
+      // a background subagent of its own; each of those turns ends too.
+      const wokenAfterEnd =
+        child.subagents.length > 0 && rootActivity.length > subagentActivity.length;
       assert.deepEqual(
-        activity(rootEvents.map((event) => event.status)),
-        activity(subagentStatuses),
+        wokenAfterEnd ? rootActivity.slice(0, subagentActivity.length) : rootActivity,
+        subagentActivity,
         `child ${childThreadId} root turn must follow subagent ${subagent.id}`,
       );
+      if (wokenAfterEnd) {
+        assert.notEqual(rootActivity.at(-1), "active", `child ${childThreadId} must end its turns`);
+        // Each extra turn answers a report: one of the child's own subagents
+        // ended before that turn started.
+        const childSubagentIds = new Set(child.subagents.map((nested) => nested.id));
+        const nestedEndIndexes = result.domainEvents.flatMap((event, index) =>
+          event.type === "subagent.updated" &&
+          childSubagentIds.has(event.payload.id) &&
+          !isOrchestrationV2WorkActive(event.payload.status)
+            ? [index]
+            : [],
+        );
+        const subagentEndIndex = result.domainEvents.findLastIndex(
+          (event) =>
+            event.type === "subagent.updated" &&
+            event.payload.id === subagent.id &&
+            !isOrchestrationV2WorkActive(event.payload.status),
+        );
+        const wakeStarts = rootEvents.filter(
+          (event, position) =>
+            event.index > subagentEndIndex &&
+            isOrchestrationV2WorkActive(event.status) &&
+            !isOrchestrationV2WorkActive(rootEvents[position - 1]?.status ?? "completed"),
+        );
+        assert.isNotEmpty(wakeStarts, `child ${childThreadId} woke without a new turn`);
+        assert.isAtMost(
+          wakeStarts.length,
+          nestedEndIndexes.length,
+          `child ${childThreadId} woke more often than its subagents ended`,
+        );
+        for (const wake of wakeStarts) {
+          assert.isTrue(
+            nestedEndIndexes.some((endIndex) => endIndex < wake.index),
+            `child ${childThreadId} woke before any of its subagents ended`,
+          );
+        }
+      }
     }
   }
 }

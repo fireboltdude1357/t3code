@@ -24,7 +24,7 @@ import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 import * as ProjectService from "../../../project/ProjectService.ts";
-import * as ScratchWorkspace from "../../../project/ScratchWorkspace.ts";
+import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -66,8 +66,13 @@ const ProjectReadTool = Tool.make("t3_project_read", {
 const ProjectCreateTool = Tool.make("t3_project_create", {
   ...shared,
   description:
-    "Register a project directory through the existing project service. Set createWorkspaceRootIfMissing to create a directory. Each call creates a new request; an existing registered workspace is rejected. Clone separately with t3_project_clone when needed.",
-  parameters: ProjectCreatePayload,
+    "Register a project directory through the existing project service. Set createWorkspaceRootIfMissing to create a directory. Omit workspaceRoot to start a new project from just its title: the app makes a Git repository for it in its own projects folder, with a README, an icon, and a first commit (commitError says why a commit failed; the project exists either way). Each call creates a new request; an existing registered workspace is rejected. Clone separately with t3_project_clone when needed.",
+  parameters: Schema.Struct({
+    ...ProjectCreatePayload.fields,
+    workspaceRoot: Schema.optional(ProjectCreatePayload.fields.workspaceRoot),
+  }),
+  success: Schema.Struct({ ...Project.fields, commitError: Schema.optional(Schema.String) }),
+  dependencies: [...shared.dependencies, ManagedProjectFolders.ManagedProjectFolders],
 }).annotate(Tool.Destructive, true);
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
@@ -134,7 +139,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   dependencies: [
     ...shared.dependencies,
     ThreadLaunchService.ThreadLaunchService,
-    ScratchWorkspace.ScratchWorkspace,
+    ManagedProjectFolders.ManagedProjectFolders,
     FileSystem.FileSystem,
     ServerConfig.ServerConfig,
   ],

@@ -43,7 +43,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
-import * as ScratchWorkspace from "../project/ScratchWorkspace.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
@@ -95,7 +95,7 @@ const adapter = {
 } as ProviderAdapterV2Shape;
 
 interface HarnessOptions {
-  readonly scratchWorkspace?: Layer.Layer<ScratchWorkspace.ScratchWorkspace>;
+  readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
   readonly fetchRemote?: GitWorkflow.GitWorkflowService["Service"]["fetchRemote"];
   readonly renameBranch?: GitWorkflow.GitWorkflowService["Service"]["renameBranch"];
@@ -177,8 +177,9 @@ function makeHarness(options: HarnessOptions = {}) {
     }),
     ServerSettings.layerTest(options.serverSettings),
     makeProviderRegistryLayer(options.providers),
-    options.scratchWorkspace ??
-      Layer.mock(ScratchWorkspace.ScratchWorkspace)({
+    options.managedFolders ??
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );
@@ -1027,7 +1028,8 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
     // Only `projectId` stands in for the Scratch project here.
     const claimed: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
     const harness = makeHarness({
-      scratchWorkspace: Layer.mock(ScratchWorkspace.ScratchWorkspace)({
+      managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
         folderForThread: (input) =>
           Effect.sync(() => {
             if (input.projectId !== projectId) return Option.none();
