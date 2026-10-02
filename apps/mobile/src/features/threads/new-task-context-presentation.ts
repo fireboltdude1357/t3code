@@ -1,4 +1,3 @@
-import { type VcsRef } from "@t3tools/client-runtime/state/vcs";
 import { sanitizeNewRefName } from "@t3tools/shared/git";
 
 type WorkspaceMode = "local" | "worktree";
@@ -26,28 +25,6 @@ export function resolveNewTaskBranchWorktreePath(input: {
     return null;
   }
   return input.branchWorktreePath;
-}
-
-/**
- * Picks the base branch a new worktree draft starts from: the repo default,
- * then the local branch listRefs marks current, then the live status branch.
- * The status fallback covers a project cloned while its draft was open, whose
- * refs loaded empty. It waits for an unfiltered listRefs result, so a status
- * update that lands first cannot lock in a feature branch over the default.
- */
-export function resolveNewTaskWorktreeBase(input: {
-  readonly refs: ReadonlyArray<VcsRef>;
-  readonly refsLoaded: boolean;
-  readonly checkoutBranchName: string | null;
-}): Pick<VcsRef, "name" | "worktreePath"> | null {
-  // The default may only exist as origin/<default> (isRemote), so search all refs for it.
-  const fromRefs =
-    input.refs.find((ref) => ref.isDefault) ??
-    input.refs.find((ref) => !ref.isRemote && ref.current);
-  if (fromRefs) return fromRefs;
-  return input.refsLoaded && input.checkoutBranchName !== null
-    ? { name: input.checkoutBranchName, worktreePath: null }
-    : null;
 }
 
 export function resolveNewTaskLocalWorkspaceSelection(input: {

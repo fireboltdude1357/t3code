@@ -101,7 +101,6 @@ import {
   filterNewTaskBranches,
   resolveNewTaskBranchWorktreePath,
   resolveNewTaskLocalWorkspaceSelection,
-  resolveNewTaskWorktreeBase,
 } from "./new-task-context-presentation";
 import { resolveEnvironmentProjectMatch } from "./new-task-project-selection";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
@@ -461,11 +460,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       ),
     [selectedEnvironmentServerConfig?.settings, selectedProject, t3ProjectFile],
   );
-  // Live git status of the project root. It carries the ref actually checked
-  // out there (listRefs' `current` flag is served from a cache that can lag an
-  // out-of-band `git switch` by minutes) and whether the root is a repository
-  // at all. Detached HEAD and non-repository projects report no ref. The
-  // status family is deduplicated per (environmentId, cwd) with the thread rows.
+  // Live git status of the project root: whether it is a repository at all,
+  // and the ref actually checked out there, which new local threads record.
+  // listRefs' `current` flag comes from a cache that can lag an out-of-band
+  // `git switch` by minutes. Detached HEAD and non-repository projects report
+  // no ref. The status family is deduplicated per (environmentId, cwd) with
+  // the thread rows.
   const projectGitStatus = useEnvironmentQuery(
     selectedProject !== null && selectedProject.workspaceRoot !== ""
       ? vcsEnvironment.status({
@@ -684,9 +684,6 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const branchSearchIsDebouncing = branchSearchQuery !== debouncedBranchQuery;
   const branchesLoading =
     branchSearchIsDebouncing || (branchState.isPending && branchState.data === null);
-  // Refs answered for the plain listing, not a search, so an empty list means
-  // the repository has no branches yet.
-  const unfilteredBranchesLoaded = branchState.data !== null && debouncedBranchQuery === "";
   const branchesFetchingNextPage = branchState.isFetchingNextPage;
   const hasMoreBranches =
     branchState.data?.nextCursor !== null && branchState.data?.nextCursor !== undefined;
@@ -839,7 +836,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   ]);
 
   const selectBranch = useCallback(
-    (branch: Pick<VcsRef, "name" | "worktreePath">) => {
+    (branch: VcsRef) => {
       if (!selectedProject || !selectedProjectDraftKey) {
         return;
       }
@@ -903,22 +900,22 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     if (live && (live.mode !== "worktree" || live.branch !== null)) {
       return;
     }
-    const preferredBranch = resolveNewTaskWorktreeBase({
-      refs: allBranchRefs,
-      refsLoaded: unfilteredBranchesLoaded,
-      checkoutBranchName: currentCheckoutBranchName,
-    });
+    // The default may only exist as origin/<default> (isRemote), which
+    // availableBranches filters out — search the unfiltered refs for it.
+    const preferredBranch =
+      allBranchRefs.find((branch) => branch.isDefault) ??
+      availableBranches.find((branch) => branch.current) ??
+      null;
     if (preferredBranch) {
       selectBranch(preferredBranch);
     }
   }, [
     allBranchRefs,
-    currentCheckoutBranchName,
+    availableBranches,
     defaultWorkspaceModeSettled,
     selectBranch,
     selectedBranchName,
     selectedProjectDraftKey,
-    unfilteredBranchesLoaded,
     workspaceMode,
   ]);
 
