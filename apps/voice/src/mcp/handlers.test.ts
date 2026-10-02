@@ -198,10 +198,9 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
               })
             : Option.none(),
         ),
-      claimSpokenSend: ({ text, targetTitle }) =>
-        Effect.sync(() =>
-          gate.claim({ transcript, generation: 1, now, readback: sendReadback(targetTitle, text) }),
-        ),
+      // Issuance binding is the orchestrator's; this checks the readback the handler built.
+      claimSpokenSend: ({ readback }) =>
+        Effect.sync(() => gate.claim({ transcript, generation: 1, now, readback })),
       pendingConfirmations: () =>
         Effect.succeed([...pending.values()].map(({ request }) => request)),
       proposeAction: (input) =>
@@ -573,11 +572,17 @@ describe("voice toolkit handlers", () => {
         [],
         // A lead-in that negates, or one that adds a condition, voids the readback.
         [
-          said("assistant", `I won't send it yet. Send to Target: ${DRAFT} Should I send it?`),
+          said(
+            "assistant",
+            `I won't send it yet. Send to Target. Message: ${DRAFT} Should I send it?`,
+          ),
           said("user", "Yes"),
         ],
         [
-          said("assistant", `Send to Target: ${DRAFT} Once CI is green. Should I send it?`),
+          said(
+            "assistant",
+            `Send to Target. Message: ${DRAFT} Once CI is green. Should I send it?`,
+          ),
           said("user", "Yes"),
         ],
       ]) {
@@ -585,8 +590,54 @@ describe("voice toolkit handlers", () => {
         const result = yield* harness.call("voice_send", { threadId: TARGET_THREAD, text: DRAFT });
         expect(result.result).toMatchObject({
           status: "needs_spoken_yes",
-          readback: `Send to Target: ${DRAFT} Should I send it?`,
+          readback: `Send to Target. Message: ${DRAFT} Should I send it?`,
         });
+        expect(harness.dispatched).toEqual([]);
+      }
+    }),
+  );
+
+  it.effect("names the project when another live thread has the same title", () =>
+    Effect.gen(function* () {
+      const otherProject = ProjectId.make("billing-project");
+      const harness = yield* makeHarness({
+        projects: [project(), project({ id: otherProject, title: "Billing" })],
+        threads: [
+          shell(),
+          shell({ id: OTHER_THREAD, projectId: otherProject }),
+          // Archived and subagent namesakes don't count.
+          shell({ id: ThreadId.make("archived"), archivedAt: at }),
+          shell({
+            id: ThreadId.make("subagent"),
+            lineage: { relationshipToParent: "subagent" },
+          } as Partial<OrchestrationV2ThreadShell>),
+        ],
+      });
+      const readbacks: string[] = [];
+      for (const threadId of [TARGET_THREAD, OTHER_THREAD]) {
+        const result = yield* harness.call("voice_send", { threadId, text: DRAFT, mode: "queue" });
+        readbacks.push((result.result as { readback: string }).readback);
+      }
+      expect(readbacks).toEqual([
+        `Queue for Target in project Work. Message: ${DRAFT} Should I queue it?`,
+        `Queue for Target in project Billing. Message: ${DRAFT} Should I queue it?`,
+      ]);
+    }),
+  );
+
+  it.effect("refuses a spoken send it can't make unambiguous", () =>
+    Effect.gen(function* () {
+      for (const threads of [
+        [shell(), shell({ id: OTHER_THREAD })],
+        [shell({ title: "Message drafts" })],
+      ]) {
+        const harness = yield* makeHarness({
+          threads,
+          transcript: [said("assistant", sendReadback({ title: "Target", draft: DRAFT }))],
+        });
+        const result = yield* harness.call("voice_send", { threadId: TARGET_THREAD, text: DRAFT });
+        expect(result.isFailure).toBe(true);
+        expect(result.result).toMatchObject({ code: "invalid_request" });
         expect(harness.dispatched).toEqual([]);
       }
     }),
@@ -610,7 +661,14 @@ describe("voice toolkit handlers", () => {
         const harness = yield* makeHarness({
           transcript: [
             said("user", "Tell the target thread to rebase onto main and rerun the tests."),
-            said("assistant", sendReadback("Target", DRAFT)),
+            said(
+              "assistant",
+              sendReadback({
+                title: "Target",
+                draft: DRAFT,
+                ...(mode === undefined ? {} : { mode }),
+              }),
+            ),
             said("user", "Yes, send it."),
           ],
         });

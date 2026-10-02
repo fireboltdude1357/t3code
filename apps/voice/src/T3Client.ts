@@ -103,8 +103,8 @@ const movedSince = (before: OrchestrationV2ThreadShell, after: OrchestrationV2Th
  * Applies one shell stream item to the in-memory shell.
  *
  * An authoritative snapshot (the first frame of each subscription) replaces
- * the mirror. On a reconnect it also reports threads that moved while the
- * sidecar was away, so a run that finished meanwhile is still announced.
+ * the mirror. On a reconnect it also reports threads that moved, or appeared,
+ * while the sidecar was away, so a run that finished meanwhile is still announced.
  * Enrichment snapshots (`resolvedRepositoryIdentityRoots` set) carry only
  * repository identity for some projects and no threads; the sidecar doesn't
  * use that, so they change nothing.
@@ -125,8 +125,16 @@ export const applyShellItem = (
       for (const thread of item.snapshot.threads) shell.set(thread.id, thread);
       if (!reconnect) return [];
       return item.snapshot.threads.flatMap((thread) => {
-        const previous = before.get(thread.id);
-        return previous !== undefined && movedSince(previous, thread) ? [{ previous, thread }] : [];
+        // A thread created while away is reported against an idle "before", so a run
+        // it already finished, or a request it is waiting on, is still announced.
+        // The notice ledger dedupes anything announced earlier.
+        const previous = before.get(thread.id) ?? {
+          ...thread,
+          status: "idle" as const,
+          latestRunId: null,
+          pendingRuntimeRequest: null,
+        };
+        return movedSince(previous, thread) ? [{ previous, thread }] : [];
       });
     }
     case "project.updated": {

@@ -17,7 +17,12 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import { T3Client } from "../T3Client.ts";
-import { confirmationReadback, sendReadback } from "../VoiceConfirmation.ts";
+import {
+  confirmationReadback,
+  isSpeakableSendTitle,
+  sendReadback,
+  soundsSame,
+} from "../VoiceConfirmation.ts";
 import { VoiceOrchestrator } from "../VoiceOrchestrator.ts";
 import { VoiceStore } from "../VoiceStore.ts";
 import { VoiceToolkit } from "./tools.ts";
@@ -27,7 +32,7 @@ const DEFAULT_THREADS_LIMIT = 30;
 const DEFAULT_READ_LIMIT = 10;
 const MAX_MESSAGE_CHARS = 1_500;
 const NEEDS_SPOKEN_YES =
-  "Nothing was sent. Return only the readback, unchanged, for the voice model to speak verbatim. Wait for the user's complete reply and a fresh yes, then call voice_send again with the same threadId and text.";
+  "Nothing was sent. Return only the readback, unchanged, for the voice model to speak verbatim. Wait for the user's complete reply and a fresh yes, then call voice_send again with the same threadId, text and mode.";
 
 /** Threads the voice orchestrator starts run Opus 5.5 on high with full access. */
 const LAUNCH_MODEL = "claude-opus-5-5";
@@ -54,6 +59,18 @@ function summaryOf(
     updatedAt: DateTime.formatIso(thread.updatedAt),
   };
 }
+
+/** Threads the voice tools list and readbacks must tell apart: no archived or subagent threads. */
+const isListed = (thread: OrchestrationV2ThreadShell) =>
+  thread.archivedAt === null &&
+  thread.deletedAt === null &&
+  thread.lineage.relationshipToParent !== "subagent";
+
+const unspeakableSend = (message: string) =>
+  new OrchestratorMcpFailure({
+    code: "invalid_request",
+    message: `Nothing was sent. ${message} Ask the user to open that thread on the phone and send it there.`,
+  });
 
 const titlesOf = (projects: ReadonlyArray<OrchestrationProjectShell>) =>
   new Map(projects.map((project) => [project.id as string, project.title]));
@@ -152,12 +169,7 @@ const make = Effect.gen(function* () {
         const titles = titlesOf(projects);
         return {
           threads: threads
-            .filter(
-              (thread) =>
-                thread.archivedAt === null &&
-                thread.deletedAt === null &&
-                thread.lineage.relationshipToParent !== "subagent",
-            )
+            .filter(isListed)
             .toSorted(
               (left, right) =>
                 DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
@@ -261,26 +273,52 @@ const make = Effect.gen(function* () {
       }),
 
     // The gate is the user's own words: they must have said yes to the exact
-    // code-owned readback of this draft and thread in the call transcript.
+    // code-owned readback of this draft, thread and mode in the call transcript.
     voice_send: (input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         const target = yield* requireThread(input.threadId);
+        const mode = input.mode ?? "auto";
+        const { projects, threads } = yield* t3.shell;
+        const projectTitles = titlesOf(projects);
+        const projectOf = (thread: OrchestrationV2ThreadShell) =>
+          projectTitles.get(thread.projectId) ?? "Unknown project";
+        // A thread whose title sounds the same is told apart by its project.
+        const namesakes = threads.filter(
+          (thread) =>
+            thread.id !== target.id && isListed(thread) && soundsSame(thread.title, target.title),
+        );
+        const projectTitle = namesakes.length === 0 ? undefined : projectOf(target);
+        if (
+          projectTitle !== undefined &&
+          namesakes.some((thread) => soundsSame(projectOf(thread), projectTitle))
+        )
+          return yield* unspeakableSend(
+            "Another thread in the same project has this title, so a spoken yes can't tell them apart.",
+          );
+        if (![target.title, projectTitle ?? ""].every(isSpeakableSendTitle))
+          return yield* unspeakableSend(
+            'The thread or project title contains the word "message", which would blur where the spoken draft starts.',
+          );
+        const readback = sendReadback({
+          title: target.title,
+          ...(projectTitle === undefined ? {} : { projectTitle }),
+          draft: input.text,
+          mode,
+        });
         if (
           !(yield* voice.claimSpokenSend({
             sessionThreadId: session.sessionThreadId,
+            threadId: target.id,
             text: input.text,
-            targetTitle: target.title,
+            mode,
+            readback,
           }))
         )
-          return {
-            status: "needs_spoken_yes" as const,
-            instruction: NEEDS_SPOKEN_YES,
-            readback: sendReadback(target.title, input.text),
-          };
+          return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES, readback };
         yield* requireVoiceSession;
         const id = yield* commandId;
-        const queued = input.mode === "queue";
+        const queued = mode === "queue";
         yield* t3
           .dispatch({
             type: "message.dispatch",

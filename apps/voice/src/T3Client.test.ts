@@ -73,6 +73,10 @@ it("a reconnect reports threads that moved while away, and nothing on first conn
       change.previous?.status,
       change.thread.status,
     ]),
-    [["t1", "running", "completed"]],
+    [
+      ["t1", "running", "completed"],
+      // t3 appeared while away; it is reported against an idle "before".
+      ["t3", "idle", "running"],
+    ],
   );
 });

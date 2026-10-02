@@ -33,7 +33,8 @@ import {
   confirmationReadback,
   makeVoiceConfirmationGate,
   sameConfirmationReadback,
-  sendReadback,
+  soundsSame,
+  type VoiceSendMode,
 } from "./VoiceConfirmation.ts";
 import { buildBriefing } from "./VoiceBriefing.ts";
 import {
@@ -84,13 +85,18 @@ export interface VoiceOrchestratorShape {
     readonly requestId: string;
   }) => Effect.Effect<VoiceMcpApproveResult>;
   /**
-   * Claims the user's spoken yes to `sendReadback(targetTitle, text)`, once.
-   * False when that exact readback wasn't spoken and answered with a plain yes.
+   * Claims the user's spoken yes to `readback` (from `sendReadback`) for this
+   * exact thread, text and mode, once. The first call only issues the send:
+   * it returns false, and only a readback spoken after that can be answered.
+   * Also false when that readback wasn't spoken and answered with a plain yes,
+   * or when another issued send sounds the same.
    */
   readonly claimSpokenSend: (input: {
     readonly sessionThreadId: ThreadId;
+    readonly threadId: ThreadId;
     readonly text: string;
-    readonly targetTitle: string;
+    readonly mode: VoiceSendMode;
+    readonly readback: string;
   }) => Effect.Effect<boolean>;
   readonly liveSession: (threadId: ThreadId) => Effect.Effect<Option.Option<LiveVoiceSession>>;
   /**
@@ -146,7 +152,7 @@ export const VOICE_SESSION_PROMPT = [
   "Hand lookups, questions about threads, and any action to the background agent. It can see every thread; you cannot.",
   'Lines that start with "Update from T3:" are news about other threads, timed by the system for a pause. Say them briefly and let the user decide whether to dig in.',
   "When a tangent wraps up, come back to open agenda items from your briefing or the agent.",
-  "To send or queue a message to a thread, hand the draft and thread to the background agent first. It returns the exact send readback. Speak that readback verbatim as your entire send question. Keep its opening, Send to, and its final question, Should I send it? Do not summarize, reorder, introduce, or paraphrase it. Then wait for the full user reply. After a clear yes, hand off so the agent can send. If the draft or thread changes, get the new readback and ask again.",
+  "To send or queue a message to a thread, hand the draft and thread to the background agent first. It returns the exact send readback. Speak that readback verbatim as your entire send question. Keep its opening, Send to or Queue for, the word Message before the draft, and its final question, Should I send it? or Should I queue it? Do not summarize, reorder, introduce, or paraphrase it. Then wait for the full user reply. After a clear yes, hand off so the agent can send. If the draft or thread changes, get the new readback and ask again.",
   "For launch, interrupt, or runtime approvals, ask the background agent for the pending action and its exact readback. Speak the returned readback verbatim as your entire approval question. Keep its opening action phrase and its final question, Do you approve this action? Do not summarize, reorder, introduce, or paraphrase it. Then wait for the full user reply. After a clear yes, hand off to call voice_approve for that request. A phone Approve tap is also available. Never treat a partial yes followed by an objection as approval.",
   "You cannot do anything yourself. Never say something was sent, launched or approved until the agent confirms it.",
 ].join("\n");
@@ -214,6 +220,17 @@ export const make = Effect.gen(function* () {
         readonly createdAt: DateTime.Utc;
         readonly generation: number;
         readonly execute: Effect.Effect<string>;
+      }
+    >(),
+  );
+  /** Sends whose readback voice_send has handed out, keyed by thread, mode and text. */
+  const issuedSends = yield* Ref.make(
+    new Map<
+      string,
+      {
+        readonly generation: number;
+        readonly readback: string;
+        readonly issuedAt: DateTime.Utc;
       }
     >(),
   );
@@ -377,16 +394,55 @@ export const make = Effect.gen(function* () {
   const claimSpokenSend: VoiceOrchestratorShape["claimSpokenSend"] = (input) =>
     Effect.gen(function* () {
       const live = yield* currentSession(input.sessionThreadId);
-      if (live === undefined || !(yield* awaitSpokenQuiet(live))) return false;
+      if (live === undefined) return false;
+      const now = yield* DateTime.now;
+      const key = `${input.threadId.length}:${input.threadId}${input.mode}:${input.text}`;
+      // Sends expire with their generation and after the confirmation timeout.
+      // A send not issued yet with this readback is issued now and can't claim.
+      const { issued, current } = yield* Ref.modify(issuedSends, (sends) => {
+        const current = new Map(
+          [...sends].filter(
+            ([, send]) =>
+              send.generation === live.generation &&
+              DateTime.toEpochMillis(now) - DateTime.toEpochMillis(send.issuedAt) <
+                Duration.toMillis(CONFIRM_TIMEOUT),
+          ),
+        );
+        const existing = current.get(key);
+        const issued = existing?.readback === input.readback ? existing : undefined;
+        if (issued === undefined)
+          current.set(key, {
+            generation: live.generation,
+            readback: input.readback,
+            issuedAt: now,
+          });
+        return [{ issued, current }, current];
+      });
+      if (issued === undefined) return false;
+      // Identical issued readbacks cannot be distinguished by a spoken yes.
+      if (
+        [...current].some(
+          ([other, send]) => other !== key && soundsSame(send.readback, input.readback),
+        )
+      )
+        return false;
+      if (!(yield* awaitSpokenQuiet(live))) return false;
       const transcript = yield* store.recentTranscript(80);
       if (!(yield* isSpokenQuiet(live))) return false;
-      const now = yield* DateTime.now;
-      return gate.claim({
+      const claimed = gate.claim({
         transcript,
         generation: live.generation,
-        now,
-        readback: sendReadback(input.targetTitle, input.text),
+        now: yield* DateTime.now,
+        readback: issued.readback,
+        notBefore: DateTime.makeUnsafe(DateTime.toEpochMillis(issued.issuedAt) + 1),
       });
+      if (claimed)
+        yield* Ref.update(issuedSends, (sends) => {
+          const updated = new Map(sends);
+          updated.delete(key);
+          return updated;
+        });
+      return claimed;
     });
 
   const approveSpoken: VoiceOrchestratorShape["approveSpoken"] = (input) =>

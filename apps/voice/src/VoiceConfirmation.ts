@@ -1,4 +1,4 @@
-import type { VoiceConfirmRequest } from "@t3tools/contracts";
+import type { VoiceConfirmRequest, VoiceMcpSendInput } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import type { VoiceTranscriptEntry } from "./VoiceStore.ts";
@@ -62,6 +62,28 @@ const REDIRECT_WORDS = new Set([
 /** A question asks the user something new, so it can't be skipped or talked through. */
 const asksQuestion = (text: string) => /[?？]/.test(text);
 
+/** A statement that asks nothing and redirects nothing, so it can't change what a yes answers. */
+const isPlainStatement = (text: string) =>
+  !asksQuestion(text) && !words(text).some((word) => REDIRECT_WORDS.has(word));
+
+/**
+ * A reply opening with one of these asks something ("Is that okay"), even when
+ * the transcript drops the question mark. "Do" is left out: "Do it" is a yes.
+ */
+const INTERROGATIVE_OPENERS = new Set([
+  "is",
+  "are",
+  "can",
+  "could",
+  "should",
+  "would",
+  "will",
+  "what",
+  "why",
+  "how",
+  "does",
+]);
+
 /** Words that carry the yes. A reply needs at least one. */
 const YES_WORDS = new Set([
   "yes",
@@ -116,27 +138,18 @@ function words(text: string): string[] {
     .filter((word) => word !== "");
 }
 
-function isAffirmative(reply: string): boolean {
-  const replyWords = words(reply);
+function isAffirmative(replies: ReadonlyArray<VoiceTranscriptEntry>): boolean {
+  if (replies.some((entry) => asksQuestion(entry.text))) return false;
+  const replyWords = words(replies.map((entry) => entry.text).join(" "));
   return (
     replyWords.length > 0 &&
+    !INTERROGATIVE_OPENERS.has(replyWords[0]!) &&
     replyWords.length <= MAX_REPLY_WORDS &&
     replyWords.every((word) => REPLY_VOCABULARY.has(word)) &&
     replyWords.some((word) => YES_WORDS.has(word))
   );
 }
 
-/**
- * The code-owned spoken-yes gate. True only when the latest run of assistant
- * entries is exactly `readback` (ignoring case and punctuation, after skipping
- * whole harmless filler entries before it), and everything the user said after
- * it is a short, plain yes.
- *
- * The voice model often talks over the yes ("Okay, sending that"), so
- * assistant statements after the readback are allowed. Any assistant
- * question ends the window, since the user's next words may answer it.
- * A readback the user hasn't answered yet fails.
- */
 /** Longest statement that may lead into a readback in the same breath. */
 const MAX_INLINE_PREFIX_WORDS = 10;
 
@@ -170,6 +183,18 @@ function isReadbackRun(run: string, readback: string): boolean {
   );
 }
 
+/**
+ * The code-owned spoken-yes gate. True only when the latest run of assistant
+ * entries is exactly `readback` (ignoring case and punctuation, after skipping
+ * whole harmless filler entries before it), and everything the user said after
+ * it is a short, plain yes.
+ *
+ * The voice model often talks over the yes ("Okay, sending that"), so
+ * plain assistant statements after the readback are allowed, before or after
+ * the yes. Any assistant
+ * question ends the window, since the user's next words may answer it.
+ * A readback the user hasn't answered yet fails.
+ */
 function confirmationEvidence(
   transcript: ReadonlyArray<VoiceTranscriptEntry>,
   readback: string,
@@ -191,30 +216,35 @@ function confirmationEvidence(
     if (transcript[end]?.role !== "assistant") continue;
     let start = end;
     while (start > 0 && transcript[start - 1]?.role === "assistant") start--;
+    // The readback may also end before plain statements later in the block
+    // ("Take your time."), since they leave it as what the yes answers.
+    let earliestEnd = end;
+    while (earliestEnd > start && isPlainStatement(transcript[earliestEnd]!.text)) earliestEnd--;
     // An exact run (after skipped separate filler entries) wins; only when there
     // is none may the readback come after a lead-in in the same breath.
-    for (const lenient of [false, true]) {
-      for (let candidateStart = start; candidateStart <= end; candidateStart++) {
-        const run = transcript
-          .slice(candidateStart, end + 1)
-          .map((entry) => entry.text)
-          .join(" ");
-        if (lenient ? isReadbackRun(run, readback) : words(run).join(" ") === wanted) {
-          readBackEnd = end;
-          readBackStart = candidateStart;
-          break;
+    search: for (const lenient of [false, true]) {
+      for (let runEnd = end; runEnd >= earliestEnd; runEnd--) {
+        for (let candidateStart = start; candidateStart <= runEnd; candidateStart++) {
+          const run = transcript
+            .slice(candidateStart, runEnd + 1)
+            .map((entry) => entry.text)
+            .join(" ");
+          if (lenient ? isReadbackRun(run, readback) : words(run).join(" ") === wanted) {
+            readBackEnd = runEnd;
+            readBackStart = candidateStart;
+            break search;
+          }
+          // Keep entry boundaries: only whole earlier entries are skipped: known
+          // preparation phrases, or statements ("Let me check that main thread real
+          // quick.") with no question and no redirecting word. Only the readback is
+          // executed, and the user still answers it, so it must be the rest of the run.
+          const earlierText = transcript[candidateStart]!.text;
+          if (
+            !(PRE_READBACK_ACKS.has(words(earlierText).join(" ")) || isPlainStatement(earlierText))
+          )
+            break;
         }
-        // Keep entry boundaries: only whole earlier entries are skipped: known
-        // preparation phrases, or statements ("Let me check that main thread real
-        // quick.") with no question and no redirecting word. Only the readback is
-        // executed, and the user still answers it, so it must be the rest of the run.
-        const earlierText = transcript[candidateStart]!.text;
-        const earlier = words(earlierText);
-        const isFiller =
-          !asksQuestion(earlierText) && !earlier.some((word) => REDIRECT_WORDS.has(word));
-        if (!(PRE_READBACK_ACKS.has(earlier.join(" ")) || isFiller)) break;
       }
-      if (readBackEnd !== -1) break;
     }
     end = start;
   }
@@ -231,7 +261,7 @@ function confirmationEvidence(
     // user's later words might answer it rather than the readback.
     if (asksQuestion(entry.text)) return undefined;
   }
-  return isAffirmative(reply.map((entry) => entry.text).join(" "))
+  return isAffirmative(reply)
     ? {
         readBack: transcript[readBackEnd]!,
         readBackStart: transcript[readBackStart]!,
@@ -240,14 +270,38 @@ function confirmationEvidence(
     : undefined;
 }
 
+export type VoiceSendMode = NonNullable<VoiceMcpSendInput["mode"]>;
+
 /**
  * The exact text the voice model must speak before a send. Code owns it, so a
- * yes covers this draft and this thread and nothing else.
+ * yes covers this draft, this thread and this delivery mode and nothing else.
+ * "Message:" marks where the draft starts, so titles must not contain that word
+ * (see `isSpeakableSendTitle`). `projectTitle` is named when another live
+ * thread has the same title.
  */
-export function sendReadback(targetTitle: string, draft: string): string {
-  const body = draft.trim();
-  return `Send to ${targetTitle.trim()}: ${/[.!?？]$/.test(body) ? body : `${body}.`} Should I send it?`;
+export function sendReadback(input: {
+  readonly title: string;
+  readonly projectTitle?: string;
+  readonly draft: string;
+  readonly mode?: VoiceSendMode;
+}): string {
+  const body = input.draft.trim();
+  const message = /[.!?？]$/.test(body) ? body : `${body}.`;
+  const target =
+    input.projectTitle === undefined
+      ? input.title.trim()
+      : `${input.title.trim()} in project ${input.projectTitle.trim()}`;
+  return input.mode === "queue"
+    ? `Queue for ${target}. Message: ${message} Should I queue it?`
+    : `Send to ${target}. Message: ${message} Should I send it?`;
 }
+
+/** False when a title would blur where the readback's draft starts. */
+export const isSpeakableSendTitle = (title: string) => !words(title).includes("message");
+
+/** Whether two texts sound the same aloud: equal ignoring case and punctuation. */
+export const soundsSame = (left: string, right: string) =>
+  words(left).join(" ") === words(right).join(" ");
 
 /** The action and its full details must be spoken before a yes can approve it. */
 export function confirmationReadback(request: VoiceConfirmRequest): string {
@@ -264,9 +318,7 @@ export function sameConfirmationReadback(
   left: VoiceConfirmRequest,
   right: VoiceConfirmRequest,
 ): boolean {
-  return (
-    words(confirmationReadback(left)).join(" ") === words(confirmationReadback(right)).join(" ")
-  );
+  return soundsSame(confirmationReadback(left), confirmationReadback(right));
 }
 
 /** One shared instance per orchestrator, so sends and approvals cannot reuse a yes. */

@@ -1233,8 +1233,10 @@ it.effect(
         assert.isFalse(
           yield* orchestrator.claimSpokenSend({
             sessionThreadId: answer.sessionThreadId,
+            threadId: workThreadId,
             text: "Review the change",
-            targetTitle: "Work",
+            mode: "auto",
+            readback: sendReadback({ title: "Work", draft: "Review the change" }),
           }),
         );
         assert.strictEqual(yield* Ref.get(executed), 1);
@@ -1414,10 +1416,13 @@ it.effect(
         });
         const { request } = yield* takeUntilType(events, "confirm");
         const session = { sessionThreadId: answer.sessionThreadId, requestId: request.id };
+        const sendReadbackText = sendReadback({ title: "Work", draft: "Review the change" });
         const sendDraft = {
           sessionThreadId: answer.sessionThreadId,
+          threadId: workThreadId,
           text: "Review the change",
-          targetTitle: "Work",
+          mode: "auto" as const,
+          readback: sendReadbackText,
         };
 
         // An objection inside the quiet window cancels the pending approval.
@@ -1434,8 +1439,10 @@ it.effect(
         yield* TestClock.adjust("1 second");
         assert.strictEqual((yield* orchestrator.approveSpoken(session)).status, "needs_spoken_yes");
 
-        // The same holds for a send.
-        yield* harness.speak("assistant", sendReadback("Work", "Review the change"));
+        // The same holds for a send, once voice_send has issued its readback.
+        assert.isFalse(yield* orchestrator.claimSpokenSend(sendDraft));
+        yield* TestClock.adjust(Duration.millis(1));
+        yield* harness.speak("assistant", sendReadbackText);
         yield* harness.speak("user", "Yes");
         const sending = yield* orchestrator.claimSpokenSend(sendDraft).pipe(Effect.forkScoped);
         yield* TestClock.adjust("1 second");
@@ -1445,7 +1452,7 @@ it.effect(
         yield* TestClock.adjust("1 second");
         assert.isFalse(yield* orchestrator.claimSpokenSend(sendDraft));
         // A fresh exact readback and a plain yes do send, once.
-        yield* harness.speak("assistant", sendReadback("Work", "Review the change"));
+        yield* harness.speak("assistant", sendReadbackText);
         yield* harness.speak("user", "Yes");
         const resent = yield* orchestrator.claimSpokenSend(sendDraft).pipe(Effect.forkScoped);
         yield* TestClock.adjust("2 seconds");
@@ -1521,6 +1528,56 @@ it.effect("a stale originating session cannot propose an action in a new generat
       );
       assert.strictEqual(yield* Queue.size(second.events), 0);
       assert.strictEqual(yield* Ref.get(executed), 0);
+    }),
+  ),
+);
+
+const claimAfterQuiet = (input: Parameters<VoiceOrchestrator["Service"]["claimSpokenSend"]>[0]) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* VoiceOrchestrator;
+    const claiming = yield* orchestrator.claimSpokenSend(input).pipe(Effect.forkScoped);
+    yield* TestClock.adjust("2 seconds");
+    return yield* Fiber.join(claiming);
+  });
+
+it.effect("a spoken send yes counts only for a send voice_send already issued", () =>
+  withOrchestrator(() =>
+    Effect.gen(function* () {
+      const { answer } = yield* openCall;
+      const send = (threadId: ThreadId, title: string, text: string) => ({
+        sessionThreadId: answer.sessionThreadId,
+        threadId,
+        text,
+        mode: "auto" as const,
+        readback: sendReadback({ title, draft: text }),
+      });
+      const toWork = send(workThreadId, "Work", "Ship it.");
+      const toOther = send(ThreadId.make("thread-other"), "Other", "Ship it.");
+      const sayYesTo = (readback: string) =>
+        Effect.gen(function* () {
+          yield* TestClock.adjust(Duration.millis(1));
+          yield* record(answer.generation, "assistant", readback);
+          yield* record(answer.generation, "user", "Yes");
+        });
+
+      // A yes heard before the send was issued never counts, even once issued.
+      yield* sayYesTo(toWork.readback);
+      assert.isFalse(yield* claimAfterQuiet(toWork));
+      assert.isFalse(yield* claimAfterQuiet(toWork));
+
+      // A first call for another thread doesn't spend the yes to this one's readback.
+      yield* sayYesTo(toWork.readback);
+      assert.isFalse(yield* claimAfterQuiet(toOther));
+      assert.isTrue(yield* claimAfterQuiet(toWork));
+
+      // Two issued sends that sound the same can't be told apart by a yes.
+      const plain = send(workThreadId, "Work", "Ship it");
+      const punctuated = send(workThreadId, "Work", "Ship it!");
+      assert.isFalse(yield* claimAfterQuiet(plain));
+      assert.isFalse(yield* claimAfterQuiet(punctuated));
+      yield* sayYesTo(plain.readback);
+      assert.isFalse(yield* claimAfterQuiet(plain));
+      assert.isFalse(yield* claimAfterQuiet(punctuated));
     }),
   ),
 );

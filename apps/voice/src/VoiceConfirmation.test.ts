@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 
 import {
   confirmationReadback,
+  isSpeakableSendTitle,
   makeVoiceConfirmationGate,
   sendReadback,
 } from "./VoiceConfirmation.ts";
@@ -10,7 +11,7 @@ import type { VoiceTranscriptEntry } from "./VoiceStore.ts";
 
 const draft = "Rename the login handler and add a test for expired tokens.";
 const title = "Auth refactor";
-const readBack = sendReadback(title, draft);
+const readBack = sendReadback({ title, draft });
 
 const say = (...lines: ReadonlyArray<readonly ["user" | "assistant", string]>) =>
   lines.map(([role, text]): VoiceTranscriptEntry => ({
@@ -25,24 +26,55 @@ const timed = (transcript: ReadonlyArray<VoiceTranscriptEntry>, start = 119_000)
   transcript.map((entry, index) => ({ ...entry, at: DateTime.makeUnsafe(start + index) }));
 
 /** Whether a fresh gate lets `transcript` send `text` to the thread `target`. */
-const sends = (transcript: ReadonlyArray<VoiceTranscriptEntry>, text = draft, target = title) =>
+const sends = (
+  transcript: ReadonlyArray<VoiceTranscriptEntry>,
+  text = draft,
+  target = title,
+  mode?: "auto" | "queue",
+) =>
   makeVoiceConfirmationGate().claim({
     transcript: timed(transcript),
     generation: 1,
     now: confirmationNow,
-    readback: sendReadback(target, text),
+    readback: sendReadback({ title: target, draft: text, ...(mode === undefined ? {} : { mode }) }),
   });
 
-it("formats the send readback with the thread, the draft and one question", () => {
+it("formats the send readback with the thread, the mode, the draft and one question", () => {
   assert.strictEqual(
     readBack,
-    "Send to Auth refactor: Rename the login handler and add a test for expired tokens. Should I send it?",
+    "Send to Auth refactor. Message: Rename the login handler and add a test for expired tokens. Should I send it?",
   );
   assert.strictEqual(
-    sendReadback(" Work ", " Ship it "),
-    "Send to Work: Ship it. Should I send it?",
+    sendReadback({ title: " Work ", draft: " Ship it " }),
+    "Send to Work. Message: Ship it. Should I send it?",
   );
-  assert.strictEqual(sendReadback("Work", "Done?"), "Send to Work: Done? Should I send it?");
+  assert.strictEqual(
+    sendReadback({ title: "Work", draft: "Done?" }),
+    "Send to Work. Message: Done? Should I send it?",
+  );
+  assert.strictEqual(
+    sendReadback({ title: "Work", draft: "Ship it", mode: "queue" }),
+    "Queue for Work. Message: Ship it. Should I queue it?",
+  );
+  assert.strictEqual(
+    sendReadback({ title: "Work", projectTitle: "Billing", draft: "Ship it" }),
+    "Send to Work in project Billing. Message: Ship it. Should I send it?",
+  );
+  assert.isFalse(isSpeakableSendTitle("Message queue"));
+  assert.isTrue(isSpeakableSendTitle("Messages"));
+});
+
+it("a yes to the auto readback doesn't queue, and the reverse", () => {
+  const text = "Ship it.";
+  const auto = say(["assistant", sendReadback({ title: "Work", draft: text })], ["user", "Yes"]);
+  const queue = say(
+    ["assistant", sendReadback({ title: "Work", draft: text, mode: "queue" })],
+    ["user", "Yes"],
+  );
+  assert.isTrue(sends(auto, text, "Work", "auto"));
+  assert.isFalse(sends(auto, text, "Work", "queue"));
+  assert.isTrue(sends(queue, text, "Work", "queue"));
+  assert.isFalse(sends(queue, text, "Work", "auto"));
 });
 
 it("accepts the exact send readback followed by a plain yes", () => {
@@ -53,7 +85,7 @@ it("accepts the exact send readback followed by a plain yes", () => {
   assert.isTrue(
     sends(
       say(
-        ["assistant", "Send to Auth refactor: rename the login handler"],
+        ["assistant", "Send to Auth refactor. Message: rename the login handler"],
         ["assistant", "and add a test for expired tokens. Should I send it?"],
         ["user", "Sounds"],
         ["user", "good."],
@@ -78,8 +110,8 @@ it("accepts the exact send readback followed by a plain yes", () => {
 it("rejects free-form or paraphrased send readbacks", () => {
   for (const spoken of [
     `I'll send: "${draft}" to Auth refactor. Should I send it?`,
-    `Send to Auth refactor: "${draft}"`,
-    "Send to Auth refactor: fix up the auth code and cover token expiry. Should I send it?",
+    `Send to Auth refactor. Message: "${draft}"`,
+    "Send to Auth refactor. Message: fix up the auth code and cover token expiry. Should I send it?",
   ])
     assert.isFalse(sends(say(["assistant", spoken], ["user", "Yes"])), spoken);
 });
@@ -87,9 +119,9 @@ it("rejects free-form or paraphrased send readbacks", () => {
 it("rejects readbacks that change the meaning of the draft", () => {
   const unsafe = "Delete the production database.";
   for (const spoken of [
-    "Send to Maintenance: Do not delete the production database. Should I send it?",
-    "Send to Maintenance: Delete the production database once the backup has been verified. Should I send it?",
-    "Send to Maintenance: Delete the production database. Should I send it? Also drop staging.",
+    "Send to Maintenance. Message: Do not delete the production database. Should I send it?",
+    "Send to Maintenance. Message: Delete the production database once the backup has been verified. Should I send it?",
+    "Send to Maintenance. Message: Delete the production database. Should I send it? Also drop staging.",
   ])
     assert.isFalse(
       sends(say(["assistant", spoken], ["user", "Yes"]), unsafe, "Maintenance"),
@@ -100,7 +132,7 @@ it("rejects readbacks that change the meaning of the draft", () => {
     sends(
       say(
         ["assistant", "Do not."],
-        ["assistant", sendReadback("Maintenance", unsafe)],
+        ["assistant", sendReadback({ title: "Maintenance", draft: unsafe })],
         ["user", "Yes"],
       ),
       unsafe,
@@ -110,7 +142,7 @@ it("rejects readbacks that change the meaning of the draft", () => {
   // Dropping a condition the draft has also fails.
   assert.isFalse(
     sends(
-      say(["assistant", sendReadback("Maintenance", unsafe)], ["user", "Yes"]),
+      say(["assistant", sendReadback({ title: "Maintenance", draft: unsafe })], ["user", "Yes"]),
       "Delete the production database once the backup has been verified.",
       "Maintenance",
     ),
@@ -121,19 +153,27 @@ it("binds the yes to the named thread", () => {
   const text = "Run the tests.";
   assert.isFalse(
     sends(
-      say(["assistant", sendReadback("Frontend tests", text)], ["user", "Yes"]),
+      say(["assistant", sendReadback({ title: "Frontend tests", draft: text })], ["user", "Yes"]),
       text,
       "Backend tests",
     ),
   );
-  // A title word heard only inside the draft does not name the thread.
-  assert.isFalse(
-    sends(
-      say(["assistant", "Send to Auth: Refactor the handler. Should I send it?"], ["user", "Yes"]),
-      "Refactor the handler.",
-      "Auth refactor",
-    ),
-  );
+  // A title word heard only inside the draft does not name the thread, in either direction.
+  for (const [spokenTitle, spokenDraft, target, text] of [
+    ["Auth", "Refactor the handler.", "Auth refactor", "the handler."],
+    ["Auth refactor", "the handler.", "Auth", "Refactor the handler."],
+  ] as const)
+    assert.isFalse(
+      sends(
+        say(
+          ["assistant", sendReadback({ title: spokenTitle, draft: spokenDraft })],
+          ["user", "Yes"],
+        ),
+        text,
+        target,
+      ),
+      target,
+    );
 });
 
 it("rejects a yes with a change request, a negation or doubt", () => {
@@ -150,6 +190,50 @@ it("rejects a yes with a change request, a negation or doubt", () => {
   ])
     assert.isFalse(sends(say(["assistant", readBack], ["user", reply])), reply);
   assert.isFalse(sends(say(["assistant", readBack], ["user", "Yes."], ["user", "Wait."])));
+});
+
+it("rejects a question as the reply, with or without its question mark", () => {
+  for (const reply of [
+    "Is that okay?",
+    "Is this action okay?",
+    "Okay?",
+    "Is that okay",
+    "Is this okay",
+    "Should I send it",
+  ])
+    assert.isFalse(sends(say(["assistant", readBack], ["user", reply])), reply);
+  assert.isFalse(sends(say(["assistant", readBack], ["user", "Yes"], ["user", "Okay?"])));
+  for (const reply of [
+    "Yes That is right",
+    "That is right. Send it.",
+    "Okay, go ahead.",
+    "Yes, I approve this action",
+    "Yes, please",
+    "Do it",
+  ])
+    assert.isTrue(sends(say(["assistant", readBack], ["user", reply])), reply);
+});
+
+it("accepts a plain statement between the readback and the yes, not a question or redirect", () => {
+  assert.isTrue(
+    sends(say(["assistant", readBack], ["assistant", "Take your time."], ["user", "Yes"])),
+  );
+  assert.isTrue(
+    sends(
+      say(
+        ["assistant", "One moment."],
+        ["assistant", readBack],
+        ["assistant", "Take your time."],
+        ["assistant", "Whenever you are ready."],
+        ["user", "Yes"],
+      ),
+    ),
+  );
+  for (const after of ["Or should I wait?", "Actually, hold on.", "But not to Billing."])
+    assert.isFalse(
+      sends(say(["assistant", readBack], ["assistant", after], ["user", "Yes"])),
+      after,
+    );
 });
 
 it("rejects a missing readback, a yes before it, or a question after it", () => {
@@ -272,7 +356,7 @@ it("a yes for an action cannot approve sending its details as a message", () => 
     assert.isFalse(
       gate.claim({
         ...claimAction(transcript),
-        readback: sendReadback(target, actionRequest.detail),
+        readback: sendReadback({ title: target, draft: actionRequest.detail }),
       }),
     );
   assert.isTrue(gate.claim(claimAction(transcript)));
