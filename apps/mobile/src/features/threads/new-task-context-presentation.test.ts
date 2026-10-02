@@ -5,7 +5,48 @@ import {
   resolveNewTaskBranchWorktreePath,
   resolveNewTaskBranchLabel,
   resolveNewTaskLocalWorkspaceSelection,
+  resolveNewTaskWorktreeBase,
 } from "./new-task-context-presentation";
+
+describe("resolveNewTaskWorktreeBase", () => {
+  const featureCheckout = {
+    name: "feature/x",
+    current: true,
+    isDefault: false,
+    worktreePath: "/repo",
+  };
+
+  it("waits for refs before trusting the live checkout branch", () => {
+    expect(
+      resolveNewTaskWorktreeBase({ refs: [], refsLoaded: false, checkoutBranchName: "feature/x" }),
+    ).toBeNull();
+  });
+
+  it("prefers the default branch over the checked-out one", () => {
+    expect(
+      resolveNewTaskWorktreeBase({
+        refs: [
+          featureCheckout,
+          {
+            name: "origin/main",
+            isRemote: true,
+            current: false,
+            isDefault: true,
+            worktreePath: null,
+          },
+        ],
+        refsLoaded: true,
+        checkoutBranchName: "feature/x",
+      })?.name,
+    ).toBe("origin/main");
+  });
+
+  it("falls back to the live checkout branch when the loaded refs are empty", () => {
+    expect(
+      resolveNewTaskWorktreeBase({ refs: [], refsLoaded: true, checkoutBranchName: "main" }),
+    ).toEqual({ name: "main", worktreePath: null });
+  });
+});
 
 describe("resolveNewTaskLocalWorkspaceSelection", () => {
   it("waits for refs instead of carrying a worktree base into Current checkout", () => {

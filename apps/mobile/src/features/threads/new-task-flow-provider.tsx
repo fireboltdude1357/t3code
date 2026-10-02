@@ -101,6 +101,7 @@ import {
   filterNewTaskBranches,
   resolveNewTaskBranchWorktreePath,
   resolveNewTaskLocalWorkspaceSelection,
+  resolveNewTaskWorktreeBase,
 } from "./new-task-context-presentation";
 import { resolveEnvironmentProjectMatch } from "./new-task-project-selection";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
@@ -683,6 +684,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const branchSearchIsDebouncing = branchSearchQuery !== debouncedBranchQuery;
   const branchesLoading =
     branchSearchIsDebouncing || (branchState.isPending && branchState.data === null);
+  // Refs answered for the plain listing, not a search, so an empty list means
+  // the repository has no branches yet.
+  const unfilteredBranchesLoaded = branchState.data !== null && debouncedBranchQuery === "";
   const branchesFetchingNextPage = branchState.isFetchingNextPage;
   const hasMoreBranches =
     branchState.data?.nextCursor !== null && branchState.data?.nextCursor !== undefined;
@@ -899,28 +903,22 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     if (live && (live.mode !== "worktree" || live.branch !== null)) {
       return;
     }
-    // The default may only exist as origin/<default> (isRemote), which
-    // availableBranches filters out — search the unfiltered refs for it.
-    // listRefs is fetched once per draft, so a project cloned while its draft
-    // was open has no refs; the live checkout branch still names a base, as
-    // web's base-branch picker does.
-    const preferredBranch =
-      allBranchRefs.find((branch) => branch.isDefault) ??
-      availableBranches.find((branch) => branch.current) ??
-      (currentCheckoutBranchName !== null
-        ? { name: currentCheckoutBranchName, worktreePath: null }
-        : null);
+    const preferredBranch = resolveNewTaskWorktreeBase({
+      refs: allBranchRefs,
+      refsLoaded: unfilteredBranchesLoaded,
+      checkoutBranchName: currentCheckoutBranchName,
+    });
     if (preferredBranch) {
       selectBranch(preferredBranch);
     }
   }, [
     allBranchRefs,
-    availableBranches,
     currentCheckoutBranchName,
     defaultWorkspaceModeSettled,
     selectBranch,
     selectedBranchName,
     selectedProjectDraftKey,
+    unfilteredBranchesLoaded,
     workspaceMode,
   ]);
 
