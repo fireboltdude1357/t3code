@@ -42,7 +42,7 @@ function SubscriptionUsage(
   ];
   // Reserve a detail row in every column only when one of them has something to say.
   const hasDetail = providers.some((provider) => provider.detail !== "Subscription remaining");
-  const today = environment.date.toDateString();
+  const today = (environment.date ?? new Date()).toDateString();
   const columns = providers.map((provider) => {
     const period =
       environment.configuration?.[provider.name === "Claude" ? "claudePeriod" : "codexPeriod"] ??
