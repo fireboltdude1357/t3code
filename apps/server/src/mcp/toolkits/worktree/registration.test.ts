@@ -21,7 +21,7 @@ import * as VoiceOrchestrator from "../../../orchestration-v2/voice/VoiceOrchest
 import * as VoiceStore from "../../../orchestration-v2/voice/VoiceStore.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
-import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../../serverSettings.ts";

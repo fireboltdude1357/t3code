@@ -1,7 +1,6 @@
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
-import * as NodeCrypto from "node:crypto";
 
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -159,21 +158,21 @@ import {
 } from "./orchestration-v2/WireProjection.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
-import * as OrchestrationEventStore from "./persistence/Services/OrchestrationEventStore.ts";
+import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.ts";
 import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErrors.ts";
 import {
   observeRpcEffect,
   observeRpcStream,
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
-import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
-import * as ProviderInstanceRegistry from "./provider/Services/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
+import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as AcpRegistrySupport from "./provider/acp/AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "./provider/acp/AcpRegistryRuntimeCoordinator.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ProviderMaintenance from "./provider/providerMaintenance.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
-import * as ProviderAuthService from "./provider/Services/ProviderAuthService.ts";
+import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
 import { makeProviderInstallation } from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -1471,7 +1470,7 @@ const layerWsRpc = (
               provider?.models.find((candidate) => candidate.isDefault)?.slug ??
               provider?.models[0]?.slug ??
               "default";
-            const commandId = CommandId.make(NodeCrypto.randomUUID());
+            const commandId = CommandId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
             const launched = yield* Effect.result(
               startup.enqueueCommand(
                 threadLaunch.launch({
@@ -2707,15 +2706,16 @@ const layerWsRpc = (
                         status,
                       }),
                     ),
-                    Effect.catchTag("RelayClientInstallError", (error) =>
-                      Queue.fail(
-                        queue,
-                        new RelayClientInstallFailedError({
-                          reason: error.reason,
-                          message: error.message,
-                        }),
-                      ),
-                    ),
+                    Effect.catchTags({
+                      RelayClientInstallError: (error) =>
+                        Queue.fail(
+                          queue,
+                          new RelayClientInstallFailedError({
+                            reason: error.reason,
+                            message: error.message,
+                          }),
+                        ),
+                    }),
                     Effect.andThen(Queue.end(queue)),
                     Effect.forkScoped,
                   ),
