@@ -8,12 +8,12 @@ import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as Sqlite from "../../persistence/Layers/Sqlite.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { layer as voiceStoreLayer, VoiceStore } from "./VoiceStore.ts";
 
 const StoreLayer = voiceStoreLayer.pipe(Layer.provide(NodeCrypto.layer));
-const TestLayer = StoreLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
+const TestLayer = StoreLayer.pipe(Layer.provideMerge(Sqlite.layerMemory));
 
 const threadA = ThreadId.make("thread-a");
 const threadB = ThreadId.make("thread-b");
@@ -422,7 +422,7 @@ it.effect("persists request identity and resolution across store instances", () 
       assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
       assert.deepStrictEqual(yield* store.recentNotices(10), []);
     }).pipe(Effect.provide(StoreLayer));
-  }).pipe(Effect.provide(SqlitePersistenceMemory)),
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
 
 it.effect(

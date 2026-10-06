@@ -20,7 +20,7 @@ import { OrchestratorV2 } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { ThreadToolkitRegistrationLive } from "../../McpHttpServer.ts";
+import { layerThreadToolkit } from "../../McpHttpServer.ts";
 
 const SESSION_THREAD = ThreadId.make("voice-session");
 const SAME_PROJECT_THREAD = ThreadId.make("voice-project-thread");
@@ -108,7 +108,7 @@ const makeHarness = Effect.fn("makePendingQuestionHarness")(function* () {
   const dependencies = Layer.mergeAll(management, voice, NodeCrypto.layer);
   const server = yield* McpServer.McpServer.pipe(
     Effect.provide(
-      ThreadToolkitRegistrationLive.pipe(
+      layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(dependencies),
       ),

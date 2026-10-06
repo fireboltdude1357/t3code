@@ -27,7 +27,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../config.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as Sqlite from "../../persistence/Layers/Sqlite.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import type { ProviderAdapterV2RealtimeCall } from "../ProviderAdapter.ts";
 import { ThreadManagementService } from "../ThreadManagementService.ts";
@@ -247,7 +247,7 @@ const makeHarness = Effect.gen(function* () {
         ServerConfig.layerTest(process.cwd(), { prefix: "t3code-voice-orchestrator-" }),
       ),
     ),
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(NodeServices.layer),
   );
   return {
