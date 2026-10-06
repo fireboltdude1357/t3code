@@ -29,7 +29,7 @@ import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -589,8 +589,9 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  for (const invalidReplacement of ["veto", "same identity"] as const) {
-    it.effect(`rejects a replacement with ${invalidReplacement}`, () =>
+  it.effect.each(["veto", "same identity"] as const)(
+    "rejects a replacement with %s",
+    (invalidReplacement) =>
       Effect.gen(function* () {
         const fake = yield* makeFakePi;
         const { runtime } = yield* openRuntime(fake);
@@ -617,8 +618,7 @@ describe("PiAdapterV2", () => {
         yield* startTurn(runtime, providerThread, "default").pipe(Effect.flip);
         assert.isFalse(fake.allRequests().some((request) => request.type === "prompt"));
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
-    );
-  }
+  );
 
   it.effect("retires a timed-out lifecycle process before a late switch can race replacement", () =>
     Effect.gen(function* () {
@@ -983,90 +983,126 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  for (const historical of [false, true]) {
-    it.effect(
-      `natively forks ${historical ? "a historical turn" : "the latest turn"} into an independent session`,
-      () =>
-        Effect.gen(function* () {
-          const fake = yield* makeFakePi;
-          const forkFake = yield* makeFakePi;
-          const forkFile = "/fake/forked.jsonl";
-          const { runtime, takeEvent } = yield* openRuntime(
-            fake,
-            "default",
-            THREAD_ID,
-            SESSION_ID,
-            forkFake,
-          );
-          const source = yield* runtime.ensureThread({
-            threadId: THREAD_ID,
-            modelSelection: modelSelection("default"),
-            runtimePolicy,
-          });
-          const turn = (ordinal: number): OrchestrationV2ProviderTurn => ({
-            id: ProviderTurnId.make(`turn-${ordinal}`),
-            providerThreadId: source.id,
-            nodeId: NodeId.make(`node-${ordinal}`),
-            runAttemptId: null,
-            nativeTurnRef: { driver: PI_PROVIDER, nativeId: `u${ordinal}`, strength: "strong" },
-            ordinal,
-            status: "completed",
-            startedAt: null,
-            completedAt: null,
-          });
-          forkFake.queueState({ sessionFile: forkFile });
-          fake.queueState({ sessionFile: forkFile });
-          const target = ThreadId.make("fork-target");
-          const forked = yield* runtime.forkThread({
-            sourceProviderThread: source,
-            sourceProviderTurns: historical ? [turn(1), turn(2)] : [turn(1)],
-            providerTurnId: turn(1).id,
-            targetThreadId: target,
-          });
-          assert.equal(forked.appThreadId, target);
-          assert.equal(forked.nativeThreadRef?.nativeId, forkFile);
-          assert.notEqual(forked.id, source.id);
-          assert.equal(source.nativeThreadRef?.nativeId, FAKE_SESSION_FILE);
-          const args = forkFake.lastSpawn().args;
-          assert.equal(args[args.indexOf("--fork") + 1], FAKE_SESSION_FILE);
-          assert.include(args, "--no-extensions");
-          assert.include(args, "--no-tools");
-          assert.notInclude(args, "--no-session");
-          assert.deepEqual(
-            forkFake
-              .allRequests()
-              .filter((request) => request.type === "fork")
-              .map((request) => request.entryId),
-            historical ? ["u2"] : [],
-          );
-          assert.isFalse(
-            fake
-              .allRequests()
-              .some((request) => request.type === "fork" || request.type === "clone"),
-          );
-          // ProviderTurnStartService adopts the fork into its pending row.
-          const adopted = { ...forked, id: ProviderThreadId.make("pending-fork-row") };
-          yield* startTurn(runtime, adopted, "default", [], "Continue", undefined, 1, target);
-          yield* fake.emit({ type: "agent_start" });
-          yield* fake.emit({ type: "agent_settled" });
-          const updated = yield* takeEvent(
-            (event) =>
-              event.type === "provider_thread.updated" &&
-              event.providerThread.appThreadId === target,
-          );
-          assert.isTrue(
-            updated.type === "provider_thread.updated" && updated.providerThread.id === adopted.id,
-          );
-          yield* takeEvent((event) => event.type === "turn.terminal");
-          yield* runtime.resumeThread({ providerThread: adopted });
-          assert.equal(
-            fake.allRequests().findLast((request) => request.type === "switch_session")
-              ?.sessionPath,
-            forkFile,
-          );
-        }).pipe(Effect.scoped, Effect.provide(testLayer)),
-    );
-  }
+  it.effect.each([
+    { historical: false, label: "the latest turn" },
+    { historical: true, label: "a historical turn" },
+  ])("natively forks $label into an independent session", ({ historical }) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const forkFake = yield* makeFakePi;
+      const forkFile = "/fake/forked.jsonl";
+      const { runtime, takeEvent } = yield* openRuntime(
+        fake,
+        "default",
+        THREAD_ID,
+        SESSION_ID,
+        forkFake,
+      );
+      const source = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      const turn = (ordinal: number): OrchestrationV2ProviderTurn => ({
+        id: ProviderTurnId.make(`turn-${ordinal}`),
+        providerThreadId: source.id,
+        nodeId: NodeId.make(`node-${ordinal}`),
+        runAttemptId: null,
+        nativeTurnRef: { driver: PI_PROVIDER, nativeId: `u${ordinal}`, strength: "strong" },
+        ordinal,
+        status: "completed",
+        startedAt: null,
+        completedAt: null,
+      });
+      forkFake.queueState({ sessionFile: forkFile });
+      fake.queueState({ sessionFile: forkFile });
+      const target = ThreadId.make("fork-target");
+      const forked = yield* runtime.forkThread({
+        sourceProviderThread: source,
+        sourceProviderTurns: historical ? [turn(1), turn(2)] : [turn(1)],
+        providerTurnId: turn(1).id,
+        targetThreadId: target,
+      });
+      assert.equal(forked.appThreadId, target);
+      assert.equal(forked.nativeThreadRef?.nativeId, forkFile);
+      assert.notEqual(forked.id, source.id);
+      assert.equal(source.nativeThreadRef?.nativeId, FAKE_SESSION_FILE);
+      const args = forkFake.lastSpawn().args;
+      assert.equal(args[args.indexOf("--fork") + 1], FAKE_SESSION_FILE);
+      assert.include(args, "--no-extensions");
+      assert.include(args, "--no-tools");
+      assert.notInclude(args, "--no-session");
+      assert.deepEqual(
+        forkFake
+          .allRequests()
+          .filter((request) => request.type === "fork")
+          .map((request) => request.entryId),
+        historical ? ["u2"] : [],
+      );
+      assert.isFalse(
+        fake.allRequests().some((request) => request.type === "fork" || request.type === "clone"),
+      );
+      // ProviderTurnStartService adopts the fork into its pending row.
+      const adopted = { ...forked, id: ProviderThreadId.make("pending-fork-row") };
+      yield* startTurn(runtime, adopted, "default", [], "Continue", undefined, 1, target);
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({ type: "agent_settled" });
+      const updated = yield* takeEvent(
+        (event) =>
+          event.type === "provider_thread.updated" && event.providerThread.appThreadId === target,
+      );
+      assert.isTrue(
+        updated.type === "provider_thread.updated" && updated.providerThread.id === adopted.id,
+      );
+      yield* takeEvent((event) => event.type === "turn.terminal");
+      yield* runtime.resumeThread({ providerThread: adopted });
+      assert.equal(
+        fake.allRequests().findLast((request) => request.type === "switch_session")?.sessionPath,
+        forkFile,
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("presents explicitly namespaced MCP extension tools", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      for (const type of ["tool_execution_start", "tool_execution_end"]) {
+        yield* fake.emit({
+          type,
+          toolCallId: "weather-call",
+          toolName: "mcp__weather__get_weather",
+          args: { city: "Berlin" },
+          result: { content: [{ type: "text", text: "Sunny" }] },
+          isError: false,
+        });
+        const event = yield* takeEvent(
+          (event) => event.type === "turn_item.updated" && event.turnItem.type === "dynamic_tool",
+        );
+        if (event.type !== "turn_item.updated" || event.turnItem.type !== "dynamic_tool")
+          return yield* Effect.die("Expected an MCP tool item");
+        assert.equal(event.turnItem.title, "get weather");
+        assert.equal(
+          event.turnItem.status,
+          type === "tool_execution_start" ? "running" : "completed",
+        );
+        assert.deepEqual(event.turnItem.toolSource, {
+          key: "mcp:weather",
+          name: "weather",
+          kind: "integration",
+        });
+        assert.deepEqual(event.turnItem.input, { city: "Berlin" });
+      }
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
 
   it.effect("observes official subagent results without inventing child threads", () =>
     Effect.gen(function* () {
@@ -1156,6 +1192,102 @@ describe("PiAdapterV2", () => {
         subagentItem.type === "turn_item.updated" &&
           subagentItem.turnItem.type === "subagent" &&
           subagentItem.turnItem.childThreadId === null,
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("persists edit patches and write content on file change items", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      const patch = "--- a.ts\n+++ a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+      yield* fake.emit({
+        type: "tool_execution_start",
+        toolCallId: "call_edit",
+        toolName: "edit",
+        args: { path: "a.ts", edits: [{ oldText: "old", newText: "new" }] },
+      });
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolCallId: "call_edit",
+        toolName: "edit",
+        isError: false,
+        result: {
+          content: [{ type: "text", text: "Successfully replaced 1 block(s) in a.ts." }],
+          details: { diff: "-1 old\n+1 new", patch, firstChangedLine: 1 },
+        },
+      });
+      const edit = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "file_change" &&
+          event.turnItem.status === "completed",
+      );
+      assert.isTrue(
+        edit.type === "turn_item.updated" &&
+          edit.turnItem.type === "file_change" &&
+          edit.turnItem.fileName === "a.ts" &&
+          edit.turnItem.diffStr === patch,
+      );
+
+      yield* fake.emit({
+        type: "tool_execution_start",
+        toolCallId: "call_write",
+        toolName: "write",
+        args: { path: "b.ts", content: "export {};\n" },
+      });
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolCallId: "call_write",
+        toolName: "write",
+        isError: false,
+        result: { content: [{ type: "text", text: "Successfully wrote to b.ts" }] },
+      });
+      const write = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "file_change" &&
+          event.turnItem.status === "completed",
+      );
+      assert.isTrue(
+        write.type === "turn_item.updated" &&
+          write.turnItem.type === "file_change" &&
+          write.turnItem.fileName === "b.ts" &&
+          write.turnItem.newStr === "export {};\n",
+      );
+
+      // A failed edit has no patch, so it keeps the error to show when expanded.
+      yield* fake.emit({
+        type: "tool_execution_start",
+        toolCallId: "call_edit_failed",
+        toolName: "edit",
+        args: { path: "c.ts", edits: [{ oldText: "missing", newText: "new" }] },
+      });
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolCallId: "call_edit_failed",
+        toolName: "edit",
+        isError: true,
+        result: { content: [{ type: "text", text: "Could not find the text in c.ts." }] },
+      });
+      const failedEdit = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "file_change" &&
+          event.turnItem.status === "failed",
+      );
+      assert.isTrue(
+        failedEdit.type === "turn_item.updated" &&
+          failedEdit.turnItem.type === "file_change" &&
+          failedEdit.turnItem.diffStr === "Could not find the text in c.ts.",
       );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );

@@ -31,7 +31,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import { McpSchema, McpServer } from "effect/unstable/ai";
+import { McpSchema, McpServer } from "effect/ai";
 
 import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
 import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
@@ -369,9 +369,13 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
       Effect.map((chunk) => chunk.at(-1)!),
       Effect.provideService(McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
-        threadId: caller,
-        providerSessionId: "session",
-        providerInstanceId: ProviderInstanceId.make("codex"),
+        requestNamespace: "test",
+        thread: {
+          threadId: caller,
+          providerSessionId: "session",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
         issuedAt: 0,
         capabilities: new Set(["orchestration" as const]),
         ...scope,
@@ -384,9 +388,13 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
       return yield* server.callTool({ name, arguments: params }).pipe(
         Effect.provideService(McpInvocationContext, {
           environmentId: EnvironmentId.make("environment"),
-          threadId: SESSION_THREAD,
-          providerSessionId: "session",
-          providerInstanceId: ProviderInstanceId.make("codex"),
+          requestNamespace: "test",
+          thread: {
+            threadId: SESSION_THREAD,
+            providerSessionId: "session",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
           issuedAt: 0,
           capabilities: new Set(["orchestration" as const]),
         }),
@@ -527,7 +535,13 @@ describe("voice toolkit handlers", () => {
       "wrong provider",
       {},
       SESSION_THREAD,
-      { providerInstanceId: ProviderInstanceId.make("other-codex") },
+      {
+        thread: {
+          threadId: SESSION_THREAD,
+          providerSessionId: "session",
+          providerInstanceId: ProviderInstanceId.make("other-codex"),
+        },
+      },
     ],
     ["missing capability", {}, SESSION_THREAD, { capabilities: new Set<never>() }],
     ["detached provider binding", { binding: "detached" }, SESSION_THREAD, {}],

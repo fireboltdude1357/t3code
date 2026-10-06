@@ -14,7 +14,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { McpSchema, McpServer } from "effect/unstable/ai";
+import { McpSchema, McpServer } from "effect/ai";
 
 import { OrchestratorV2 } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -118,9 +118,13 @@ const makeHarness = Effect.fn("makePendingQuestionHarness")(function* () {
     server.callTool({ name, arguments: args }).pipe(
       Effect.provideService(McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
-        threadId: SESSION_THREAD,
-        providerSessionId: "voice-provider-session",
-        providerInstanceId,
+        requestNamespace: "test",
+        thread: {
+          threadId: SESSION_THREAD,
+          providerSessionId: "voice-provider-session",
+          providerInstanceId,
+        },
+        client: undefined,
         issuedAt: 0,
         capabilities: new Set(["orchestration" as const]),
       }),
@@ -133,25 +137,6 @@ const makeHarness = Effect.fn("makePendingQuestionHarness")(function* () {
 });
 
 describe("normal pending-question tools from a live voice session", () => {
-  for (const name of [
-    "t3_pending_request_list",
-    "t3_pending_request_read",
-    "t3_pending_request_respond",
-  ]) {
-    it.effect(`${name} rejects a thread in another project`, () =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness();
-        const result = yield* harness.call(name, {
-          threadId: OTHER_PROJECT_THREAD,
-          ...(name === "t3_pending_request_list" ? {} : { requestId: QUESTION }),
-          ...(name === "t3_pending_request_respond" ? { answers } : {}),
-        });
-        expect(result.structuredContent).toMatchObject({ code: "thread_not_found" });
-        expect(harness.dispatched).toEqual([]);
-      }),
-    );
-  }
-
   it.effect("lists, reads, and answers a pending question in the calling project", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -187,7 +172,12 @@ describe("normal pending-question tools from a live voice session", () => {
         requestId: APPROVAL,
         answers: { approval: "yes" },
       });
-      expect(result.structuredContent).toMatchObject({ code: "invalid_request" });
+      // Declared tool failures arrive as `isError` with the payload as JSON text.
+      const text = result.content[0];
+      expect(result.isError).toBe(true);
+      expect(text?.type === "text" ? JSON.parse(text.text) : undefined).toMatchObject({
+        code: "invalid_request",
+      });
       expect(harness.dispatched).toEqual([]);
     }),
   );

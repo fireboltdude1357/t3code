@@ -68,39 +68,45 @@ const make = Effect.gen(function* () {
   /** Refuses every caller except a live voice session thread. */
   const requireVoiceSession = Effect.gen(function* () {
     const scope = yield* McpInvocationContext;
-    const session = yield* voice.liveSession(scope.threadId);
+    const thread = scope.thread;
+    if (thread === undefined)
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Voice tools only work in a live voice session.",
+      });
+    const session = yield* voice.liveSession(thread.threadId);
     if (Option.isNone(session) || !scope.capabilities.has("orchestration"))
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "Voice tools only work in a live voice session.",
       });
     const caller = yield* threads
-      .getThreadShell(scope.threadId)
+      .getThreadShell(thread.threadId)
       .pipe(Effect.mapError(orchestrationError("Could not read the voice session thread.")));
     // Realtime turns are untracked, so activeRunId is not an ownership check here.
     if (
       caller === null ||
       caller.deletedAt !== null ||
       caller.archivedAt !== null ||
-      caller.providerInstanceId !== scope.providerInstanceId
+      caller.providerInstanceId !== thread.providerInstanceId
     )
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "The calling provider no longer owns the live voice session.",
       });
     const records = yield* threads
-      .getThreadRecords(scope.threadId, ["providerThreads", "providerSessions"])
+      .getThreadRecords(thread.threadId, ["providerThreads", "providerSessions"])
       .pipe(Effect.mapError(orchestrationError("Could not read the voice provider binding.")));
     const providerThread = records.providerThreads.find(
       (thread) =>
         thread.id === caller.activeProviderThreadId &&
         thread.appThreadId === caller.id &&
-        thread.providerInstanceId === scope.providerInstanceId,
+        thread.providerInstanceId === thread.providerInstanceId,
     );
     const binding = records.providerSessions.find(
       (binding) =>
         binding.id === providerThread?.providerSessionId &&
-        binding.providerInstanceId === scope.providerInstanceId &&
+        binding.providerInstanceId === thread.providerInstanceId &&
         binding.status !== "stopped" &&
         binding.status !== "error",
     );
@@ -110,7 +116,7 @@ const make = Effect.gen(function* () {
         : yield* providerSessions
             .get(binding.id)
             .pipe(Effect.mapError(orchestrationError("Could not read the live voice provider.")));
-    if (Option.isNone(runtime) || runtime.value.instanceId !== scope.providerInstanceId)
+    if (Option.isNone(runtime) || runtime.value.instanceId !== thread.providerInstanceId)
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "The voice session's provider is no longer attached and running.",

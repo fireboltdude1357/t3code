@@ -6,7 +6,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
@@ -625,7 +625,7 @@ it.effect(
 it.effect("migrates legacy request keys using exact thread prefixes and kind suffixes", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 57 });
+    yield* runMigrations({ toMigrationInclusive: 59 });
     const threadId = ThreadId.make("thread:request:Ω_%:input");
     const requestId = RuntimeRequestId.make("request:request:λ:approval:input");
     const createdAt = "2026-09-30T10:00:00.000Z";
@@ -673,10 +673,10 @@ it.effect("migrates legacy request keys using exact thread prefixes and kind suf
           ${createdAt}, ${deliveredAt})
       `;
     }
-    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 58 }), [
-      [58, "VoiceNoticeRequests"],
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 60 }), [
+      [60, "VoiceNoticeRequests"],
     ]);
-    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 58 }), []);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 60 }), []);
     const migrated = yield* sql<{
       readonly id: string;
       readonly key: string;

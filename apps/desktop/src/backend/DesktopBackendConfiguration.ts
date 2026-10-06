@@ -4,7 +4,7 @@ import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serve
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -644,7 +644,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     // The packaged sidecar is a Windows executable and cannot run inside the
     // Linux WSL backend. Keep the field absent instead of passing an unusable
     // `/mnt/.../*.exe` path; WSL resource telemetry is reported unavailable.
-    // See docs/architecture/resource-telemetry.md.
+    // See docs/internals/resource-telemetry.md.
     ...buildObservabilityFragment(input.observabilitySettings),
   };
 
@@ -842,7 +842,7 @@ export const make = Effect.gen(function* () {
       onNone: () =>
         crypto.randomBytes(24).pipe(
           Effect.map((bytes) => {
-            const token = Encoding.encodeHex(bytes);
+            const token = Hex.encode(bytes);
             return [token, Option.some(token)] as const;
           }),
         ),

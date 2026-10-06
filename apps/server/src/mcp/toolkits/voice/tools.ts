@@ -25,7 +25,7 @@ import {
   VoiceMcpTopicOpenResult,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 
