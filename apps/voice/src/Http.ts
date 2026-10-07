@@ -205,14 +205,15 @@ const memoRoute = HttpRouter.add(
       })
       .pipe(
         Effect.map((reply) => HttpServerResponse.jsonUnsafe(reply)),
-        Effect.catchTag("VoiceSessionError", (error) =>
-          Effect.succeed(memoFailure(error.message, 502)),
-        ),
+        Effect.catchTags({
+          VoiceSessionError: (error) => Effect.succeed(memoFailure(error.message, 502)),
+        }),
       );
   }).pipe(
-    Effect.catchTag("HttpServerError", () =>
-      Effect.succeed(memoFailure("The recording didn't upload completely.", 400)),
-    ),
+    Effect.catchTags({
+      HttpServerError: () =>
+        Effect.succeed(memoFailure("The recording didn't upload completely.", 400)),
+    }),
   ),
 );
 

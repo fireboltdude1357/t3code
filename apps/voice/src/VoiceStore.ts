@@ -63,6 +63,11 @@ export interface VoiceStoreShape {
   ) => Effect.Effect<void>;
   /** Oldest first. */
   readonly undeliveredNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
+  /** Oldest first, only those recorded at or after `since`. */
+  readonly undeliveredNoticesSince: (
+    since: DateTime.Utc,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
   /** Newest first. */
   readonly recentNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
 
@@ -335,6 +340,16 @@ export const layer = Layer.effect(
         LIMIT ${limit}
       `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
 
+    const undeliveredNoticesSince: VoiceStoreShape["undeliveredNoticesSince"] = (since, limit) =>
+      sql`
+        SELECT ${noticeColumns} FROM voice_notice_ledger
+        WHERE delivered_at IS NULL
+          AND created_at >= ${iso(since)}
+          AND (kind NOT IN ('input', 'approval') OR resolved_at IS NULL)
+        ORDER BY created_at ASC, notice_id ASC
+        LIMIT ${limit}
+      `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
+
     const recentNotices: VoiceStoreShape["recentNotices"] = (limit) =>
       sql`
         SELECT ${noticeColumns} FROM voice_notice_ledger
@@ -372,6 +387,7 @@ export const layer = Layer.effect(
       pendingRequestNotices,
       reconcileRequestNotices,
       undeliveredNotices,
+      undeliveredNoticesSince,
       recentNotices,
       appendTranscript,
       recentTranscript,

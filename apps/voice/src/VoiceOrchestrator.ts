@@ -214,6 +214,11 @@ interface MemoSession {
   readonly current: Generation;
   readonly prepared: PreparedSessionThread;
   readonly startedAt: number;
+  /**
+   * When the briefing was taken. Replies read out only news recorded since;
+   * older news is in the briefing, and a backlog from days without voice stays quiet.
+   */
+  readonly newsSince: DateTime.Utc;
   /** Briefing for the agent, sent with the first memo and then cleared. */
   readonly intro: Ref.Ref<string | undefined>;
   readonly focusThreadId: Ref.Ref<ThreadId | undefined>;
@@ -1196,6 +1201,7 @@ export const make = Effect.gen(function* () {
           sessions.prepare({ generation, mode: "memo" }),
           ({ sessionThreadId }) => sessions.release(sessionThreadId),
         );
+        const newsSince = yield* DateTime.now;
         const { briefing, pending, focus, agenda } = yield* briefingFor(generation, focusThreadId);
         const current: Generation = {
           supportsRequestNotices: false,
@@ -1230,6 +1236,7 @@ export const make = Effect.gen(function* () {
           current,
           prepared,
           startedAt: yield* nowMillis,
+          newsSince,
           intro: yield* Ref.make<string | undefined>(
             memoIntroText(briefing.initialItems, agentBriefing(focus, agenda)),
           ),
@@ -1289,7 +1296,9 @@ export const make = Effect.gen(function* () {
       // News waits when the reply asks something, so the next memo answers only that.
       const news = endsWithQuestion(answer)
         ? []
-        : yield* freshNotices(yield* store.undeliveredNotices(NOTICE_LOOKBACK));
+        : yield* freshNotices(
+            yield* store.undeliveredNoticesSince(session.newsSince, NOTICE_LOOKBACK),
+          );
       const newsText = composeNoticeBatch(news);
       const answeredAt = yield* DateTime.now;
       for (const text of newsText === "" ? [answer] : [answer, newsText]) {
@@ -1304,15 +1313,16 @@ export const make = Effect.gen(function* () {
       yield* Ref.set(current.lastActivity, yield* nowMillis);
       return newsText === "" ? answer : `${answer}\n\n${newsText}`;
     }).pipe(
-      Effect.catchTag("T3ClientError", (cause) =>
-        Effect.logWarning("voice-session.memo-t3-failed", { cause }).pipe(
-          Effect.andThen(
-            Effect.fail(
-              new VoiceSessionError({ message: "Couldn't reach T3. Try again shortly." }),
+      Effect.catchTags({
+        T3ClientError: (cause) =>
+          Effect.logWarning("voice-session.memo-t3-failed", { cause }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new VoiceSessionError({ message: "Couldn't reach T3. Try again shortly." }),
+              ),
             ),
           ),
-        ),
-      ),
+      }),
       memoLock.withPermits(1),
     );
 
