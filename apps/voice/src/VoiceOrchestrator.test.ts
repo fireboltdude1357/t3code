@@ -1753,3 +1753,26 @@ it.effect("an idle memo generation ends, and the next memo starts a fresh briefe
     }),
   ),
 );
+
+it.effect("a retried memo after a failed turn is recorded once", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      yield* Ref.set(harness.turnReply, () =>
+        Effect.fail(new VoiceSessionError({ message: "The voice agent took too long to answer." })),
+      );
+      const failed = yield* memoWithClock("Ship it").pipe(Effect.flip);
+      assert.strictEqual(failed.message, "The voice agent took too long to answer.");
+
+      yield* Ref.set(harness.turnReply, () => Effect.succeed("Okay."));
+      assert.strictEqual(yield* memoWithClock("Ship it"), "Okay.");
+      assert.deepStrictEqual(
+        (yield* store.recentTranscript(10)).map((entry) => [entry.role, entry.text]),
+        [
+          ["user", "Ship it"],
+          ["assistant", "Okay."],
+        ],
+      );
+    }),
+  ),
+);

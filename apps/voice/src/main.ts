@@ -90,23 +90,25 @@ const app = Layer.unwrap(
     const orchestrator = VoiceOrchestrator.layer.pipe(
       Layer.provideMerge(Layer.mergeAll(t3, store, sessions)),
     );
-    const speech =
-      Option.isSome(config.sottoUrl) && Option.isSome(config.sottoTokenFile)
-        ? VoiceSpeech.layer({
-            ffmpegCommand: config.ffmpegCommand,
-            sottoUrl: config.sottoUrl.value.replace(/\/+$/, ""),
-            sottoToken: (yield* fs.readFileString(config.sottoTokenFile.value)).trim(),
-            kokoroUrl: config.kokoroUrl.replace(/\/+$/, ""),
-            kokoroVoice: config.kokoroVoice,
-          }).pipe(Layer.provide(FetchHttpClient.layer))
-        : VoiceSpeech.layerUnavailable;
+    // Memos need both Sotto settings; with either missing they fail with "not set up".
+    const sotto = Option.all({ url: config.sottoUrl, tokenFile: config.sottoTokenFile });
+    const memosConfigured = Option.isSome(sotto);
+    const speech = Option.isSome(sotto)
+      ? VoiceSpeech.layer({
+          ffmpegCommand: config.ffmpegCommand,
+          sottoUrl: sotto.value.url.replace(/\/+$/, ""),
+          sottoToken: (yield* fs.readFileString(sotto.value.tokenFile)).trim(),
+          kokoroUrl: config.kokoroUrl.replace(/\/+$/, ""),
+          kokoroVoice: config.kokoroVoice,
+        }).pipe(Layer.provide(FetchHttpClient.layer))
+      : VoiceSpeech.layerUnavailable;
     const memos = VoiceMemos.layer.pipe(Layer.provideMerge(orchestrator), Layer.provide(speech));
 
     yield* Effect.logInfo("voice.sidecar.starting", {
       serverUrl: config.serverUrl,
       listen: `${config.host}:${config.port}`,
       home,
-      memos: Option.isSome(config.sottoUrl) ? "on" : "off",
+      memos: memosConfigured ? "on" : "off",
     });
     // The server starts listening only after T3 is connected and the
     // orchestrator is up, so no request lands on a half-built sidecar.

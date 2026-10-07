@@ -1272,12 +1272,20 @@ export const make = Effect.gen(function* () {
       const heardAt = yield* DateTime.now;
       yield* Ref.set(current.lastActivity, DateTime.toEpochMillis(heardAt));
       yield* Ref.set(current.lastUserActivity, DateTime.toEpochMillis(heardAt));
-      yield* store.appendTranscript({
-        generation: current.generation,
-        role: "user",
-        text: input.text,
-        at: heardAt,
-      });
+      // A retry after a failed turn repeats the memo; it is the same reply, not a new one.
+      const [last] = yield* store.recentTranscript(1);
+      if (
+        last?.generation !== current.generation ||
+        last.role !== "user" ||
+        last.text !== input.text
+      ) {
+        yield* store.appendTranscript({
+          generation: current.generation,
+          role: "user",
+          text: input.text,
+          at: heardAt,
+        });
+      }
       const intro = yield* Ref.get(session.intro);
       const previousFocus = yield* Ref.get(session.focusThreadId);
       const focusNote =
