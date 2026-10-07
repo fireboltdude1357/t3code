@@ -25,6 +25,14 @@ export const VoiceMcpConfirmRequest = VoiceConfirmRequest.mapFields((fields) => 
 }));
 export type VoiceMcpConfirmRequest = typeof VoiceMcpConfirmRequest.Type;
 
+/** Projects the user can launch threads in. */
+export const VoiceMcpProjectsResult = Schema.Struct({
+  projects: Schema.Array(
+    Schema.Struct({ projectId: ProjectId, title: Schema.String, workspaceRoot: Schema.String }),
+  ),
+});
+export type VoiceMcpProjectsResult = typeof VoiceMcpProjectsResult.Type;
+
 export const VoiceMcpThreadsInput = Schema.Struct({
   limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))),
 });
@@ -129,13 +137,15 @@ export const VoiceMcpSendResult = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("sent"),
     threadId: ThreadId,
-    runId: RunId,
-    delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+    /** `auto` starts the message now or steers the active run; `queued` waits for it. */
+    delivery: Schema.Literals(["auto", "queued"]),
   }),
   Schema.Struct({
     /** Nothing was sent; `instruction` says what to do first. */
     status: Schema.Literal("needs_spoken_yes"),
     instruction: Schema.String,
+    /** The exact text the user must hear and say yes to before this send. */
+    readback: Schema.String,
   }),
 ]);
 export type VoiceMcpSendResult = typeof VoiceMcpSendResult.Type;

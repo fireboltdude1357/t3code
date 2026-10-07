@@ -7,7 +7,7 @@ import { Platform, useWindowDimensions } from "react-native";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
-import { useNavigationThreadShells, useProjects, useServerConfigs } from "../../state/entities";
+import { useNavigationThreadShells, useProjects } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -25,6 +25,7 @@ import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
 import { startVoiceSession } from "../voice-session/voiceSessionController";
+import { useVoiceSidecarEnvironmentId } from "../voice-session/voiceSidecar";
 
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
@@ -97,16 +98,15 @@ export function HomeRouteScreen() {
   const { options: listOptions, setSelectedEnvironmentId } =
     useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
-  const serverConfigs = useServerConfigs();
-  // The orchestrator runs in the filtered environment, else the first connected
-  // one. Either way the server has to advertise it; the button hides otherwise.
+  // The voice sidecar serves one environment. The button shows while that
+  // environment is connected and matches the filter, if there is one.
+  const voiceSidecarEnvironmentId = useVoiceSidecarEnvironmentId();
   const voiceEnvironmentId =
     environments.find(
       (environment) =>
+        environment.environmentId === voiceSidecarEnvironmentId &&
         (selectedEnvironmentId === null || environment.environmentId === selectedEnvironmentId) &&
-        environment.connectionState === "connected" &&
-        serverConfigs.get(environment.environmentId)?.environment.capabilities.voiceSessions ===
-          true,
+        environment.connectionState === "connected",
     )?.environmentId ?? null;
   const openVoiceSession = useMemo(
     () =>

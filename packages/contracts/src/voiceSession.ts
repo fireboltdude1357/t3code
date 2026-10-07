@@ -1,4 +1,6 @@
 import * as Schema from "effect/Schema";
+import * as Rpc from "effect/rpc/Rpc";
+import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import {
   NonNegativeInt,
@@ -138,3 +140,42 @@ export const VoiceAgendaItem = Schema.Struct({
   closedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
 export type VoiceAgendaItem = typeof VoiceAgendaItem.Type;
+
+/**
+ * Why a voice sidecar refused a call. The sidecar is a separate process from
+ * the T3 server, so these never come from `EnvironmentAuthorizationError`.
+ */
+export class VoiceSidecarError extends Schema.TaggedError<VoiceSidecarError>()(
+  "VoiceSidecarError",
+  { message: Schema.String },
+) {}
+
+/** Served at `GET /voice/info` so a phone can match the sidecar to its environment. */
+export const VoiceSidecarInfo = Schema.Struct({
+  /** The T3 environment whose threads this sidecar watches and acts on. */
+  environmentId: TrimmedNonEmptyString,
+  version: Schema.String,
+});
+export type VoiceSidecarInfo = typeof VoiceSidecarInfo.Type;
+
+export const VOICE_SIDECAR_INFO_PATH = "/voice/info";
+export const VOICE_SIDECAR_RPC_PATH = "/voice/rpc";
+
+/**
+ * The voice sidecar's RPC surface, served at `VOICE_SIDECAR_RPC_PATH` over a
+ * WebSocket. It lives outside `WsRpcGroup` because the T3 server never serves it.
+ */
+export const VoiceSessionOpenRpc = Rpc.make("voiceSession.open", {
+  payload: VoiceSessionOpenInput,
+  success: VoiceSessionEvent,
+  error: VoiceSidecarError,
+  stream: true,
+});
+
+export const VoiceSessionRespondRpc = Rpc.make("voiceSession.respond", {
+  payload: VoiceSessionRespondInput,
+  success: VoiceSessionRespondResult,
+  error: VoiceSidecarError,
+});
+
+export const VoiceRpcGroup = RpcGroup.make(VoiceSessionOpenRpc, VoiceSessionRespondRpc);

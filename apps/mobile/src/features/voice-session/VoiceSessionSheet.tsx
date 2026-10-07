@@ -1,6 +1,5 @@
 import { useNavigation } from "@react-navigation/native";
 import type {
-  EnvironmentId,
   VoiceConfirmAction,
   VoiceConfirmRequest,
   VoiceNotice,
@@ -14,14 +13,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView, type AppSymbolName } from "../../components/AppSymbol";
 import { cn } from "../../lib/cn";
-import { useAtomCommand } from "../../state/use-atom-command";
 import {
   hangUpVoiceSession,
   removeVoiceSessionConfirm,
+  respondToVoiceConfirm,
   startVoiceSession,
   toggleVoiceSessionMute,
   useVoiceSession,
-  voiceSessionRespondCommand,
 } from "./voiceSessionController";
 import { VoiceStartupPanel } from "./VoiceStartupPanel";
 import { STARTUP_LABELS } from "./voiceSessionState";
@@ -128,22 +126,18 @@ function CallButton(props: {
 }
 
 /** An action the orchestrator is holding until the user taps Approve or Deny. */
-function ConfirmCard(props: {
-  readonly environmentId: EnvironmentId;
-  readonly request: VoiceConfirmRequest;
-}) {
-  const respond = useAtomCommand(voiceSessionRespondCommand, { reportFailure: false });
+function ConfirmCard(props: { readonly request: VoiceConfirmRequest }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { environmentId, request } = props;
+  const { request } = props;
 
   const answer = async (approved: boolean) => {
     void Haptics.selectionAsync();
     setBusy(true);
     setError(null);
-    const result = await respond({ environmentId, input: { requestId: request.id, approved } });
+    const delivered = await respondToVoiceConfirm({ requestId: request.id, approved });
     setBusy(false);
-    if (result._tag === "Success") {
+    if (delivered) {
       // A late answer to an expired request has nothing left to act on.
       removeVoiceSessionConfirm(request.id);
       return;
@@ -314,11 +308,9 @@ export function VoiceSessionSheet() {
         {state.status !== "live" && state.startupLog.length > 0 ? (
           <VoiceStartupPanel state={state} />
         ) : null}
-        {environmentId !== null
-          ? state.confirms.map((request) => (
-              <ConfirmCard key={request.id} environmentId={environmentId} request={request} />
-            ))
-          : null}
+        {state.confirms.map((request) => (
+          <ConfirmCard key={request.id} request={request} />
+        ))}
         {state.notices.map((notice) => (
           <NoticeCard key={notice.id} notice={notice} onPress={() => openThread(notice)} />
         ))}

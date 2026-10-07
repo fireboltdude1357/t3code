@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId, type VoiceSessionEvent } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  VoiceSidecarError,
+  type VoiceSessionEvent,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import type { Preferences } from "../../persistence/mobile-preferences";
 import type { VoiceSessionPeer, openVoiceSessionPeer } from "./voiceSessionPeer";
@@ -8,6 +14,7 @@ import type { VoiceSessionPeer, openVoiceSessionPeer } from "./voiceSessionPeer"
 const native = vi.hoisted(() => ({
   permission: vi.fn(),
   openPeer: vi.fn<typeof openVoiceSessionPeer>(),
+  respond: vi.fn(),
   startRouting: vi.fn(),
   stopRouting: vi.fn(),
   removeListener: vi.fn(),
@@ -50,14 +57,21 @@ vi.mock("../../state/preferences", () => ({
   ),
 }));
 vi.mock("../../state/atom-registry", () => ({ appAtomRegistry: AtomRegistry.make() }));
-vi.mock("@t3tools/client-runtime/rpc", async () => {
+vi.mock("./voiceSidecar", async () => {
   const Stream = await import("effect/Stream");
-  return { runStream: () => Stream.empty };
+  return {
+    voiceSidecarUrl: "http://sidecar.test",
+    // The socket "opens" as soon as the generation asks for its stream.
+    openVoiceSidecarSession: (
+      _url: string,
+      _input: unknown,
+      onClient: (client: unknown) => void,
+    ) => {
+      onClient({ "voiceSession.respond": native.respond });
+      return Stream.empty;
+    },
+  };
 });
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
-  createEnvironmentRpcCommand: vi.fn(),
-  runStreamInEnvironment: vi.fn(),
-}));
 vi.mock("../../connection/runtime", () => ({
   connectionAtomRuntime: {
     atom: () => Atom.make(AsyncResult.initial<ReadonlyArray<VoiceSessionEvent>, unknown>()),
@@ -288,5 +302,30 @@ describe("voice session startup lifecycle", () => {
     expect(state().failures).toBe(1);
     expect(state().message).toBe("The call did not connect in time.");
     expectStopped();
+  });
+});
+
+describe("voice session confirm answers", () => {
+  it("answers on the call's sidecar socket and reports refusals", async () => {
+    await start();
+    native.respond.mockReturnValueOnce(Effect.succeed({ accepted: false }));
+    await expect(
+      controller.respondToVoiceConfirm({ requestId: "confirm-1", approved: true }),
+    ).resolves.toBe(true);
+    expect(native.respond).toHaveBeenCalledWith({ requestId: "confirm-1", approved: true });
+
+    native.respond.mockReturnValueOnce(Effect.fail(new VoiceSidecarError({ message: "denied" })));
+    await expect(
+      controller.respondToVoiceConfirm({ requestId: "confirm-2", approved: false }),
+    ).resolves.toBe(false);
+  });
+
+  it("does not answer once the call has hung up", async () => {
+    await start();
+    controller.hangUpVoiceSession();
+    await expect(
+      controller.respondToVoiceConfirm({ requestId: "confirm-1", approved: true }),
+    ).resolves.toBe(false);
+    expect(native.respond).not.toHaveBeenCalled();
   });
 });

@@ -21,5 +21,6 @@ export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapsh
       if (event.source === "SubscriptionUsage" && tapUrl) void Linking.openURL(tapUrl);
     });
   }
+  // Limits never expire on the widget; the "As of" line shows their age.
   widget.updateSnapshot(snapshot);
 }

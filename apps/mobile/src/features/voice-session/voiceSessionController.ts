@@ -1,18 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
-import { runStream } from "@t3tools/client-runtime/rpc";
 import {
-  createEnvironmentRpcCommand,
-  runStreamInEnvironment,
-} from "@t3tools/client-runtime/state/runtime";
-import {
-  WS_METHODS,
   type EnvironmentId,
   type ThreadId,
   type VoiceSessionEvent,
   type VoiceSessionOpenInput,
+  type VoiceSessionRespondInput,
 } from "@t3tools/contracts";
 import { requestRecordingPermissionsAsync } from "expo-audio";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { AppState, type NativeEventSubscription } from "react-native";
@@ -23,6 +20,7 @@ import { createVoiceStartupAudio } from "./voiceStartupAudio";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { openVoiceSessionPeer, type VoiceSessionPeer } from "./voiceSessionPeer";
+import { openVoiceSidecarSession, voiceSidecarUrl, type VoiceSidecarClient } from "./voiceSidecar";
 import {
   INITIAL_VOICE_SESSION_STATE,
   isVoiceSessionActive,
@@ -42,24 +40,17 @@ export const voiceSessionStateAtom = Atom.make(INITIAL_VOICE_SESSION_STATE).pipe
   Atom.withLabel("mobile:voice-session:state"),
 );
 
-/** Answers a confirm card. `accepted` is false when it already expired or was answered. */
-export const voiceSessionRespondCommand = createEnvironmentRpcCommand(connectionAtomRuntime, {
-  label: "mobile:voice-session:respond",
-  tag: WS_METHODS.voiceSessionRespond,
-});
-
 /**
- * One generation's stream. `Stream.chunks` makes every emission a whole
- * chunk, because a stream atom only keeps the last element of each chunk and
- * a batch of notices must not lose any.
+ * One generation's stream on its own sidecar socket. `Stream.chunks` makes
+ * every emission a whole chunk, because a stream atom only keeps the last
+ * element of each chunk and a batch of notices must not lose any.
  */
-function openStreamAtom(environmentId: EnvironmentId, input: VoiceSessionOpenInput) {
+function openStreamAtom(baseUrl: string, generation: Generation, input: VoiceSessionOpenInput) {
   return connectionAtomRuntime
     .atom(
-      runStreamInEnvironment(
-        environmentId,
-        runStream(WS_METHODS.voiceSessionOpen, input).pipe(Stream.chunks),
-      ),
+      openVoiceSidecarSession(baseUrl, input, (client) => {
+        generation.client = client;
+      }).pipe(Stream.chunks),
     )
     .pipe(Atom.setIdleTTL(0), Atom.withLabel("mobile:voice-session:open"));
 }
@@ -70,6 +61,8 @@ const ANSWER_TIMEOUT_MS = 45_000;
 interface Generation {
   readonly attempt: number;
   peer: VoiceSessionPeer | null;
+  /** This generation's sidecar connection, once its socket is open. */
+  client: VoiceSidecarClient | null;
   /** Unsubscribing drops the stream atom, which is how the server learns this generation hung up. */
   unsubscribe: (() => void) | null;
   openTimer: ReturnType<typeof setTimeout> | null;
@@ -197,10 +190,14 @@ function handleStreamResult(
 
 async function runGeneration(
   generation: Generation,
-  environmentId: EnvironmentId,
   focusThreadId: ThreadId | null,
 ): Promise<void> {
   const { attempt } = generation;
+  if (voiceSidecarUrl === null) {
+    lose(attempt, "Voice is not configured in this build.");
+    return;
+  }
+  const baseUrl = voiceSidecarUrl;
   startup(attempt, "microphone");
   const permission = await requestRecordingPermissionsAsync();
   if (generation.closed) return;
@@ -233,7 +230,7 @@ async function runGeneration(
   generation.peer = peer;
   peer.setMuted(readState().muted);
   startup(attempt, "contacting-server");
-  const atom = openStreamAtom(environmentId, {
+  const atom = openStreamAtom(baseUrl, generation, {
     sdpOffer: peer.offerSdp,
     startupProgress: true,
     supportsRequestNotices: true,
@@ -258,6 +255,7 @@ function openGeneration(state: VoiceSessionState): void {
   const generation: Generation = {
     attempt,
     peer: null,
+    client: null,
     unsubscribe: null,
     openTimer: null,
     answerTimer: null,
@@ -268,7 +266,7 @@ function openGeneration(state: VoiceSessionState): void {
   generations.set(attempt, generation);
   generation.openTimer = setTimeout(() => {
     generation.openTimer = null;
-    runGeneration(generation, environmentId, focusThreadId).catch(() => {
+    runGeneration(generation, focusThreadId).catch(() => {
       if (!generation.closed) lose(attempt, "Could not start the microphone.");
     });
   }, state.openDelayMs);
@@ -375,6 +373,26 @@ export function toggleVoiceSessionMute(): void {
 /** Drops a confirm card after the user answered it. */
 export function removeVoiceSessionConfirm(requestId: string): void {
   dispatch({ type: "confirm-removed", requestId });
+}
+
+/** Gives up on an answer the sidecar never acknowledges. */
+const RESPOND_TIMEOUT = "10 seconds";
+
+/**
+ * Answers a confirm card on the live call's socket, or the ringing one before
+ * audio connects. Resolves true once the sidecar took the answer, including
+ * when the request had already expired or been answered.
+ */
+export async function respondToVoiceConfirm(input: VoiceSessionRespondInput): Promise<boolean> {
+  const state = readState();
+  const client =
+    generations.get(state.liveAttempt ?? state.attempt)?.client ??
+    generations.get(state.attempt)?.client;
+  if (client === undefined || client === null) return false;
+  const exit = await Effect.runPromiseExit(
+    client["voiceSession.respond"](input).pipe(Effect.timeout(RESPOND_TIMEOUT)),
+  );
+  return Exit.isSuccess(exit);
 }
 
 /** The orchestrator session state, for the mini-bar, sheet and entry points. */

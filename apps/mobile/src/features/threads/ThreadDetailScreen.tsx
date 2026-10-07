@@ -141,7 +141,7 @@ import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { startVoiceSession } from "../voice-session/voiceSessionController";
-import { useServerConfigs } from "../../state/entities";
+import { useVoiceSidecarEnvironmentId } from "../voice-session/voiceSidecar";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 
@@ -337,11 +337,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   }, [navigation, props.environmentId, props.selectedThread.id]);
   // Opens the orchestrator focused on this thread, or just shows the sheet
   // when a session is already running.
-  const serverConfigs = useServerConfigs();
-  // Only servers that advertise the orchestrator can take the call.
+  // Only threads in the voice sidecar's environment can take the call.
+  const voiceSidecarEnvironmentId = useVoiceSidecarEnvironmentId();
   const canStartVoiceCall =
-    props.connectionStateLabel === "connected" &&
-    serverConfigs.get(props.environmentId)?.environment.capabilities.voiceSessions === true;
+    props.connectionStateLabel === "connected" && props.environmentId === voiceSidecarEnvironmentId;
   const startVoiceCall = useMemo(
     () =>
       canStartVoiceCall
