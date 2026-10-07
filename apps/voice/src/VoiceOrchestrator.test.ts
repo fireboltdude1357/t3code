@@ -20,6 +20,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -32,6 +33,7 @@ import { T3Client, type T3ThreadChange } from "./T3Client.ts";
 import { confirmationReadback, sendReadback } from "./VoiceConfirmation.ts";
 import {
   layer as orchestratorLayer,
+  MEMO_IDLE,
   ROTATE_AFTER,
   VoiceOrchestrator,
 } from "./VoiceOrchestrator.ts";
@@ -119,6 +121,12 @@ const makeHarness = Effect.gen(function* () {
     new Map(),
   );
   const prepared = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+  const preparedModes = yield* Ref.make<ReadonlyArray<string>>([]);
+  /** Memo turns in order, and what the fake agent answers each with. */
+  const turns = yield* Ref.make<ReadonlyArray<{ sessionThreadId: ThreadId; text: string }>>([]);
+  const turnReply = yield* Ref.make<
+    (turn: { sessionThreadId: ThreadId; text: string }) => Effect.Effect<string, VoiceSessionError>
+  >(() => Effect.succeed("Okay."));
   const released = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const stopped = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const speech = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -212,11 +220,17 @@ const makeHarness = Effect.gen(function* () {
         yield* Ref.update(callEnds, (current) => new Map(current).set(sessionThreadId, ended));
         return fakeCall(sessionThreadId, ended);
       }),
+    runTurn: (text) =>
+      Effect.gen(function* () {
+        yield* Ref.update(turns, (current) => [...current, { sessionThreadId, text }]);
+        return yield* (yield* Ref.get(turnReply))({ sessionThreadId, text });
+      }),
   });
 
   const sessionService = Layer.mock(VoiceSessionService)({
-    prepare: () =>
-      Ref.get(prepareWork).pipe(
+    prepare: ({ mode }) =>
+      Ref.update(preparedModes, (current) => [...current, mode ?? "call"]).pipe(
+        Effect.andThen(Ref.get(prepareWork)),
         Effect.flatten,
         Effect.andThen(
           Ref.modify(prepared, (current): [PreparedSessionThread, ReadonlyArray<ThreadId>] => {
@@ -307,6 +321,9 @@ const makeHarness = Effect.gen(function* () {
     endCall,
     lastStart,
     prepareWork,
+    preparedModes,
+    turns,
+    turnReply,
     briefingWork,
     realtimeWork,
     prepared,
@@ -1595,6 +1612,144 @@ it.effect("a spoken send yes counts only for a send voice_send already issued", 
       yield* sayYesTo(here.readback);
       assert.isFalse(yield* claimAfterQuiet(here));
       assert.isFalse(yield* claimAfterQuiet(there));
+    }),
+  ),
+);
+
+/** Sends a memo while letting the test clock run, as a real agent turn takes time. */
+const memoWithClock = (text: string, focusThreadId?: ThreadId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* VoiceOrchestrator;
+    const sending = yield* orchestrator
+      .memo({ text, ...(focusThreadId === undefined ? {} : { focusThreadId }) })
+      .pipe(Effect.forkScoped);
+    for (let second = 0; second < 6; second++) {
+      yield* settle;
+      yield* TestClock.adjust("1 second");
+    }
+    return yield* Fiber.join(sending);
+  });
+
+it.effect("memos share one briefed memo generation and keep the transcript", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      const store = yield* VoiceStore;
+
+      assert.strictEqual(yield* memoWithClock("What's running?", workThreadId), "Okay.");
+      assert.strictEqual(yield* memoWithClock("Thanks"), "Okay.");
+
+      const [first, second] = yield* Ref.get(harness.turns);
+      assert.deepStrictEqual(yield* Ref.get(harness.preparedModes), ["memo"]);
+      assert.strictEqual(second?.sessionThreadId, first?.sessionThreadId);
+      // Only the first turn carries the briefing; later turns are the memo alone.
+      assert.include(first?.text, "[T3 BRIEFING]");
+      assert.include(first?.text, "Fix login");
+      assert.isTrue(first?.text.endsWith("Memo: What's running?"));
+      assert.strictEqual(second?.text, "Thanks");
+      assert.deepStrictEqual(
+        (yield* store.recentTranscript(10)).map((entry) => [entry.role, entry.text]),
+        [
+          ["user", "What's running?"],
+          ["assistant", "Okay."],
+          ["user", "Thanks"],
+          ["assistant", "Okay."],
+        ],
+      );
+      // The voice tools accept the memo generation as the live session.
+      assert.isTrue(Option.isSome(yield* orchestrator.liveSession(first!.sessionThreadId)));
+    }),
+  ),
+);
+
+it.effect("news rides on the next memo reply, never spoken and never after a question", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const store = yield* VoiceStore;
+      yield* memoWithClock("Hi");
+
+      yield* harness.updateThread({ status: "completed", latestRunId: RunId.make("run-1") });
+      yield* settle;
+      yield* TestClock.adjust("30 seconds");
+      yield* settle;
+      assert.deepStrictEqual(yield* Ref.get(harness.speech), []);
+
+      yield* Ref.set(harness.turnReply, () => Effect.succeed("Which thread?"));
+      assert.strictEqual(yield* memoWithClock("Check it"), "Which thread?");
+
+      yield* Ref.set(harness.turnReply, () => Effect.succeed("Done."));
+      const reply = yield* memoWithClock("Fix login");
+      assert.isTrue(reply.startsWith("Done."));
+      assert.include(reply, "Fix login finished.");
+      assert.deepStrictEqual(yield* store.undeliveredNotices(10), []);
+    }),
+  ),
+);
+
+it.effect("a yes memo approves the send the previous reply read back", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      const readback = sendReadback({ title: "Fix login", draft: "Ship it." });
+      const claims = yield* Ref.make<ReadonlyArray<boolean>>([]);
+      // The fake agent calls voice_send's gate the way the real one does, then
+      // answers with the readback until the send goes through.
+      yield* Ref.set(harness.turnReply, ({ sessionThreadId }) =>
+        orchestrator
+          .claimSpokenSend({
+            sessionThreadId,
+            threadId: workThreadId,
+            text: "Ship it.",
+            mode: "auto",
+            readback,
+          })
+          .pipe(
+            Effect.tap((claimed) => Ref.update(claims, (current) => [...current, claimed])),
+            Effect.tap(() => Effect.sleep("1 second")),
+            Effect.map((claimed) => (claimed ? "Sent." : readback)),
+          ),
+      );
+
+      assert.strictEqual(yield* memoWithClock("Tell Fix login to ship it"), readback);
+      assert.strictEqual(yield* memoWithClock("Yes"), "Sent.");
+      // A second yes can't send it again.
+      assert.strictEqual(yield* memoWithClock("Yes"), readback);
+      assert.deepStrictEqual(yield* Ref.get(claims), [false, true, false]);
+    }),
+  ),
+);
+
+it.effect("a call takes over from memos, and memos wait while it is live", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* VoiceOrchestrator;
+      yield* memoWithClock("Hi");
+      const memoThread = (yield* Ref.get(harness.turns))[0]!.sessionThreadId;
+
+      yield* openCall;
+      yield* settle;
+      assert.deepStrictEqual(yield* Ref.get(harness.released), [memoThread]);
+      const failed = yield* orchestrator.memo({ text: "Hi again" }).pipe(Effect.flip);
+      assert.strictEqual(failed.message, "Hang up the live call to send a memo.");
+    }),
+  ),
+);
+
+it.effect("an idle memo generation ends, and the next memo starts a fresh briefed one", () =>
+  withOrchestrator((harness) =>
+    Effect.gen(function* () {
+      yield* memoWithClock("Remember the deploy");
+      const firstThread = (yield* Ref.get(harness.turns))[0]!.sessionThreadId;
+
+      yield* TestClock.adjust(MEMO_IDLE);
+      yield* settle;
+      assert.deepStrictEqual(yield* Ref.get(harness.released), [firstThread]);
+
+      yield* memoWithClock("I'm back");
+      const next = (yield* Ref.get(harness.turns))[1]!;
+      assert.notStrictEqual(next.sessionThreadId, firstThread);
+      assert.include(next.text, "Recent conversation:");
+      assert.include(next.text, "Tanner: Remember the deploy");
     }),
   ),
 );

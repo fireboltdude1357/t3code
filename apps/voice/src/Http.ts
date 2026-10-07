@@ -1,12 +1,16 @@
 import {
   VOICE_SIDECAR_INFO_PATH,
+  VOICE_SIDECAR_MEMO_PATH,
   VOICE_SIDECAR_RPC_PATH,
+  type VoiceMemoFailure,
+  VoiceMemoSubmitParams,
   VoiceRpcGroup,
   type VoiceSidecarInfo,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer } from "effect/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -19,6 +23,7 @@ import { VoiceToolkit } from "./mcp/tools.ts";
 import { VoiceMcpCaller } from "./mcp/VoiceMcpCaller.ts";
 import { T3Client } from "./T3Client.ts";
 import { TailnetIdentity } from "./TailnetIdentity.ts";
+import { VoiceMemos } from "./VoiceMemos.ts";
 import { VoiceOrchestrator } from "./VoiceOrchestrator.ts";
 import { VoiceSessionRegistry } from "./VoiceSessionRegistry.ts";
 
@@ -69,6 +74,28 @@ const forbidden = HttpServerResponse.jsonUnsafe(
 );
 
 /**
+ * True for the host itself and devices of the host's own Tailscale user, on a
+ * loopback or tailnet `Host`, from no browser page but this host's own.
+ */
+const isOwnerRequest = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const identity = yield* TailnetIdentity;
+  const address = Option.getOrUndefined(request.remoteAddress);
+  if (!isTrustedUpgrade(request.headers.host, request.headers.origin)) {
+    yield* Effect.logWarning("voice.rpc.rejected-origin", {
+      host: request.headers.host,
+      origin: request.headers.origin,
+    });
+    return false;
+  }
+  if (!(yield* identity.isOwner(address))) {
+    yield* Effect.logWarning("voice.rpc.rejected", { address });
+    return false;
+  }
+  return true;
+});
+
+/**
  * The phone's call stream. Only the host itself and devices that belong to
  * the host's own Tailscale user may connect; the phone sends no credential.
  */
@@ -76,20 +103,7 @@ const rpcRoute = HttpRouter.add(
   "GET",
   VOICE_SIDECAR_RPC_PATH,
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const identity = yield* TailnetIdentity;
-    const address = Option.getOrUndefined(request.remoteAddress);
-    if (!isTrustedUpgrade(request.headers.host, request.headers.origin)) {
-      yield* Effect.logWarning("voice.rpc.rejected-origin", {
-        host: request.headers.host,
-        origin: request.headers.origin,
-      });
-      return forbidden;
-    }
-    if (!(yield* identity.isOwner(address))) {
-      yield* Effect.logWarning("voice.rpc.rejected", { address });
-      return forbidden;
-    }
+    if (!(yield* isOwnerRequest)) return forbidden;
     const voice = yield* VoiceOrchestrator;
     const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
     yield* RpcServer.make(VoiceRpcGroup, { disableTracing: true }).pipe(
@@ -154,4 +168,68 @@ const mcpLayer = McpServer.toolkit(VoiceToolkit).pipe(
   ),
 );
 
-export const routes = Layer.mergeAll(infoRoute, rpcRoute, mcpLayer);
+const memoFailure = (message: string, status: number) =>
+  HttpServerResponse.jsonUnsafe({ message } satisfies VoiceMemoFailure, { status });
+
+/** Memo ids are UUIDs: they end up in a path, and Sotto keys its retries by them. */
+const MemoId = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
+);
+const isMemoId = Schema.is(MemoId);
+
+/**
+ * One voice memo: the body is the recording, and the response waits for the
+ * spoken reply (see `VOICE_SIDECAR_MEMO_PATH`). Same access rule as the call.
+ */
+const memoRoute = HttpRouter.add(
+  "POST",
+  VOICE_SIDECAR_MEMO_PATH,
+  Effect.gen(function* () {
+    if (!(yield* isOwnerRequest)) return forbidden;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const params = yield* HttpServerRequest.schemaSearchParams(VoiceMemoSubmitParams).pipe(
+      Effect.filterOrFail((decoded) => isMemoId(decoded.memoId)),
+      Effect.option,
+    );
+    if (Option.isNone(params)) return memoFailure("The memo id is missing or malformed.", 400);
+    const audio = new Uint8Array(yield* request.arrayBuffer);
+    if (audio.length === 0) return memoFailure("The memo had no audio.", 400);
+    const memos = yield* VoiceMemos;
+    return yield* memos
+      .submit({
+        memoId: params.value.memoId,
+        audio,
+        ...(params.value.focusThreadId === undefined
+          ? {}
+          : { focusThreadId: params.value.focusThreadId }),
+      })
+      .pipe(
+        Effect.map((reply) => HttpServerResponse.jsonUnsafe(reply)),
+        Effect.catchTag("VoiceSessionError", (error) =>
+          Effect.succeed(memoFailure(error.message, 502)),
+        ),
+      );
+  }).pipe(
+    Effect.catchTag("HttpServerError", () =>
+      Effect.succeed(memoFailure("The recording didn't upload completely.", 400)),
+    ),
+  ),
+);
+
+/** A finished memo's spoken reply. */
+const memoAudioRoute = HttpRouter.add(
+  "GET",
+  `${VOICE_SIDECAR_MEMO_PATH}/:memoId/audio`,
+  Effect.gen(function* () {
+    if (!(yield* isOwnerRequest)) return forbidden;
+    const { memoId } = yield* HttpRouter.params;
+    const memos = yield* VoiceMemos;
+    const audio = memoId === undefined ? Option.none() : yield* memos.audio(memoId);
+    return Option.match(audio, {
+      onNone: () => memoFailure("That reply is no longer available.", 404),
+      onSome: (bytes) => HttpServerResponse.uint8Array(bytes, { contentType: "audio/mp4" }),
+    });
+  }),
+);
+
+export const routes = Layer.mergeAll(infoRoute, rpcRoute, memoRoute, memoAudioRoute, mcpLayer);
