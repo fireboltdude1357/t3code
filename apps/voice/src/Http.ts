@@ -7,13 +7,19 @@ import {
   VoiceRpcGroup,
   type VoiceSidecarInfo,
 } from "@t3tools/contracts";
+import * as ByteSize from "effect/ByteSize";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer } from "effect/unstable/ai";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import {
+  HttpIncomingMessage,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 
@@ -171,6 +177,12 @@ const mcpLayer = McpServer.toolkit(VoiceToolkit).pipe(
 const memoFailure = (message: string, status: number) =>
   HttpServerResponse.jsonUnsafe({ message } satisfies VoiceMemoFailure, { status });
 
+/**
+ * The phone records 3 minutes at most, about 0.7 MB at its bitrate. The cap
+ * counts bytes as they arrive, so a runaway chunked upload stops here too.
+ */
+const MEMO_MAX_BYTES = ByteSize.mebibytes(16);
+
 /** Memo ids are UUIDs: they end up in a path, and Sotto keys its retries by them. */
 const MemoId = Schema.String.check(
   Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
@@ -192,7 +204,11 @@ const memoRoute = HttpRouter.add(
       Effect.option,
     );
     if (Option.isNone(params)) return memoFailure("The memo id is missing or malformed.", 400);
-    const audio = new Uint8Array(yield* request.arrayBuffer);
+    const audio = new Uint8Array(
+      yield* request.arrayBuffer.pipe(
+        Effect.provideService(HttpIncomingMessage.MaxBodySize, MEMO_MAX_BYTES),
+      ),
+    );
     if (audio.length === 0) return memoFailure("The memo had no audio.", 400);
     const memos = yield* VoiceMemos;
     return yield* memos
@@ -212,7 +228,7 @@ const memoRoute = HttpRouter.add(
   }).pipe(
     Effect.catchTags({
       HttpServerError: () =>
-        Effect.succeed(memoFailure("The recording didn't upload completely.", 400)),
+        Effect.succeed(memoFailure("The recording was incomplete or too large.", 400)),
     }),
   ),
 );

@@ -107,9 +107,20 @@ interface RealtimeCallState {
 
 /** A memo turn in flight: the agent messages so far, and its final reply. */
 interface TextTurnState {
+  /** Set once `turn/start` answers; notifications for any other turn are ignored. */
+  readonly turnId: string | undefined;
   readonly messages: ReadonlyArray<{ readonly text: string; readonly final: boolean }>;
   readonly done: Deferred.Deferred<string, VoiceSessionError>;
 }
+
+/** Whether a notification for `turnId` belongs to `turn`, before or after its id is known. */
+const isTextTurn = (connection: Connection, turn: TextTurnState, turnId: string) =>
+  Ref.get(connection.abandonedTurns).pipe(
+    Effect.map(
+      (abandoned) =>
+        !abandoned.has(turnId) && (turn.turnId === undefined || turn.turnId === turnId),
+    ),
+  );
 
 /** The reply a memo turn ends with: its last final answer, else its last message. */
 export const textTurnReply = (messages: TextTurnState["messages"]): string | undefined =>
@@ -126,6 +137,8 @@ interface Connection {
   readonly setupTurns: Ref.Ref<ReadonlyMap<string, Deferred.Deferred<void, VoiceSessionError>>>;
   /** Memo turns in flight by native thread id. */
   readonly textTurns: Ref.Ref<ReadonlyMap<string, TextTurnState>>;
+  /** Memo turns interrupted after a timeout, whose late notifications must not reach the next memo. */
+  readonly abandonedTurns: Ref.Ref<ReadonlySet<string>>;
 }
 
 const isVoiceSessionError = Schema.is(VoiceSessionError);
@@ -191,13 +204,20 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
         Ref.get(connection.calls).pipe(Effect.map((calls) => calls.get(threadId)));
 
       yield* client.handleServerNotification("item/completed", (payload) =>
-        Ref.update(connection.textTurns, (turns) => {
-          const turn = turns.get(payload.threadId);
-          if (turn === undefined || payload.item.type !== "agentMessage") return turns;
-          const message = { text: payload.item.text, final: payload.item.phase === "final_answer" };
-          return new Map(turns).set(payload.threadId, {
-            ...turn,
-            messages: [...turn.messages, message],
+        Effect.gen(function* () {
+          const { item } = payload;
+          const turn = (yield* Ref.get(connection.textTurns)).get(payload.threadId);
+          if (turn === undefined || item.type !== "agentMessage") return;
+          if (!(yield* isTextTurn(connection, turn, payload.turnId))) return;
+          const message = { text: item.text, final: item.phase === "final_answer" };
+          yield* Ref.update(connection.textTurns, (turns) => {
+            const current = turns.get(payload.threadId);
+            return current?.done !== turn.done
+              ? turns
+              : new Map(turns).set(payload.threadId, {
+                  ...current,
+                  messages: [...current.messages, message],
+                });
           });
         }).pipe(guarded("voice.codex.item-completed-failed")),
       );
@@ -205,7 +225,22 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
       yield* client.handleServerNotification("turn/completed", (payload) =>
         Effect.gen(function* () {
           const textTurn = (yield* Ref.get(connection.textTurns)).get(payload.threadId);
-          if (textTurn !== undefined) {
+          if (
+            yield* Ref.get(connection.abandonedTurns).pipe(
+              Effect.map((ids) => ids.has(payload.turn.id)),
+            )
+          ) {
+            yield* Ref.update(connection.abandonedTurns, (ids) => {
+              const next = new Set(ids);
+              next.delete(payload.turn.id);
+              return next;
+            });
+            return;
+          }
+          if (
+            textTurn !== undefined &&
+            (yield* isTextTurn(connection, textTurn, payload.turn.id))
+          ) {
             const reply = textTurnReply(textTurn.messages);
             if (payload.turn.status === "completed" && reply !== undefined) {
               yield* Deferred.succeed(textTurn.done, reply);
@@ -343,6 +378,7 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
           ReadonlyMap<string, Deferred.Deferred<void, VoiceSessionError>>
         >(new Map()),
         textTurns: yield* Ref.make<ReadonlyMap<string, TextTurnState>>(new Map()),
+        abandonedTurns: yield* Ref.make<ReadonlySet<string>>(new Set()),
       };
       // A dead app-server sends no `closed`; end everything that ran on it.
       yield* Scope.addFinalizer(
@@ -495,7 +531,10 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
       const registered = yield* Ref.modify(connection.textTurns, (turns) =>
         turns.has(threadId)
           ? ([false, turns] as const)
-          : ([true, new Map(turns).set(threadId, { messages: [], done })] as const),
+          : ([
+              true,
+              new Map(turns).set(threadId, { turnId: undefined, messages: [], done }),
+            ] as const),
       );
       if (!registered) {
         return yield* new VoiceSessionError({
@@ -506,12 +545,25 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
         const started = yield* connection.client
           .request("turn/start", { threadId, input: [{ type: "text", text }] })
           .pipe(toSessionError("Failed to reach the voice agent."));
+        yield* Ref.update(connection.textTurns, (turns) => {
+          const current = turns.get(threadId);
+          return current?.done !== done
+            ? turns
+            : new Map(turns).set(threadId, { ...current, turnId: started.turn.id });
+        });
         return yield* Deferred.await(done).pipe(
           Effect.timeoutOrElse({
             duration: TEXT_TURN_TIMEOUT,
             orElse: () =>
-              connection.client
-                .request("turn/interrupt", { threadId, turnId: started.turn.id })
+              Ref.update(connection.abandonedTurns, (ids) => new Set(ids).add(started.turn.id))
+                .pipe(
+                  Effect.andThen(
+                    connection.client.request("turn/interrupt", {
+                      threadId,
+                      turnId: started.turn.id,
+                    }),
+                  ),
+                )
                 .pipe(
                   Effect.timeout(RELEASE_REQUEST_TIMEOUT),
                   Effect.ignore,

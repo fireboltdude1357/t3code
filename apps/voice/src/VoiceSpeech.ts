@@ -69,6 +69,27 @@ const SottoRecord = Schema.Struct({
 
 const isVoiceSessionError = Schema.is(VoiceSessionError);
 
+/**
+ * The parts of a failure safe to log. A Sotto request carries its bearer
+ * token, so an HTTP error is reduced to its kind, status and URL.
+ */
+export const describeSpeechFailure = (cause: unknown) => {
+  if (HttpClientError.isHttpClientError(cause)) {
+    return {
+      kind: cause.reason._tag,
+      status: cause.reason._tag === "StatusCodeError" ? cause.reason.response.status : undefined,
+      url: cause.reason.request.url,
+    };
+  }
+  if (typeof cause === "string") return { kind: cause };
+  return {
+    kind:
+      typeof cause === "object" && cause !== null && "_tag" in cause
+        ? String(cause._tag)
+        : typeof cause,
+  };
+};
+
 const isSottoBusy = (error: HttpClientError.HttpClientError) =>
   error.reason._tag === "StatusCodeError" &&
   (error.reason.response.status === 409 || error.reason.response.status === 503);
@@ -209,13 +230,7 @@ export const make = Effect.fn("voice/VoiceSpeech.make")(function* (config: Voice
       Effect.catchIf(
         (error) => !isVoiceSessionError(error),
         (cause) =>
-          Effect.logWarning("voice.memo.transcription-error", {
-            status:
-              cause._tag === "HttpClientError" && cause.reason._tag === "StatusCodeError"
-                ? cause.reason.response.status
-                : undefined,
-            cause,
-          }).pipe(
+          Effect.logWarning("voice.memo.transcription-error", describeSpeechFailure(cause)).pipe(
             Effect.andThen(
               Effect.fail(new VoiceSessionError({ message: "Transcription isn't available." })),
             ),
@@ -247,7 +262,7 @@ export const make = Effect.fn("voice/VoiceSpeech.make")(function* (config: Voice
         ]),
       ),
       Effect.catch((cause) =>
-        Effect.logWarning("voice.memo.speech-failed", { cause }).pipe(
+        Effect.logWarning("voice.memo.speech-failed", describeSpeechFailure(cause)).pipe(
           Effect.andThen(
             Effect.fail(new VoiceSessionError({ message: "Couldn't speak the reply." })),
           ),

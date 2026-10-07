@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
-import { layer as memosLayer, VoiceMemos } from "./VoiceMemos.ts";
+import * as VoiceMemos from "./VoiceMemos.ts";
 import { VoiceOrchestrator } from "./VoiceOrchestrator.ts";
 import { VoiceSessionError } from "./VoiceSessionService.ts";
 import { VoiceSpeech } from "./VoiceSpeech.ts";
@@ -17,7 +17,7 @@ it.effect("one memo id runs once, and a retry resumes after the last step that w
     const answered = yield* Ref.make(0);
     const spoken = yield* Ref.make(0);
     const uploaded = yield* Deferred.make<void>();
-    const layer = memosLayer.pipe(
+    const layer = VoiceMemos.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(VoiceSpeech)({
@@ -44,7 +44,7 @@ it.effect("one memo id runs once, and a retry resumes after the last step that w
     );
 
     yield* Effect.gen(function* () {
-      const memos = yield* VoiceMemos;
+      const memos = yield* VoiceMemos.VoiceMemos;
       const input = { memoId: "memo-0001", audio: new Uint8Array([0]) };
 
       // A retry while the memo runs (a dropped connection) waits for the same attempt.
