@@ -21,6 +21,12 @@ AppEntity[d763fcb8-…]`. Every build and OTA update needs that file's values in
 the environment. The values are not secrets. The reference copies are
 `~/code/t3code/.env.local` on the Air and on stl-wsl.
 
+The voice orchestrator button also needs
+`EXPO_PUBLIC_T3_VOICE_URL=http://stl-wsl.tail1fd0aa.ts.net:3780`, the voice
+sidecar (`t3-voice.service`). Neither `.env.local` nor the EAS `preview`
+environment sets it, and Metro bakes it into the JS bundle. Export it for every
+build and OTA update, or the app silently hides voice.
+
 ## Pick the base
 
 `fork-v2` is the fork's working branch. The fork's `main` can trail it, but
@@ -46,11 +52,13 @@ APP_VARIANT=preview npx expo-updates fingerprint:generate --platform ios
 ```
 
 If the hash matches the runtime version of the installed build, send an OTA.
+An IPA records its hash in `Payload/*.app/EXUpdates.bundle/fingerprint`.
 `EXPO_TOKEN` is in `~/.claude/.env`. The worktree also needs `.env.local`
 copied from `~/code/t3code`:
 
 ```sh
 set -a; . ~/.claude/.env; set +a
+export EXPO_PUBLIC_T3_VOICE_URL=http://stl-wsl.tail1fd0aa.ts.net:3780
 APP_VARIANT=preview EXPO_NO_GIT_STATUS=1 eas update --channel preview \
   --environment preview --platform ios --message "<what changed>" --non-interactive
 ```
@@ -65,6 +73,7 @@ background command and end the turn:
 
 ```sh
 ssh air 'set -a; source ~/code/t3code/.env.local; set +a;
+  export EXPO_PUBLIC_T3_VOICE_URL=http://stl-wsl.tail1fd0aa.ts.net:3780;
   ~/code/fleet/skills/universal/eas-local-build/scripts/eas-local-build \
   git@github.com:fireboltdude1357/t3code.git <full-sha> apps/mobile preview \
   ~/builds/t3code-fork-<short-sha>.ipa'
