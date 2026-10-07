@@ -43,6 +43,7 @@ import IconClock from "@tabler/icons-react-native/IconClock";
 import IconCode from "@tabler/icons-react-native/IconCode";
 import IconCopy from "@tabler/icons-react-native/IconCopy";
 import IconDatabase from "@tabler/icons-react-native/IconDatabase";
+import IconDeviceAudioTape from "@tabler/icons-react-native/IconDeviceAudioTape";
 import IconDeviceDesktop from "@tabler/icons-react-native/IconDeviceDesktop";
 import IconDeviceLaptop from "@tabler/icons-react-native/IconDeviceLaptop";
 import IconDeviceMobile from "@tabler/icons-react-native/IconDeviceMobile";
@@ -208,6 +209,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   plus: IconPlus,
   minus: IconMinus,
   "qrcode.viewfinder": IconQrcode,
+  recordingtape: IconDeviceAudioTape,
   "point.3.connected.trianglepath.dotted": IconNetwork,
   "point.topleft.down.curvedto.point.bottomright.up": IconGitMerge,
   safari: IconExternalLink,

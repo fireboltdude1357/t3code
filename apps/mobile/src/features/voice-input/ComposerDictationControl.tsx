@@ -471,3 +471,14 @@ export function ComposerVoiceCallAction(props: { readonly onPress: () => void })
     />
   );
 }
+
+/** Opens a voice memo about this thread: record, send, and hear the reply. */
+export function ComposerVoiceMemoAction(props: { readonly onPress: () => void }) {
+  return (
+    <VoiceActionButton
+      accessibilityLabel="Record a voice memo about this thread"
+      icon="recordingtape"
+      onPress={props.onPress}
+    />
+  );
+}

@@ -112,6 +112,7 @@ import {
   ComposerDictationStatus,
   ComposerDictationToolbar,
   ComposerVoiceCallAction,
+  ComposerVoiceMemoAction,
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
@@ -191,6 +192,8 @@ export interface ThreadComposerProps {
   readonly onStopThread: () => void;
   /** Present when the voice orchestrator can be opened on this thread. */
   readonly onStartVoiceCall?: (() => void) | null;
+  /** Present when a voice memo can be recorded about this thread. */
+  readonly onStartVoiceMemo?: (() => void) | null;
   readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
@@ -1054,6 +1057,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onStart={voiceInput.start}
                   onCancel={voiceInput.cancel}
                 />
+                {props.onStartVoiceMemo && !isVoiceInputPresented ? (
+                  <ComposerVoiceMemoAction onPress={props.onStartVoiceMemo} />
+                ) : null}
                 {props.onStartVoiceCall && !isVoiceInputPresented ? (
                   <ComposerVoiceCallAction onPress={props.onStartVoiceCall} />
                 ) : null}
@@ -1151,6 +1157,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     onConfirm={voiceInput.stop}
                     onCancel={voiceInput.cancel}
                   />
+                  {props.onStartVoiceMemo && !isVoiceInputPresented ? (
+                    <ComposerVoiceMemoAction onPress={props.onStartVoiceMemo} />
+                  ) : null}
                   {props.onStartVoiceCall && !isVoiceInputPresented ? (
                     <ComposerVoiceCallAction onPress={props.onStartVoiceCall} />
                   ) : null}
