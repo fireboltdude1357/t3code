@@ -31,31 +31,25 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import { McpSchema, McpServer } from "effect/unstable/ai";
+import { McpSchema, McpServer } from "effect/ai";
 
-import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
-import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
+import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
+import * as ProviderSessionManager from "../../../orchestration-v2/ProviderSessionManager.ts";
 import type { ProviderAdapterV2SessionRuntime } from "../../../orchestration-v2/ProviderAdapter.ts";
-import {
-  ThreadManagementService,
-  type ThreadManagementSendInput,
-  type ThreadManagementSendResult,
-} from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   confirmationReadback,
   makeVoiceConfirmationGate,
 } from "../../../orchestration-v2/voice/VoiceConfirmation.ts";
-import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
-import {
-  VoiceStore,
-  type VoiceTranscriptEntry,
-} from "../../../orchestration-v2/voice/VoiceStore.ts";
-import { ProjectService } from "../../../project/ProjectService.ts";
-import { McpInvocationContext, type McpInvocationScope } from "../../McpInvocationContext.ts";
+import * as VoiceOrchestrator from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
+import * as VoiceStore from "../../../orchestration-v2/voice/VoiceStore.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import type { ProjectionRecords } from "../../../orchestration-v2/ProjectionStore.ts";
-import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
-import { VoiceToolkitRegistrationLive } from "../../McpHttpServer.ts";
-import { VoiceToolkitHandlersLive } from "./handlers.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as McpHttpServer from "../../McpHttpServer.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as VoiceHandlers from "./handlers.ts";
 import { VoiceToolkit } from "./tools.ts";
 
 const decodeLaunch = Schema.decodeUnknownEffect(Schema.fromJsonString(VoiceMcpLaunchResult));
@@ -90,7 +84,10 @@ const shell = (id: ThreadId, projectId: ProjectId) =>
     deletedAt: null,
   }) as unknown as OrchestrationV2ThreadShell;
 
-const said = (role: VoiceTranscriptEntry["role"], text: string): VoiceTranscriptEntry => ({
+const said = (
+  role: VoiceStore.VoiceTranscriptEntry["role"],
+  text: string,
+): VoiceStore.VoiceTranscriptEntry => ({
   generation: 1,
   role,
   text,
@@ -153,8 +150,35 @@ const claudeProvider = (instanceId: string, overrides: Partial<ServerProvider> =
     ...overrides,
   }) as unknown as ServerProvider;
 
+interface CallScope {
+  readonly providerInstanceId?: ProviderInstanceId;
+  readonly capabilities?: McpInvocationContext.McpInvocationScope["capabilities"];
+  /** Calls as an MCP client signed in from outside any thread. */
+  readonly outsideClient?: boolean;
+}
+
+const invocation = (
+  caller: ThreadId,
+  scope: CallScope = {},
+): McpInvocationContext.McpInvocationScope => ({
+  environmentId: EnvironmentId.make("environment"),
+  issuedAt: 0,
+  requestNamespace: "voice-test",
+  capabilities: scope.capabilities ?? new Set(["orchestration" as const]),
+  thread: scope.outsideClient
+    ? undefined
+    : {
+        threadId: caller,
+        providerSessionId: "session",
+        providerInstanceId: scope.providerInstanceId ?? ProviderInstanceId.make("codex"),
+      },
+  client: scope.outsideClient
+    ? { sessionId: "client-session", label: "Outside client", access: "full-access" }
+    : undefined,
+});
+
 interface HarnessOptions {
-  readonly transcript?: ReadonlyArray<VoiceTranscriptEntry>;
+  readonly transcript?: ReadonlyArray<VoiceStore.VoiceTranscriptEntry>;
   readonly approve?: boolean;
   readonly live?: boolean;
   readonly caller?: Partial<OrchestrationV2ThreadShell>;
@@ -171,7 +195,7 @@ interface HarnessOptions {
 }
 
 const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: HarnessOptions = {}) {
-  const sends: Array<ThreadManagementSendInput> = [];
+  const sends: Array<ThreadManagementService.ThreadManagementSendInput> = [];
   let launches = 0;
   let confirmations = 0;
   let recordReads = 0;
@@ -186,7 +210,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
   >();
   const dependencies = Layer.mergeAll(
     Layer.succeed(Crypto.Crypto, testCrypto),
-    Layer.mock(ProviderSessionManagerV2)({
+    Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
       get: () =>
         Effect.succeed(
           options.runtimeLive === false
@@ -196,7 +220,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
               } as ProviderAdapterV2SessionRuntime),
         ),
     }),
-    Layer.mock(VoiceOrchestrator)({
+    Layer.mock(VoiceOrchestrator.VoiceOrchestrator)({
       liveSession: (threadId) =>
         Effect.succeed(
           threadId === SESSION_THREAD && options.live !== false
@@ -259,7 +283,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
           );
         }),
     }),
-    Layer.mock(VoiceStore)({
+    Layer.mock(VoiceStore.VoiceStore)({
       recentTranscript: () => Effect.succeed(options.transcript ?? []),
       listAgenda: () => Effect.succeed(options.agenda ?? []),
       undeliveredNotices: () => Effect.succeed(options.notices ?? []),
@@ -269,7 +293,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
         }),
       openTopic: () => Effect.succeed(options.agenda![0]!),
     }),
-    Layer.mock(ThreadManagementService)({
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadShell: (id) =>
         Effect.succeed(
           id === TARGET_THREAD
@@ -314,10 +338,10 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
           return {
             run: { id: RunId.make("run-1") },
             delivery: "started",
-          } as unknown as ThreadManagementSendResult;
+          } as unknown as ThreadManagementService.ThreadManagementSendResult;
         }),
     }),
-    Layer.mock(ThreadLaunchService)({
+    Layer.mock(ThreadLaunchService.ThreadLaunchService)({
       launch: (input) =>
         Effect.sync(() => {
           expect(input.projectId).toBe(WORK_PROJECT);
@@ -332,7 +356,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
           return { threadId: ThreadId.make("new-thread"), projection: { runs: [] } } as never;
         }),
     }),
-    Layer.mock(ProviderRegistry)({
+    Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed(
         options.providers ?? [
           claudeProvider("claudeAgent", { enabled: false }),
@@ -340,7 +364,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
         ],
       ),
     }),
-    Layer.mock(ProjectService)({
+    Layer.mock(ProjectService.ProjectService)({
       getById: (projectId) =>
         Effect.succeed(
           Option.some({
@@ -355,41 +379,31 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
     }),
   );
   const toolkit = yield* VoiceToolkit.pipe(
-    Effect.provide(VoiceToolkitHandlersLive.pipe(Layer.provide(dependencies))),
+    Effect.provide(
+      McpToolAccess.HandlersLayer.layer(VoiceHandlers.layer).pipe(Layer.provide(dependencies)),
+    ),
   );
   const call = <Name extends keyof typeof VoiceToolkit.tools>(
     name: Name,
     params: Parameters<typeof toolkit.handle<Name>>[1],
     caller: ThreadId = SESSION_THREAD,
-    scope: Partial<McpInvocationScope> = {},
+    scope: CallScope = {},
   ) =>
     toolkit.handle(name, params).pipe(
       Stream.unwrap,
       Stream.runCollect,
       Effect.map((chunk) => chunk.at(-1)!),
-      Effect.provideService(McpInvocationContext, {
-        environmentId: EnvironmentId.make("environment"),
-        threadId: caller,
-        providerSessionId: "session",
-        providerInstanceId: ProviderInstanceId.make("codex"),
-        issuedAt: 0,
-        capabilities: new Set(["orchestration" as const]),
-        ...scope,
-      }),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(caller, scope)),
       Effect.provide(dependencies),
     );
   const mcpCall = (name: keyof typeof VoiceToolkit.tools, params: Record<string, unknown>) =>
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       return yield* server.callTool({ name, arguments: params }).pipe(
-        Effect.provideService(McpInvocationContext, {
-          environmentId: EnvironmentId.make("environment"),
-          threadId: SESSION_THREAD,
-          providerSessionId: "session",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          issuedAt: 0,
-          capabilities: new Set(["orchestration" as const]),
-        }),
+        Effect.provideService(
+          McpInvocationContext.McpInvocationContext,
+          invocation(SESSION_THREAD),
+        ),
         Effect.provideService(
           McpSchema.McpServerClient,
           McpSchema.McpServerClient.of({
@@ -408,7 +422,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
       );
     }).pipe(
       Effect.provide(
-        VoiceToolkitRegistrationLive.pipe(
+        McpHttpServer.layerVoiceToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provide(dependencies),
         ),
@@ -423,7 +437,7 @@ const makeHarness = Effect.fn("makeVoiceToolkitHarness")(function* (options: Har
     recordReads: () => recordReads,
     delivered,
     interruptions: () => interruptions,
-    setTranscript: (entries: ReadonlyArray<VoiceTranscriptEntry>) => {
+    setTranscript: (entries: ReadonlyArray<VoiceStore.VoiceTranscriptEntry>) => {
       transcript = entries;
     },
     replaceRun: () => {
@@ -508,7 +522,7 @@ describe("voice toolkit handlers", () => {
     }),
   );
 
-  for (const [label, options, caller, scope] of [
+  it.effect.each([
     ["ordinary caller", {}, OTHER_THREAD, {}],
     ["ended generation", { live: false }, SESSION_THREAD, {}],
     [
@@ -530,38 +544,37 @@ describe("voice toolkit handlers", () => {
       { providerInstanceId: ProviderInstanceId.make("other-codex") },
     ],
     ["missing capability", {}, SESSION_THREAD, { capabilities: new Set<never>() }],
+    ["outside client", {}, SESSION_THREAD, { outsideClient: true }],
     ["detached provider binding", { binding: "detached" }, SESSION_THREAD, {}],
     ["stopped provider binding", { binding: "stopped" }, SESSION_THREAD, {}],
     ["errored provider binding", { binding: "error" }, SESSION_THREAD, {}],
     ["missing provider thread", { binding: "missing_thread" }, SESSION_THREAD, {}],
     ["stopped runtime", { runtimeLive: false }, SESSION_THREAD, {}],
-  ] as const) {
-    it.effect(
-      `denies question discovery and reading for ${label} before reading target records`,
-      () =>
-        Effect.gen(function* () {
-          const harness = yield* makeHarness(options);
-          for (const result of [
-            yield* harness.call(
-              "voice_pending_question_list",
-              { threadId: TARGET_THREAD },
-              caller,
-              scope,
-            ),
-            yield* harness.call(
-              "voice_pending_question_read",
-              { threadId: TARGET_THREAD, requestId: RuntimeRequestId.make("pending") },
-              caller,
-              scope,
-            ),
-          ]) {
-            expect(result.isFailure).toBe(true);
-            expect(result.result).toMatchObject({ code: "capability_denied" });
-          }
-          expect(harness.recordReads()).toBe(0);
-        }),
-    );
-  }
+  ] as const)(
+    "denies question discovery and reading for %s before reading target records",
+    ([, options, caller, scope]) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(options);
+        for (const result of [
+          yield* harness.call(
+            "voice_pending_question_list",
+            { threadId: TARGET_THREAD },
+            caller,
+            scope,
+          ),
+          yield* harness.call(
+            "voice_pending_question_read",
+            { threadId: TARGET_THREAD, requestId: RuntimeRequestId.make("pending") },
+            caller,
+            scope,
+          ),
+        ]) {
+          expect(result.isFailure).toBe(true);
+          expect(result.result).toMatchObject({ code: "capability_denied" });
+        }
+        expect(harness.recordReads()).toBe(0);
+      }),
+  );
 
   it.effect(
     "refuses missing, resolved, expired, cancelled, approval and unmatched question IDs",

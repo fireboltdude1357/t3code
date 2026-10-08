@@ -50,7 +50,7 @@ import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
-import { VoiceToolkitHandlersLive } from "./toolkits/voice/handlers.ts";
+import * as VoiceHandlers from "./toolkits/voice/handlers.ts";
 import { VoiceToolkit } from "./toolkits/voice/tools.ts";
 import {
   DeviceScreenshotTool,
@@ -842,7 +842,7 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
-export const layerVoiceToolkit = toolkitRegistration(VoiceToolkit, VoiceToolkitHandlersLive);
+export const layerVoiceToolkit = toolkitRegistration(VoiceToolkit, VoiceHandlers.layer);
 
 export const layerMcpTransport = McpServer.layerHttp({
   name: "T3 Code",

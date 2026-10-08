@@ -153,6 +153,21 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
     ),
   );
 
+/**
+ * Acts for the calling voice session thread. Its realtime turns are untracked,
+ * so it has no live run to check, and the threads it acts on may run with
+ * broader modes than its own. The voice tools gate their writes themselves:
+ * the caller must own a live voice session, and each action needs the user's
+ * spoken or on-screen yes.
+ */
+export const actsForVoiceSession = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+  declare((params: P) =>
+    requireThreadCaller.pipe(
+      Effect.andThen(refuseReadOnlyClient),
+      Effect.flatMap(() => handle(params)),
+    ),
+  );
+
 /** Changes something that belongs to no thread, such as a pending upload or a scheduled task. */
 export const writes = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => orchestratingCaller.pipe(Effect.flatMap(() => handle(params))));

@@ -31,10 +31,10 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
-import { ServerConfig } from "../../config.ts";
-import { ProjectService } from "../../project/ProjectService.ts";
+import * as ServerConfig from "../../config.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import type { ProviderAdapterV2RealtimeCall } from "../ProviderAdapter.ts";
-import { ThreadManagementService } from "../ThreadManagementService.ts";
+import * as ThreadManagementService from "../ThreadManagementService.ts";
 import {
   confirmationReadback,
   makeVoiceConfirmationGate,
@@ -48,9 +48,9 @@ import {
   noticeForRequest,
   type VoiceNoticeDraft,
 } from "./VoiceNotificationPolicy.ts";
-import { VoiceSessionRegistry } from "./VoiceSessionRegistry.ts";
-import { type PreparedSessionThread, VoiceSessionService } from "./VoiceSessionService.ts";
-import { VoiceStore } from "./VoiceStore.ts";
+import * as VoiceSessionRegistry from "./VoiceSessionRegistry.ts";
+import * as VoiceSessionService from "./VoiceSessionService.ts";
+import * as VoiceStore from "./VoiceStore.ts";
 
 /** A session thread with a live realtime generation. */
 export interface LiveVoiceSession {
@@ -64,48 +64,47 @@ export interface LiveVoiceSession {
  * decides what to tell the user, and holds write actions until the user says
  * yes. Prompts only carry tone; this service owns state and policy.
  */
-export interface VoiceOrchestratorShape {
-  /** One generation. See `VoiceSessionOpenInput`. */
-  readonly open: (input: VoiceSessionOpenInput) => Stream.Stream<VoiceSessionEvent>;
-  /** The phone's Approve or Deny for a pending confirmation. */
-  readonly respond: (input: VoiceSessionRespondInput) => Effect.Effect<VoiceSessionRespondResult>;
-  /** The live session whose session thread is `threadId`, if any. */
-  readonly proposeAction: (input: {
-    readonly sessionThreadId?: ThreadId;
-    readonly action: VoiceConfirmAction;
-    readonly threadId?: ThreadId;
-    readonly title: string;
-    readonly detail: string;
-    readonly execute: Effect.Effect<string>;
-  }) => Effect.Effect<Option.Option<VoiceConfirmRequest>>;
-  readonly pendingConfirmations: (
-    sessionThreadId: ThreadId,
-  ) => Effect.Effect<ReadonlyArray<VoiceConfirmRequest>>;
-  readonly approveSpoken: (input: {
-    readonly sessionThreadId: ThreadId;
-    readonly requestId: string;
-  }) => Effect.Effect<VoiceMcpApproveResult>;
-  readonly claimSpokenSend: (input: {
-    readonly sessionThreadId: ThreadId;
-    readonly text: string;
-    readonly targetTitle: string;
-  }) => Effect.Effect<boolean>;
-  readonly liveSession: (threadId: ThreadId) => Effect.Effect<Option.Option<LiveVoiceSession>>;
-  /**
-   * Shows an Approve/Deny card on the phone and waits for it. Resolves false
-   * on Deny, on timeout, or when no generation is live.
-   */
-  readonly requestConfirmation: (input: {
-    readonly action: VoiceConfirmAction;
-    readonly threadId?: ThreadId;
-    readonly title: string;
-    readonly detail: string;
-  }) => Effect.Effect<boolean>;
-}
-
-export class VoiceOrchestrator extends Context.Service<VoiceOrchestrator, VoiceOrchestratorShape>()(
-  "t3/orchestration-v2/voice/VoiceOrchestrator",
-) {}
+export class VoiceOrchestrator extends Context.Service<
+  VoiceOrchestrator,
+  {
+    /** One generation. See `VoiceSessionOpenInput`. */
+    readonly open: (input: VoiceSessionOpenInput) => Stream.Stream<VoiceSessionEvent>;
+    /** The phone's Approve or Deny for a pending confirmation. */
+    readonly respond: (input: VoiceSessionRespondInput) => Effect.Effect<VoiceSessionRespondResult>;
+    /** The live session whose session thread is `threadId`, if any. */
+    readonly proposeAction: (input: {
+      readonly sessionThreadId?: ThreadId;
+      readonly action: VoiceConfirmAction;
+      readonly threadId?: ThreadId;
+      readonly title: string;
+      readonly detail: string;
+      readonly execute: Effect.Effect<string>;
+    }) => Effect.Effect<Option.Option<VoiceConfirmRequest>>;
+    readonly pendingConfirmations: (
+      sessionThreadId: ThreadId,
+    ) => Effect.Effect<ReadonlyArray<VoiceConfirmRequest>>;
+    readonly approveSpoken: (input: {
+      readonly sessionThreadId: ThreadId;
+      readonly requestId: string;
+    }) => Effect.Effect<VoiceMcpApproveResult>;
+    readonly claimSpokenSend: (input: {
+      readonly sessionThreadId: ThreadId;
+      readonly text: string;
+      readonly targetTitle: string;
+    }) => Effect.Effect<boolean>;
+    readonly liveSession: (threadId: ThreadId) => Effect.Effect<Option.Option<LiveVoiceSession>>;
+    /**
+     * Shows an Approve/Deny card on the phone and waits for it. Resolves false
+     * on Deny, on timeout, or when no generation is live.
+     */
+    readonly requestConfirmation: (input: {
+      readonly action: VoiceConfirmAction;
+      readonly threadId?: ThreadId;
+      readonly title: string;
+      readonly detail: string;
+    }) => Effect.Effect<boolean>;
+  }
+>()("t3/orchestration-v2/voice/VoiceOrchestrator") {}
 
 /**
  * The phone is asked to open the next generation after this long. A silent
@@ -184,16 +183,16 @@ interface Generation extends LiveVoiceSession {
 interface State {
   readonly live: Generation | undefined;
   /** A session thread prepared ahead of rotation, taken by the next open. */
-  readonly warm: PreparedSessionThread | undefined;
+  readonly warm: VoiceSessionService.PreparedSessionThread | undefined;
 }
 
 export const make = Effect.gen(function* () {
-  const threads = yield* ThreadManagementService;
-  const projects = yield* ProjectService;
-  const sessions = yield* VoiceSessionService;
-  const registry = yield* VoiceSessionRegistry;
-  const store = yield* VoiceStore;
-  const config = yield* ServerConfig;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const projects = yield* ProjectService.ProjectService;
+  const sessions = yield* VoiceSessionService.VoiceSessionService;
+  const registry = yield* VoiceSessionRegistry.VoiceSessionRegistry;
+  const store = yield* VoiceStore.VoiceStore;
+  const config = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
   const path = yield* Path.Path;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -305,7 +304,7 @@ export const make = Effect.gen(function* () {
     });
 
   const beginConfirmation = (
-    input: Parameters<VoiceOrchestratorShape["proposeAction"]>[0],
+    input: Parameters<VoiceOrchestrator["Service"]["proposeAction"]>[0],
     existingDecision?: Deferred.Deferred<boolean>,
   ) =>
     Effect.gen(function* () {
@@ -343,10 +342,10 @@ export const make = Effect.gen(function* () {
       return Option.some({ request, decided });
     });
 
-  const proposeAction: VoiceOrchestratorShape["proposeAction"] = (input) =>
+  const proposeAction: VoiceOrchestrator["Service"]["proposeAction"] = (input) =>
     beginConfirmation(input).pipe(Effect.map(Option.map(({ request }) => request)));
 
-  const requestConfirmation: VoiceOrchestratorShape["requestConfirmation"] = (input) =>
+  const requestConfirmation: VoiceOrchestrator["Service"]["requestConfirmation"] = (input) =>
     Effect.gen(function* () {
       const pending = yield* beginConfirmation({
         ...input,
@@ -355,10 +354,12 @@ export const make = Effect.gen(function* () {
       return Option.isNone(pending) ? false : yield* Deferred.await(pending.value.decided);
     });
 
-  const respond: VoiceOrchestratorShape["respond"] = ({ requestId, approved }) =>
+  const respond: VoiceOrchestrator["Service"]["respond"] = ({ requestId, approved }) =>
     resolveConfirmation(requestId, approved).pipe(Effect.map(({ accepted }) => ({ accepted })));
 
-  const pendingConfirmations: VoiceOrchestratorShape["pendingConfirmations"] = (sessionThreadId) =>
+  const pendingConfirmations: VoiceOrchestrator["Service"]["pendingConfirmations"] = (
+    sessionThreadId,
+  ) =>
     Effect.gen(function* () {
       const live = yield* currentSession(sessionThreadId);
       if (live === undefined) return [];
@@ -391,7 +392,7 @@ export const make = Effect.gen(function* () {
       return yield* isSpokenQuiet(live);
     });
 
-  const claimSpokenSend: VoiceOrchestratorShape["claimSpokenSend"] = (input) =>
+  const claimSpokenSend: VoiceOrchestrator["Service"]["claimSpokenSend"] = (input) =>
     Effect.gen(function* () {
       const live = yield* currentSession(input.sessionThreadId);
       if (live === undefined || !(yield* awaitSpokenQuiet(live))) return false;
@@ -407,7 +408,7 @@ export const make = Effect.gen(function* () {
       });
     });
 
-  const approveSpoken: VoiceOrchestratorShape["approveSpoken"] = (input) =>
+  const approveSpoken: VoiceOrchestrator["Service"]["approveSpoken"] = (input) =>
     Effect.gen(function* () {
       const live = yield* currentSession(input.sessionThreadId);
       const pending = (yield* Ref.get(confirmations)).get(input.requestId);
@@ -1048,7 +1049,7 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const open: VoiceOrchestratorShape["open"] = (input) =>
+  const open: VoiceOrchestrator["Service"]["open"] = (input) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const events = yield* Effect.acquireRelease(

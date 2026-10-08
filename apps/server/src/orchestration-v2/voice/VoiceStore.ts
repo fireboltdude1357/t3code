@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 /** One final transcript part from a realtime session. */
 export interface VoiceTranscriptEntry {
@@ -18,62 +18,63 @@ export interface VoiceTranscriptEntry {
 
 /**
  * The voice orchestrator's memory: SQLite that code owns. It is not thread
- * history, so it lives in plain tables (migration 057), not domain events.
+ * history, so it lives in plain tables (migration 061), not domain events.
  * Every session generation reads its briefing from here, so a rotation or
  * reconnect loses nothing that matters.
  */
-export interface VoiceStoreShape {
-  /** Next generation number, persisted so it keeps increasing across restarts. */
-  readonly nextGeneration: Effect.Effect<number>;
+export class VoiceStore extends Context.Service<
+  VoiceStore,
+  {
+    /** Next generation number, persisted so it keeps increasing across restarts. */
+    readonly nextGeneration: Effect.Effect<number>;
 
-  /** Opens or refreshes the agenda item for a thread (one open item per thread). */
-  readonly openThreadItem: (input: {
-    readonly threadId: ThreadId;
-    readonly title: string;
-    readonly detail: string;
-  }) => Effect.Effect<VoiceAgendaItem>;
-  readonly closeThreadItem: (threadId: ThreadId) => Effect.Effect<void>;
-  readonly openTopic: (input: {
-    readonly title: string;
-    readonly detail: string;
-  }) => Effect.Effect<VoiceAgendaItem>;
-  /** Closes any item by id. False when it does not exist or is already closed. */
-  readonly closeItem: (id: string) => Effect.Effect<boolean>;
-  readonly listAgenda: (input?: {
-    readonly status?: VoiceAgendaItem["status"];
-  }) => Effect.Effect<ReadonlyArray<VoiceAgendaItem>>;
+    /** Opens or refreshes the agenda item for a thread (one open item per thread). */
+    readonly openThreadItem: (input: {
+      readonly threadId: ThreadId;
+      readonly title: string;
+      readonly detail: string;
+    }) => Effect.Effect<VoiceAgendaItem>;
+    readonly closeThreadItem: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly openTopic: (input: {
+      readonly title: string;
+      readonly detail: string;
+    }) => Effect.Effect<VoiceAgendaItem>;
+    /** Closes any item by id. False when it does not exist or is already closed. */
+    readonly closeItem: (id: string) => Effect.Effect<boolean>;
+    readonly listAgenda: (input?: {
+      readonly status?: VoiceAgendaItem["status"];
+    }) => Effect.Effect<ReadonlyArray<VoiceAgendaItem>>;
 
-  /**
-   * Records a notice unless `dedupeKey` was already recorded. Returns whether
-   * it was new, so the same run event is never announced twice.
-   */
-  readonly recordNotice: (
-    notice: VoiceNotice & { readonly dedupeKey: string },
-  ) => Effect.Effect<boolean>;
-  readonly markDelivered: (noticeIds: ReadonlyArray<string>) => Effect.Effect<void>;
-  readonly resolveRequestNotice: (
-    threadId: ThreadId,
-    requestId: RuntimeRequestId,
-  ) => Effect.Effect<void>;
-  /** Active questions and approvals, including notices already delivered. Newest first. */
-  readonly pendingRequestNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
-  /** Restores known pending notices and resolves absent notices, including unknown legacy IDs. */
-  readonly reconcileRequestNotices: (
-    pending: ReadonlyArray<{ readonly threadId: ThreadId; readonly requestId: RuntimeRequestId }>,
-  ) => Effect.Effect<void>;
-  /** Oldest first. */
-  readonly undeliveredNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
-  /** Newest first. */
-  readonly recentNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
+    /**
+     * Records a notice unless `dedupeKey` was already recorded. Returns whether
+     * it was new, so the same run event is never announced twice.
+     */
+    readonly recordNotice: (
+      notice: VoiceNotice & { readonly dedupeKey: string },
+    ) => Effect.Effect<boolean>;
+    readonly markDelivered: (noticeIds: ReadonlyArray<string>) => Effect.Effect<void>;
+    readonly resolveRequestNotice: (
+      threadId: ThreadId,
+      requestId: RuntimeRequestId,
+    ) => Effect.Effect<void>;
+    /** Active questions and approvals, including notices already delivered. Newest first. */
+    readonly pendingRequestNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
+    /** Restores known pending notices and resolves absent notices, including unknown legacy IDs. */
+    readonly reconcileRequestNotices: (
+      pending: ReadonlyArray<{ readonly threadId: ThreadId; readonly requestId: RuntimeRequestId }>,
+    ) => Effect.Effect<void>;
+    /** Oldest first. */
+    readonly undeliveredNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
+    /** Newest first. */
+    readonly recentNotices: (limit: number) => Effect.Effect<ReadonlyArray<VoiceNotice>>;
 
-  readonly appendTranscript: (entry: VoiceTranscriptEntry) => Effect.Effect<void>;
-  /** Oldest first, the last `limit` entries across generations. */
-  readonly recentTranscript: (limit: number) => Effect.Effect<ReadonlyArray<VoiceTranscriptEntry>>;
-}
-
-export class VoiceStore extends Context.Service<VoiceStore, VoiceStoreShape>()(
-  "t3/orchestration-v2/voice/VoiceStore",
-) {}
+    readonly appendTranscript: (entry: VoiceTranscriptEntry) => Effect.Effect<void>;
+    /** Oldest first, the last `limit` entries across generations. */
+    readonly recentTranscript: (
+      limit: number,
+    ) => Effect.Effect<ReadonlyArray<VoiceTranscriptEntry>>;
+  }
+>()("t3/orchestration-v2/voice/VoiceStore") {}
 
 const decodeAgenda = Schema.decodeUnknownEffect(
   Schema.Array(
@@ -167,7 +168,7 @@ export const layer = Layer.effect(
         : generation;
     }).pipe(Effect.orDie);
 
-    const openThreadItem: VoiceStoreShape["openThreadItem"] = (input) =>
+    const openThreadItem: VoiceStore["Service"]["openThreadItem"] = (input) =>
       Effect.gen(function* () {
         const id = yield* newId("voice-agenda");
         const now = iso(yield* DateTime.now);
@@ -181,7 +182,7 @@ export const layer = Layer.effect(
         return yield* firstAgendaItem(rows);
       }).pipe(Effect.orDie);
 
-    const closeThreadItem: VoiceStoreShape["closeThreadItem"] = (threadId) =>
+    const closeThreadItem: VoiceStore["Service"]["closeThreadItem"] = (threadId) =>
       Effect.gen(function* () {
         const now = iso(yield* DateTime.now);
         yield* sql`
@@ -190,7 +191,7 @@ export const layer = Layer.effect(
         `;
       }).pipe(Effect.orDie);
 
-    const openTopic: VoiceStoreShape["openTopic"] = (input) =>
+    const openTopic: VoiceStore["Service"]["openTopic"] = (input) =>
       Effect.gen(function* () {
         const id = yield* newId("voice-topic");
         const now = iso(yield* DateTime.now);
@@ -202,7 +203,7 @@ export const layer = Layer.effect(
         return yield* firstAgendaItem(rows);
       }).pipe(Effect.orDie);
 
-    const closeItem: VoiceStoreShape["closeItem"] = (id) =>
+    const closeItem: VoiceStore["Service"]["closeItem"] = (id) =>
       Effect.gen(function* () {
         const now = iso(yield* DateTime.now);
         const rows = yield* sql<{ readonly id: string }>`
@@ -214,7 +215,7 @@ export const layer = Layer.effect(
       }).pipe(Effect.orDie);
 
     // Oldest first, so the briefing reads the agenda in the order it grew.
-    const listAgenda: VoiceStoreShape["listAgenda"] = (input) =>
+    const listAgenda: VoiceStore["Service"]["listAgenda"] = (input) =>
       (input?.status === undefined
         ? sql`SELECT ${agendaColumns} FROM voice_agenda ORDER BY opened_at ASC, item_id ASC`
         : sql`
@@ -224,7 +225,7 @@ export const layer = Layer.effect(
           `
       ).pipe(Effect.flatMap(decodeAgenda), Effect.orDie);
 
-    const recordNotice: VoiceStoreShape["recordNotice"] = (notice) =>
+    const recordNotice: VoiceStore["Service"]["recordNotice"] = (notice) =>
       sql`
         INSERT INTO voice_notice_ledger
           (notice_id, dedupe_key, kind, thread_id, thread_title, request_id, text, created_at, delivered_at, resolved_at)
@@ -237,7 +238,7 @@ export const layer = Layer.effect(
         Effect.orDie,
       );
 
-    const markDelivered: VoiceStoreShape["markDelivered"] = (noticeIds) =>
+    const markDelivered: VoiceStore["Service"]["markDelivered"] = (noticeIds) =>
       noticeIds.length === 0
         ? Effect.void
         : Effect.gen(function* () {
@@ -272,7 +273,10 @@ export const layer = Layer.effect(
       }
     });
 
-    const resolveRequestNotice: VoiceStoreShape["resolveRequestNotice"] = (threadId, requestId) =>
+    const resolveRequestNotice: VoiceStore["Service"]["resolveRequestNotice"] = (
+      threadId,
+      requestId,
+    ) =>
       Effect.gen(function* () {
         const now = iso(yield* DateTime.now);
         const resolved = yield* sql<Pick<VoiceNotice, "threadId" | "kind" | "text">>`
@@ -284,7 +288,7 @@ export const layer = Layer.effect(
         yield* refreshResolvedAgenda(resolved);
       }).pipe(sql.withTransaction, Effect.orDie);
 
-    const pendingRequestNotices: VoiceStoreShape["pendingRequestNotices"] = (limit) =>
+    const pendingRequestNotices: VoiceStore["Service"]["pendingRequestNotices"] = (limit) =>
       sql`
         SELECT ${noticeColumns} FROM voice_notice_ledger
         WHERE kind IN ('input', 'approval') AND resolved_at IS NULL
@@ -292,7 +296,7 @@ export const layer = Layer.effect(
         LIMIT ${limit}
       `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
 
-    const reconcileRequestNotices: VoiceStoreShape["reconcileRequestNotices"] = (pending) =>
+    const reconcileRequestNotices: VoiceStore["Service"]["reconcileRequestNotices"] = (pending) =>
       Effect.gen(function* () {
         const now = iso(yield* DateTime.now);
         const pendingJson = encodePendingRequests(pending);
@@ -326,7 +330,7 @@ export const layer = Layer.effect(
         yield* refreshResolvedAgenda(resolved);
       }).pipe(sql.withTransaction, Effect.orDie);
 
-    const undeliveredNotices: VoiceStoreShape["undeliveredNotices"] = (limit) =>
+    const undeliveredNotices: VoiceStore["Service"]["undeliveredNotices"] = (limit) =>
       sql`
         SELECT ${noticeColumns} FROM voice_notice_ledger
         WHERE delivered_at IS NULL
@@ -335,7 +339,7 @@ export const layer = Layer.effect(
         LIMIT ${limit}
       `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
 
-    const recentNotices: VoiceStoreShape["recentNotices"] = (limit) =>
+    const recentNotices: VoiceStore["Service"]["recentNotices"] = (limit) =>
       sql`
         SELECT ${noticeColumns} FROM voice_notice_ledger
         WHERE kind NOT IN ('input', 'approval') OR resolved_at IS NULL
@@ -343,13 +347,13 @@ export const layer = Layer.effect(
         LIMIT ${limit}
       `.pipe(Effect.flatMap(decodeNotices), Effect.orDie);
 
-    const appendTranscript: VoiceStoreShape["appendTranscript"] = (entry) =>
+    const appendTranscript: VoiceStore["Service"]["appendTranscript"] = (entry) =>
       sql`
         INSERT INTO voice_transcript (generation, role, text, at)
         VALUES (${entry.generation}, ${entry.role}, ${entry.text}, ${iso(entry.at)})
       `.pipe(Effect.asVoid, Effect.orDie);
 
-    const recentTranscript: VoiceStoreShape["recentTranscript"] = (limit) =>
+    const recentTranscript: VoiceStore["Service"]["recentTranscript"] = (limit) =>
       sql`
         SELECT generation, role, text, at FROM (
           SELECT entry_id, generation, role, text, at FROM voice_transcript

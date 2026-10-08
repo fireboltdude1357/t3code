@@ -25,9 +25,10 @@ import {
   VoiceMcpTopicOpenResult,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
 
-import { McpInvocationContext } from "../../McpInvocationContext.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 /**
  * Tools for the voice orchestrator's session thread. They read and act across
@@ -37,7 +38,7 @@ import { McpInvocationContext } from "../../McpInvocationContext.ts";
 const shared = {
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
-  dependencies: [McpInvocationContext, Crypto.Crypto],
+  dependencies: [McpInvocationContext.McpInvocationContext, Crypto.Crypto],
 };
 
 const VoiceThreadsTool = Tool.make("voice_threads", {

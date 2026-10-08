@@ -6,14 +6,14 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
-import { layer as voiceStoreLayer, VoiceStore } from "./VoiceStore.ts";
+import * as VoiceStore from "./VoiceStore.ts";
 
-const StoreLayer = voiceStoreLayer.pipe(Layer.provide(NodeCrypto.layer));
-const TestLayer = StoreLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
+const StoreLayer = VoiceStore.layer.pipe(Layer.provide(NodeCrypto.layer));
+const TestLayer = StoreLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
 
 const threadA = ThreadId.make("thread-a");
 const threadB = ThreadId.make("thread-b");
@@ -45,7 +45,7 @@ const requestNotice = (input: {
 
 it.effect("persists an increasing generation number", () =>
   Effect.gen(function* () {
-    const store = yield* VoiceStore;
+    const store = yield* VoiceStore.VoiceStore;
     assert.strictEqual(yield* store.nextGeneration, 1);
     assert.strictEqual(yield* store.nextGeneration, 2);
   }).pipe(Effect.provide(TestLayer)),
@@ -53,7 +53,7 @@ it.effect("persists an increasing generation number", () =>
 
 it.effect("keeps one open agenda item per thread and reopens after close", () =>
   Effect.gen(function* () {
-    const store = yield* VoiceStore;
+    const store = yield* VoiceStore.VoiceStore;
     const first = yield* store.openThreadItem({ threadId: threadA, title: "A", detail: "failed" });
     const refreshed = yield* store.openThreadItem({
       threadId: threadA,
@@ -85,7 +85,7 @@ it.effect("keeps one open agenda item per thread and reopens after close", () =>
 
 it.effect("opens and closes topics by id", () =>
   Effect.gen(function* () {
-    const store = yield* VoiceStore;
+    const store = yield* VoiceStore.VoiceStore;
     const topic = yield* store.openTopic({ title: "Remind me", detail: "about X" });
     assert.strictEqual(topic.kind, "topic");
     assert.isNull(topic.threadId);
@@ -97,7 +97,7 @@ it.effect("opens and closes topics by id", () =>
 
 it.effect("dedupes notices and tracks delivery", () =>
   Effect.gen(function* () {
-    const store = yield* VoiceStore;
+    const store = yield* VoiceStore.VoiceStore;
     assert.isTrue(yield* store.recordNotice(notice("n1", "k1", "2026-09-30T10:00:00.000Z")));
     assert.isFalse(yield* store.recordNotice(notice("n1b", "k1", "2026-09-30T10:00:01.000Z")));
     assert.isTrue(yield* store.recordNotice(notice("n2", "k2", "2026-09-30T10:00:02.000Z")));
@@ -124,7 +124,7 @@ it.effect("dedupes notices and tracks delivery", () =>
 
 it.effect("returns the last transcript entries oldest first", () =>
   Effect.gen(function* () {
-    const store = yield* VoiceStore;
+    const store = yield* VoiceStore.VoiceStore;
     for (const [index, text] of ["one", "two", "three"].entries()) {
       yield* store.appendTranscript({
         generation: index < 2 ? 1 : 2,
@@ -147,7 +147,7 @@ it.effect("returns the last transcript entries oldest first", () =>
 
 it.effect("resolves only the exact request and preserves history, dedupe, and later requests", () =>
   Effect.gen(function* () {
-    const store = yield* VoiceStore;
+    const store = yield* VoiceStore.VoiceStore;
     const sql = yield* SqlClient.SqlClient;
     const requestId = RuntimeRequestId.make("request:old:input");
     const laterRequestId = RuntimeRequestId.make("request:old:input:later");
@@ -230,7 +230,7 @@ it.effect(
   "refreshes matching attention details without closing conversations or replacing newer details",
   () =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       const requestId = RuntimeRequestId.make("request:agenda");
       const threadCompleted = ThreadId.make("thread-completed");
       const threadFailed = ThreadId.make("thread-failed");
@@ -322,10 +322,11 @@ it.effect(
     }).pipe(Effect.provide(TestLayer)),
 );
 
-for (const resolution of ["direct", "reconcile"] as const) {
-  it.effect(`preserves identical pending agenda text during ${resolution} resolution`, () =>
+it.effect.each(["direct", "reconcile"] as const)(
+  "preserves identical pending agenda text during %s resolution",
+  (resolution) =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       for (const kind of ["input", "approval"] as const) {
         const threadId = kind === "input" ? threadA : threadB;
         const text = kind === "input" ? "Thread is waiting on you." : "Thread needs approval.";
@@ -391,14 +392,13 @@ for (const resolution of ["direct", "reconcile"] as const) {
         assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
       }
     }).pipe(Effect.provide(TestLayer)),
-  );
-}
+);
 
 it.effect("persists request identity and resolution across store instances", () =>
   Effect.gen(function* () {
     const requestId = RuntimeRequestId.make("persisted:request");
     yield* Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       yield* store.recordNotice(
         requestNotice({
           id: "persisted",
@@ -412,24 +412,24 @@ it.effect("persists request identity and resolution across store instances", () 
     }).pipe(Effect.provide(StoreLayer));
 
     yield* Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       assert.strictEqual((yield* store.pendingRequestNotices(10))[0]?.requestId, requestId);
       yield* store.resolveRequestNotice(threadA, requestId);
     }).pipe(Effect.provide(StoreLayer));
 
     yield* Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
       assert.deepStrictEqual(yield* store.recentNotices(10), []);
     }).pipe(Effect.provide(StoreLayer));
-  }).pipe(Effect.provide(SqlitePersistenceMemory)),
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect(
   "reconciles missed resolutions and unknown legacy notices against exact request pairs",
   () =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       const requestId = RuntimeRequestId.make("request:current");
       const staleRequestId = RuntimeRequestId.make("request:stale");
       for (const [index, input] of [
@@ -478,7 +478,7 @@ it.effect(
   "restores omitted pending requests before settling absent requests and preserves delivery history",
   () =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       const sql = yield* SqlClient.SqlClient;
       for (const kind of ["input", "approval"] as const) {
         const threadId = kind === "input" ? threadA : threadB;
@@ -576,7 +576,7 @@ it.effect(
   "restoring requests preserves completion, failure, newer, and other-kind agenda details",
   () =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       const requests = [
         { kind: "input" as const, detail: "Thread finished." },
         { kind: "approval" as const, detail: "Thread failed." },
@@ -625,7 +625,7 @@ it.effect(
 it.effect("migrates legacy request keys using exact thread prefixes and kind suffixes", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 57 });
+    yield* runMigrations({ toMigrationInclusive: 61 });
     const threadId = ThreadId.make("thread:request:Ω_%:input");
     const requestId = RuntimeRequestId.make("request:request:λ:approval:input");
     const createdAt = "2026-09-30T10:00:00.000Z";
@@ -673,10 +673,10 @@ it.effect("migrates legacy request keys using exact thread prefixes and kind suf
           ${createdAt}, ${deliveredAt})
       `;
     }
-    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 58 }), [
-      [58, "VoiceNoticeRequests"],
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 62 }), [
+      [62, "VoiceNoticeRequests"],
     ]);
-    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 58 }), []);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 62 }), []);
     const migrated = yield* sql<{
       readonly id: string;
       readonly key: string;
@@ -702,7 +702,7 @@ it.effect("migrates legacy request keys using exact thread prefixes and kind suf
     );
 
     yield* Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       assert.strictEqual((yield* store.pendingRequestNotices(20)).length, 7);
       yield* store.resolveRequestNotice(threadId, requestId);
       yield* store.reconcileRequestNotices([]);

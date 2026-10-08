@@ -27,23 +27,15 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../config.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { ProjectService } from "../../project/ProjectService.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import type { ProviderAdapterV2RealtimeCall } from "../ProviderAdapter.ts";
-import { ThreadManagementService } from "../ThreadManagementService.ts";
-import {
-  layer as orchestratorLayer,
-  ROTATE_AFTER,
-  VoiceOrchestrator,
-} from "./VoiceOrchestrator.ts";
+import * as ThreadManagementService from "../ThreadManagementService.ts";
+import * as VoiceOrchestrator from "./VoiceOrchestrator.ts";
 import { confirmationReadback } from "./VoiceConfirmation.ts";
 import * as VoiceSessionRegistry from "./VoiceSessionRegistry.ts";
-import {
-  type PreparedSessionThread,
-  VoiceSessionError,
-  VoiceSessionService,
-} from "./VoiceSessionService.ts";
-import { layer as voiceStoreLayer, VoiceStore } from "./VoiceStore.ts";
+import * as VoiceSessionService from "./VoiceSessionService.ts";
+import * as VoiceStore from "./VoiceStore.ts";
 
 const workThreadId = ThreadId.make("thread-work");
 const voiceProjectId = ProjectId.make("project-voice");
@@ -82,11 +74,15 @@ const pendingApproval = {
  * thread, project and session services. Returns the recorders the tests read.
  */
 const makeHarness = Effect.gen(function* () {
-  const prepareWork = yield* Ref.make<Effect.Effect<void, VoiceSessionError>>(Effect.void);
+  const prepareWork = yield* Ref.make<Effect.Effect<void, VoiceSessionService.VoiceSessionError>>(
+    Effect.void,
+  );
   const briefingWork = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const realtimeWork = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const transcriptWork = yield* Ref.make<
-    NonNullable<Parameters<PreparedSessionThread["startRealtimeCall"]>[0]["onTranscript"]>
+    NonNullable<
+      Parameters<VoiceSessionService.PreparedSessionThread["startRealtimeCall"]>[0]["onTranscript"]
+    >
   >(() => Effect.void);
   const activityWork = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const stopped = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
@@ -112,10 +108,10 @@ const makeHarness = Effect.gen(function* () {
   const commandDispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
 
   const store = Layer.effect(
-    VoiceStore,
+    VoiceStore.VoiceStore,
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
-      return VoiceStore.of({
+      const store = yield* VoiceStore.VoiceStore;
+      return VoiceStore.VoiceStore.of({
         ...store,
         pendingRequestNotices: (limit) =>
           Effect.gen(function* () {
@@ -127,7 +123,7 @@ const makeHarness = Effect.gen(function* () {
           }),
       });
     }),
-  ).pipe(Layer.provide(voiceStoreLayer));
+  ).pipe(Layer.provide(VoiceStore.layer));
 
   const fakeCall = (sessionThreadId: ThreadId): ProviderAdapterV2RealtimeCall => ({
     sdpAnswer: `answer:${sessionThreadId}`,
@@ -143,40 +139,43 @@ const makeHarness = Effect.gen(function* () {
       }),
   });
 
-  const sessionService = Layer.mock(VoiceSessionService)({
+  const sessionService = Layer.mock(VoiceSessionService.VoiceSessionService)({
     prepare: () =>
       Ref.get(prepareWork).pipe(
         Effect.flatten,
         Effect.andThen(
-          Ref.modify(prepared, (current): [PreparedSessionThread, ReadonlyArray<ThreadId>] => {
-            const sessionThreadId = ThreadId.make(`session-${current.length + 1}`);
-            return [
-              {
-                sessionThreadId,
-                providerThread: {
-                  id: `provider-${sessionThreadId}`,
-                } as unknown as OrchestrationV2ProviderThread,
-                startRealtimeCall: (input) =>
-                  Effect.gen(function* () {
-                    yield* Ref.set(transcriptWork, input.onTranscript ?? (() => Effect.void));
-                    yield* Ref.set(activityWork, input.onActivity ?? Effect.void);
-                    if (yield* Ref.getAndSet(holdCall, false)) {
-                      yield* Queue.offer(callStarted, sessionThreadId);
-                      yield* Deferred.await(releaseCall);
-                    }
-                    yield* Ref.get(realtimeWork).pipe(Effect.flatten);
-                    return fakeCall(sessionThreadId);
-                  }),
-              },
-              [...current, sessionThreadId],
-            ];
-          }),
+          Ref.modify(
+            prepared,
+            (current): [VoiceSessionService.PreparedSessionThread, ReadonlyArray<ThreadId>] => {
+              const sessionThreadId = ThreadId.make(`session-${current.length + 1}`);
+              return [
+                {
+                  sessionThreadId,
+                  providerThread: {
+                    id: `provider-${sessionThreadId}`,
+                  } as unknown as OrchestrationV2ProviderThread,
+                  startRealtimeCall: (input) =>
+                    Effect.gen(function* () {
+                      yield* Ref.set(transcriptWork, input.onTranscript ?? (() => Effect.void));
+                      yield* Ref.set(activityWork, input.onActivity ?? Effect.void);
+                      if (yield* Ref.getAndSet(holdCall, false)) {
+                        yield* Queue.offer(callStarted, sessionThreadId);
+                        yield* Deferred.await(releaseCall);
+                      }
+                      yield* Ref.get(realtimeWork).pipe(Effect.flatten);
+                      return fakeCall(sessionThreadId);
+                    }),
+                },
+                [...current, sessionThreadId],
+              ];
+            },
+          ),
         ),
       ),
     release: (sessionThreadId) => Ref.update(released, (current) => [...current, sessionThreadId]),
   });
 
-  const threadManagement = Layer.mock(ThreadManagementService)({
+  const threadManagement = Layer.mock(ThreadManagementService.ThreadManagementService)({
     streamDomainEvents: Stream.fromQueue(domainEvents).pipe(
       Stream.tap((event) =>
         Effect.gen(function* () {
@@ -230,13 +229,13 @@ const makeHarness = Effect.gen(function* () {
       ),
   });
 
-  const projects = Layer.mock(ProjectService)({
+  const projects = Layer.mock(ProjectService.ProjectService)({
     bootstrap: () =>
       Effect.succeed({ project: { id: voiceProjectId } as unknown as Project, created: true }),
     listShells: () => Effect.succeed([]),
   });
 
-  const layer = orchestratorLayer.pipe(
+  const layer = VoiceOrchestrator.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         store,
@@ -247,7 +246,7 @@ const makeHarness = Effect.gen(function* () {
         ServerConfig.layerTest(process.cwd(), { prefix: "t3code-voice-orchestrator-" }),
       ),
     ),
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(NodeServices.layer),
   );
   return {
@@ -295,7 +294,7 @@ const settle = TestClock.withLive(Effect.sleep(Duration.millis(20)));
 
 /** Starts consuming immediately, so tests can observe startup while work is blocked. */
 const startCall = Effect.gen(function* () {
-  const orchestrator = yield* VoiceOrchestrator;
+  const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
   const events = yield* Queue.unbounded<VoiceSessionEvent>();
   const fiber = yield* orchestrator
     .open({ sdpOffer: "v=0 offer", startupProgress: true, supportsRequestNotices: true })
@@ -348,7 +347,7 @@ const takeUntilType = <T extends VoiceSessionEvent["type"]>(
 it.effect("announces a completed run once, in a pause, and marks it delivered", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       const { events } = yield* openCall;
 
       yield* Queue.offer(harness.domainEvents, completedRun);
@@ -398,7 +397,7 @@ it.effect("a second open rotates the first generation out and releases its threa
 it.effect("confirmations resolve from the phone, or false after two minutes", () =>
   withOrchestrator(() =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       const { events } = yield* openCall;
       const confirm = (title: string) =>
         orchestrator
@@ -442,7 +441,9 @@ it.effect("prewarms the next session thread and the next open uses it", () =>
       const first = yield* openCall;
       assert.strictEqual((yield* Ref.get(harness.prepared)).length, 1);
 
-      yield* TestClock.adjust(Duration.subtract(ROTATE_AFTER, Duration.minutes(2)));
+      yield* TestClock.adjust(
+        Duration.subtract(VoiceOrchestrator.ROTATE_AFTER, Duration.minutes(2)),
+      );
       yield* settle;
       const afterPrewarm = yield* Ref.get(harness.prepared);
       assert.strictEqual(afterPrewarm.length, 2);
@@ -467,7 +468,7 @@ it.effect("prewarms the next session thread and the next open uses it", () =>
 it.effect("approving a runtime request on the phone dispatches the response", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       const { events } = yield* openCall;
       yield* Queue.offer(harness.domainEvents, pendingApproval);
       const confirm = yield* takeUntilType(events, "confirm");
@@ -511,7 +512,7 @@ it.effect(
   () =>
     withOrchestrator((harness) =>
       Effect.gen(function* () {
-        const orchestrator = yield* VoiceOrchestrator;
+        const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
         yield* Ref.set(harness.requests, [pendingApproval.payload]);
         const first = yield* openCall;
         assert.strictEqual(first.snapshot.notices[0]?.requestId, approvalRequestId);
@@ -565,7 +566,7 @@ it.effect(
         assert.deepStrictEqual(yield* Queue.takeAll(first.events), [
           { type: "ended", reason: "rotated" },
         ]);
-        const orchestrator = yield* VoiceOrchestrator;
+        const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
         assert.deepStrictEqual(
           yield* orchestrator.respond({ requestId: confirm.request.id, approved: true }),
           { accepted: false },
@@ -581,7 +582,7 @@ it.effect(
 it.effect("a denied approval is not prompted again until reconnect", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       yield* Ref.set(harness.requests, [pendingApproval.payload]);
       const first = yield* openCall;
       const confirm = yield* takeUntilType(first.events, "confirm");
@@ -656,7 +657,7 @@ it.effect("settlement during setup prevents an approval prompt", () =>
 it.effect("settlement closes an approval gate and a stale pending event cannot restore it", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       yield* Ref.set(harness.requests, [pendingApproval.payload]);
       const first = yield* openCall;
       const confirm = yield* takeUntilType(first.events, "confirm");
@@ -719,7 +720,7 @@ it.effect(
 
         yield* Queue.offer(harness.domainEvents, inputEvent("question-1", "resolved"));
         assert.deepStrictEqual((yield* takeUntilType(events, "request_notices")).notices, []);
-        const store = yield* VoiceStore;
+        const store = yield* VoiceStore.VoiceStore;
         assert.deepStrictEqual(yield* store.undeliveredNotices(10), []);
 
         yield* Queue.offer(harness.domainEvents, inputEvent("question-2"));
@@ -748,7 +749,7 @@ it.effect("reconnect reconciles a resolution missing from the event feed", () =>
       yield* Ref.set(harness.requests, [{ ...pending.payload, status: "resolved" }]);
       const reconnected = yield* openCall;
       assert.deepStrictEqual(reconnected.snapshot.notices, []);
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
       assert.deepStrictEqual(yield* store.undeliveredNotices(10), []);
     }),
@@ -758,7 +759,7 @@ it.effect("reconnect reconciles a resolution missing from the event feed", () =>
 it.effect("reconnect restores an unarchived pending question and settlement still clears it", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       const first = yield* openCall;
       yield* Queue.offer(harness.domainEvents, inputEvent("question-archived"));
       const pending = yield* takeUntilType(first.events, "request_notices");
@@ -794,7 +795,7 @@ it.effect("reconnect restores an unarchived pending question and settlement stil
 it.effect("a legacy replacement never receives an in-flight request snapshot", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       const first = yield* openCall;
       const legacyEvents = yield* Queue.unbounded<VoiceSessionEvent>();
       yield* Ref.set(harness.holdCall, true);
@@ -825,7 +826,7 @@ it.effect("a legacy replacement never receives an in-flight request snapshot", (
       yield* orchestrator.respond({ requestId: next.request.id, approved: false });
       assert.isFalse(yield* Fiber.join(confirmation));
       assert.strictEqual((yield* Queue.take(legacyEvents)).type, "confirm_resolved");
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       assert.deepStrictEqual(
         (yield* store.pendingRequestNotices(10)).map((notice) => notice.requestId),
         [RuntimeRequestId.make("question-generation-race")],
@@ -859,7 +860,7 @@ it.effect("a delayed speech completion cannot restore an answered question card"
         assert.strictEqual((yield* takeUntilType(events, "notice")).notice.kind, "completed");
       }
       assert.strictEqual(yield* Queue.size(events), 0);
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
     }),
   ),
@@ -870,7 +871,7 @@ it.effect(
   () =>
     withOrchestrator((harness) =>
       Effect.gen(function* () {
-        const orchestrator = yield* VoiceOrchestrator;
+        const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
         const events = yield* Queue.unbounded<VoiceSessionEvent>();
         yield* orchestrator.open({ sdpOffer: "v=0 legacy offer" }).pipe(
           Stream.runForEach((event) => Queue.offer(events, event)),
@@ -895,7 +896,7 @@ it.effect(
 it.effect("a slow older open preserves the newer generation's pending approval", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       const enteredRealtime = yield* Deferred.make<void>();
       const finishRealtime = yield* Deferred.make<void>();
       yield* Ref.set(
@@ -986,7 +987,7 @@ it.effect("a failed setup ends after progress without emitting later stages or a
     Effect.gen(function* () {
       yield* Ref.set(
         harness.prepareWork,
-        Effect.fail(new VoiceSessionError({ message: "Setup failed." })),
+        Effect.fail(new VoiceSessionService.VoiceSessionError({ message: "Setup failed." })),
       );
       const { events, fiber } = yield* startCall;
       assert.deepStrictEqual(yield* Queue.take(events), {
@@ -1032,9 +1033,11 @@ it("startup schema rejects stages outside the allowlist and strips extra content
   assert.throws(() => decode({ type: "startup", stage: "provider raw log" }));
 });
 
-const approveAfterQuiet = (input: Parameters<VoiceOrchestrator["Service"]["approveSpoken"]>[0]) =>
+const approveAfterQuiet = (
+  input: Parameters<VoiceOrchestrator.VoiceOrchestrator["Service"]["approveSpoken"]>[0],
+) =>
   Effect.gen(function* () {
-    const orchestrator = yield* VoiceOrchestrator;
+    const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
     const approving = yield* orchestrator.approveSpoken(input).pipe(Effect.forkScoped);
     yield* TestClock.adjust("2 seconds");
     return yield* Fiber.join(approving);
@@ -1045,8 +1048,8 @@ it.effect(
   () =>
     withOrchestrator(() =>
       Effect.gen(function* () {
-        const orchestrator = yield* VoiceOrchestrator;
-        const store = yield* VoiceStore;
+        const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
+        const store = yield* VoiceStore.VoiceStore;
         const { answer, events } = yield* openCall;
         const executed = yield* Ref.make(0);
         const proposed = yield* orchestrator.proposeAction({
@@ -1106,8 +1109,8 @@ it.effect(
 it.effect("pending action IDs, generations, ambiguity and expiry bound spoken approval", () =>
   withOrchestrator(() =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
-      const store = yield* VoiceStore;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
+      const store = yield* VoiceStore.VoiceStore;
       const first = yield* openCall;
       const executed = yield* Ref.make(0);
       const propose = () =>
@@ -1179,7 +1182,7 @@ it.effect("pending action IDs, generations, ambiguity and expiry bound spoken ap
 it.effect("runtime spoken approval dispatches the original request", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const store = yield* VoiceStore;
+      const store = yield* VoiceStore.VoiceStore;
       const { answer, events } = yield* openCall;
       yield* Queue.offer(harness.domainEvents, pendingApproval);
       const { request } = yield* takeUntilType(events, "confirm");
@@ -1218,7 +1221,7 @@ it.effect("runtime spoken approval dispatches the original request", () =>
 it.effect("an older client gets the answer first without startup progress opt-in", () =>
   withOrchestrator(() =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       const first = yield* orchestrator
         .open({ sdpOffer: "v=0 offer" })
         .pipe(Stream.take(1), Stream.runCollect);
@@ -1230,8 +1233,8 @@ it.effect("an older client gets the answer first without startup progress opt-in
 it.effect("a runtime approval that resolved elsewhere cannot be approved by voice or tap", () =>
   withOrchestrator((harness) =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
-      const store = yield* VoiceStore;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
+      const store = yield* VoiceStore.VoiceStore;
       const { answer, events } = yield* openCall;
       yield* Queue.offer(harness.domainEvents, pendingApproval);
       const { request } = yield* takeUntilType(events, "confirm");
@@ -1274,7 +1277,7 @@ it.effect(
   () =>
     withOrchestrator((harness) =>
       Effect.gen(function* () {
-        const orchestrator = yield* VoiceOrchestrator;
+        const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
         const { answer, events } = yield* openCall;
         const executed = yield* Ref.make(0);
         yield* orchestrator.proposeAction({
@@ -1358,7 +1361,7 @@ it.effect(
 it.effect("a stale originating session cannot propose an action in a new generation", () =>
   withOrchestrator(() =>
     Effect.gen(function* () {
-      const orchestrator = yield* VoiceOrchestrator;
+      const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
       const first = yield* openCall;
       const second = yield* openCall;
       const executed = yield* Ref.make(0);
@@ -1380,11 +1383,12 @@ it.effect("a stale originating session cannot propose an action in a new generat
   ),
 );
 
-for (const changedField of ["provider", "prompt"] as const) {
-  it.effect(`a runtime approval refuses a changed ${changedField} after showing the card`, () =>
+it.effect.each(["provider", "prompt"] as const)(
+  "a runtime approval refuses a changed %s after showing the card",
+  (changedField) =>
     withOrchestrator((harness) =>
       Effect.gen(function* () {
-        const orchestrator = yield* VoiceOrchestrator;
+        const orchestrator = yield* VoiceOrchestrator.VoiceOrchestrator;
         const { events } = yield* openCall;
         yield* Queue.offer(harness.domainEvents, pendingApproval);
         const { request } = yield* takeUntilType(events, "confirm");
@@ -1413,5 +1417,4 @@ for (const changedField of ["provider", "prompt"] as const) {
         assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
       }),
     ),
-  );
-}
+);
