@@ -24,6 +24,7 @@ import { buildHomeProjectScopes } from "./homeThreadList";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
+import { openVoiceMemo, useVoiceCallActive } from "../voice-memo/voiceMemoController";
 import { startVoiceSession } from "../voice-session/voiceSessionController";
 import { useVoiceSidecarEnvironmentId } from "../voice-session/voiceSidecar";
 
@@ -117,6 +118,17 @@ export function HomeRouteScreen() {
             navigation.navigate("VoiceSession");
           },
     [navigation, voiceEnvironmentId],
+  );
+  const voiceCallActive = useVoiceCallActive();
+  const openVoiceMemoSheet = useMemo(
+    () =>
+      voiceEnvironmentId === null || voiceCallActive
+        ? null
+        : () => {
+            openVoiceMemo(null);
+            navigation.navigate("VoiceMemo");
+          },
+    [navigation, voiceCallActive, voiceEnvironmentId],
   );
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const projectFilterOptions = useMemo(
@@ -227,6 +239,7 @@ export function HomeRouteScreen() {
           onSearchQueryChange={setSearchQuery}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
           onOpenVoiceSession={openVoiceSession}
+          onOpenVoiceMemo={openVoiceMemoSheet}
         />
 
         <HomeScreen

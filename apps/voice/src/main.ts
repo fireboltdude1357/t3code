@@ -10,6 +10,11 @@
  * - `T3_VOICE_HOME`        state directory (default `~/.t3-voice`)
  * - `T3_VOICE_HOST`, `T3_VOICE_PORT`  listen address (default `0.0.0.0:3780`)
  * - `T3_VOICE_CODEX`, `T3_VOICE_CODEX_HOME`  Codex binary and home, if not the defaults
+ * - `T3_VOICE_SOTTO_URL`, `T3_VOICE_SOTTO_TOKEN_FILE`  Sotto server that transcribes
+ *   voice memos; without them, memos fail with "not set up"
+ * - `T3_VOICE_KOKORO_URL`, `T3_VOICE_KOKORO_VOICE`  Kokoro TTS for memo replies
+ *   (default `http://127.0.0.1:8890`, `af_heart`)
+ * - `T3_VOICE_FFMPEG`  ffmpeg binary (default `ffmpeg` on PATH)
  */
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
@@ -33,7 +38,9 @@ import * as Http from "./Http.ts";
 import * as T3Client from "./T3Client.ts";
 import * as TailnetIdentity from "./TailnetIdentity.ts";
 import * as VoiceOrchestrator from "./VoiceOrchestrator.ts";
+import * as VoiceMemos from "./VoiceMemos.ts";
 import * as VoiceSessionRegistry from "./VoiceSessionRegistry.ts";
+import * as VoiceSpeech from "./VoiceSpeech.ts";
 import * as VoiceStore from "./VoiceStore.ts";
 
 const settings = Config.all({
@@ -44,6 +51,11 @@ const settings = Config.all({
   port: Config.Port("T3_VOICE_PORT").pipe(Config.withDefault(3780)),
   codexCommand: Config.String("T3_VOICE_CODEX").pipe(Config.option),
   codexHome: Config.String("T3_VOICE_CODEX_HOME").pipe(Config.option),
+  sottoUrl: Config.String("T3_VOICE_SOTTO_URL").pipe(Config.option),
+  sottoTokenFile: Config.String("T3_VOICE_SOTTO_TOKEN_FILE").pipe(Config.option),
+  kokoroUrl: Config.String("T3_VOICE_KOKORO_URL").pipe(Config.withDefault("http://127.0.0.1:8890")),
+  kokoroVoice: Config.String("T3_VOICE_KOKORO_VOICE").pipe(Config.withDefault("af_heart")),
+  ffmpegCommand: Config.String("T3_VOICE_FFMPEG").pipe(Config.withDefault("ffmpeg")),
 });
 
 const app = Layer.unwrap(
@@ -78,18 +90,32 @@ const app = Layer.unwrap(
     const orchestrator = VoiceOrchestrator.layer.pipe(
       Layer.provideMerge(Layer.mergeAll(t3, store, sessions)),
     );
+    // Memos need both Sotto settings; with either missing they fail with "not set up".
+    const sotto = Option.all({ url: config.sottoUrl, tokenFile: config.sottoTokenFile });
+    const memosConfigured = Option.isSome(sotto);
+    const speech = Option.isSome(sotto)
+      ? VoiceSpeech.layer({
+          ffmpegCommand: config.ffmpegCommand,
+          sottoUrl: sotto.value.url.replace(/\/+$/, ""),
+          sottoToken: (yield* fs.readFileString(sotto.value.tokenFile)).trim(),
+          kokoroUrl: config.kokoroUrl.replace(/\/+$/, ""),
+          kokoroVoice: config.kokoroVoice,
+        }).pipe(Layer.provide(FetchHttpClient.layer))
+      : VoiceSpeech.layerUnavailable;
+    const memos = VoiceMemos.layer.pipe(Layer.provideMerge(orchestrator), Layer.provide(speech));
 
     yield* Effect.logInfo("voice.sidecar.starting", {
       serverUrl: config.serverUrl,
       listen: `${config.host}:${config.port}`,
       home,
+      memos: memosConfigured ? "on" : "off",
     });
     // The server starts listening only after T3 is connected and the
     // orchestrator is up, so no request lands on a half-built sidecar.
     const listener = NodeHttpServer.layer(() => NodeHttp.createServer(), {
       host: config.host,
       port: config.port,
-    }).pipe(Layer.provideMerge(Layer.mergeAll(orchestrator, registry, TailnetIdentity.layer)));
+    }).pipe(Layer.provideMerge(Layer.mergeAll(memos, registry, TailnetIdentity.layer)));
     return HttpRouter.serve(Http.routes).pipe(Layer.provide(listener));
   }),
 );

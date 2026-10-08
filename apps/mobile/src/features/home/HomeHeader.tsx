@@ -27,12 +27,12 @@ export function HomeHeader(props: HomeHeaderProps) {
   }, []);
   useHardwareKeyboardCommand("focusSearch", focusSearch);
   const filterMenu = buildHomeListFilterMenu(props);
-  const { onOpenVoiceSession } = props;
+  const { onOpenVoiceMemo, onOpenVoiceSession } = props;
 
   return (
     <>
       <NativeStackScreenOptions
-        optionsVersion={[filterMenu.items, onOpenVoiceSession === null]}
+        optionsVersion={[filterMenu.items, onOpenVoiceSession === null, onOpenVoiceMemo === null]}
         options={{
           // Static header config (glass, title, fonts) lives in Stack.tsx
           // (GLASS_HEADER_OPTIONS). Only dynamic values are set here.
@@ -55,6 +55,18 @@ export function HomeHeader(props: HomeHeaderProps) {
                     identifier: "home-voice-session",
                     label: "",
                     onPress: onOpenVoiceSession,
+                    type: "button",
+                  }),
+                ]),
+            ...(onOpenVoiceMemo === null
+              ? []
+              : [
+                  withNativeGlassHeaderItem({
+                    accessibilityLabel: "Record a voice memo",
+                    icon: { name: "recordingtape", type: "sfSymbol" } as const,
+                    identifier: "home-voice-memo",
+                    label: "",
+                    onPress: onOpenVoiceMemo,
                     type: "button",
                   }),
                 ]),

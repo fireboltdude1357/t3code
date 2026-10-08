@@ -121,6 +121,22 @@ it.effect("dedupes notices and tracks delivery", () =>
   }).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("lists undelivered notices since a time, skipping an older backlog", () =>
+  Effect.gen(function* () {
+    const store = yield* VoiceStore;
+    yield* store.recordNotice(notice("old", "k-old", "2026-09-28T10:00:00.000Z"));
+    yield* store.recordNotice(notice("new", "k-new", "2026-09-30T10:00:00.000Z"));
+    yield* store.recordNotice(notice("newer", "k-newer", "2026-09-30T10:05:00.000Z"));
+    yield* store.markDelivered(["newer"]);
+
+    const since = DateTime.makeUnsafe("2026-09-30T10:00:00.000Z");
+    assert.deepStrictEqual(
+      (yield* store.undeliveredNoticesSince(since, 10)).map((n) => n.id),
+      ["new"],
+    );
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("returns the last transcript entries oldest first", () =>
   Effect.gen(function* () {
     const store = yield* VoiceStore;

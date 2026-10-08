@@ -140,6 +140,7 @@ import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
+import { openVoiceMemo, useVoiceCallActive } from "../voice-memo/voiceMemoController";
 import { startVoiceSession } from "../voice-session/voiceSessionController";
 import { useVoiceSidecarEnvironmentId } from "../voice-session/voiceSidecar";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
@@ -355,6 +356,19 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
           }
         : null,
     [canStartVoiceCall, navigation, props.environmentId, props.selectedThread.id],
+  );
+  const voiceCallActive = useVoiceCallActive();
+  const startVoiceMemo = useMemo(
+    () =>
+      canStartVoiceCall && !voiceCallActive
+        ? () => {
+            Keyboard.dismiss();
+            void Haptics.selectionAsync();
+            openVoiceMemo(props.selectedThread.id);
+            navigation.navigate("VoiceMemo");
+          }
+        : null,
+    [canStartVoiceCall, navigation, props.selectedThread.id, voiceCallActive],
   );
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -1401,6 +1415,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onRemoveDraftImage={props.onRemoveDraftImage}
                       onStopThread={props.onStopThread}
                       onStartVoiceCall={startVoiceCall}
+                      onStartVoiceMemo={startVoiceMemo}
                       onSendMessage={handleSendMessage}
                       onShowUsageLimits={showUsageLimits}
                       canSwitchProvider={props.canSwitchThreadProvider}
