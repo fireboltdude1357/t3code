@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   codexChildEnvironment,
   sessionThreadStartParams,
+  textTurnReply,
   VOICE_MCP_SERVER,
 } from "./CodexSessions.ts";
 import { VOICE_SESSION_TOOLS } from "./VoiceSessionService.ts";
@@ -46,4 +47,21 @@ it("starts session threads read-only with every voice tool pre-approved", () => 
       },
     },
   });
+});
+
+it("a memo turn answers with its final message, not its progress notes", () => {
+  assert.strictEqual(
+    textTurnReply([
+      { text: "Checking the threads.", final: false },
+      { text: " Two finished. ", final: true },
+      { text: "Anything else?", final: false },
+    ]),
+    "Two finished.",
+  );
+  assert.strictEqual(
+    textTurnReply([{ text: "Only commentary.", final: false }]),
+    "Only commentary.",
+  );
+  assert.strictEqual(textTurnReply([{ text: "  ", final: true }]), undefined);
+  assert.strictEqual(textTurnReply([]), undefined);
 });

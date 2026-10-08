@@ -17,6 +17,7 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 
 import { VoiceSessionRegistry } from "./VoiceSessionRegistry.ts";
 import {
+  MEMO_AGENT_INSTRUCTIONS,
   type PreparedSessionThread,
   type RealtimeCall,
   type RealtimeCallEnd,
@@ -48,6 +49,8 @@ const ANSWER_TIMEOUT = "30 seconds";
 const RELEASE_REQUEST_TIMEOUT = "10 seconds";
 /** How long `thread/realtime/stop` may take before the call is ended locally. */
 const STOP_TIMEOUT = "5 seconds";
+/** A memo turn that runs longer is interrupted; the phone shows the error. */
+const TEXT_TURN_TIMEOUT = "4 minutes";
 
 /**
  * The child environment: the parent's, minus anything that could bill the
@@ -102,6 +105,27 @@ interface RealtimeCallState {
   readonly onTranscript: StartRealtimeCallInput["onTranscript"];
 }
 
+/** A memo turn in flight: the agent messages so far, and its final reply. */
+interface TextTurnState {
+  /** Set once `turn/start` answers; notifications for any other turn are ignored. */
+  readonly turnId: string | undefined;
+  readonly messages: ReadonlyArray<{ readonly text: string; readonly final: boolean }>;
+  readonly done: Deferred.Deferred<string, VoiceSessionError>;
+}
+
+/** Whether a notification for `turnId` belongs to `turn`, before or after its id is known. */
+const isTextTurn = (connection: Connection, turn: TextTurnState, turnId: string) =>
+  Ref.get(connection.abandonedTurns).pipe(
+    Effect.map(
+      (abandoned) =>
+        !abandoned.has(turnId) && (turn.turnId === undefined || turn.turnId === turnId),
+    ),
+  );
+
+/** The reply a memo turn ends with: its last final answer, else its last message. */
+export const textTurnReply = (messages: TextTurnState["messages"]): string | undefined =>
+  (messages.findLast((message) => message.final) ?? messages.at(-1))?.text.trim() || undefined;
+
 /** One `codex app-server` child and the per-thread state routed through it. */
 interface Connection {
   readonly client: CodexClient.CodexAppServerClient["Service"];
@@ -111,6 +135,10 @@ interface Connection {
   readonly calls: Ref.Ref<ReadonlyMap<string, RealtimeCallState>>;
   /** Setup turns in flight by native thread id. */
   readonly setupTurns: Ref.Ref<ReadonlyMap<string, Deferred.Deferred<void, VoiceSessionError>>>;
+  /** Memo turns in flight by native thread id. */
+  readonly textTurns: Ref.Ref<ReadonlyMap<string, TextTurnState>>;
+  /** Memo turns interrupted after a timeout, whose late notifications must not reach the next memo. */
+  readonly abandonedTurns: Ref.Ref<ReadonlySet<string>>;
 }
 
 const isVoiceSessionError = Schema.is(VoiceSessionError);
@@ -175,10 +203,66 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
       const callFor = (threadId: string) =>
         Ref.get(connection.calls).pipe(Effect.map((calls) => calls.get(threadId)));
 
+      yield* client.handleServerNotification("item/completed", (payload) =>
+        Effect.gen(function* () {
+          const { item } = payload;
+          const turn = (yield* Ref.get(connection.textTurns)).get(payload.threadId);
+          if (turn === undefined || item.type !== "agentMessage") return;
+          if (!(yield* isTextTurn(connection, turn, payload.turnId))) return;
+          const message = { text: item.text, final: item.phase === "final_answer" };
+          yield* Ref.update(connection.textTurns, (turns) => {
+            const current = turns.get(payload.threadId);
+            return current?.done !== turn.done
+              ? turns
+              : new Map(turns).set(payload.threadId, {
+                  ...current,
+                  messages: [...current.messages, message],
+                });
+          });
+        }).pipe(guarded("voice.codex.item-completed-failed")),
+      );
+
       yield* client.handleServerNotification("turn/completed", (payload) =>
         Effect.gen(function* () {
+          const textTurn = (yield* Ref.get(connection.textTurns)).get(payload.threadId);
+          if (
+            yield* Ref.get(connection.abandonedTurns).pipe(
+              Effect.map((ids) => ids.has(payload.turn.id)),
+            )
+          ) {
+            yield* Ref.update(connection.abandonedTurns, (ids) => {
+              const next = new Set(ids);
+              next.delete(payload.turn.id);
+              return next;
+            });
+            return;
+          }
+          if (
+            textTurn !== undefined &&
+            (yield* isTextTurn(connection, textTurn, payload.turn.id))
+          ) {
+            const reply = textTurnReply(textTurn.messages);
+            if (payload.turn.status === "completed" && reply !== undefined) {
+              yield* Deferred.succeed(textTurn.done, reply);
+              return;
+            }
+            yield* Effect.logWarning("voice.codex.text-turn-failed", {
+              status: payload.turn.status,
+              error: payload.turn.error?.message,
+            });
+            yield* Deferred.fail(
+              textTurn.done,
+              new VoiceSessionError({
+                message:
+                  payload.turn.status === "completed"
+                    ? "The voice agent didn't reply."
+                    : `The voice agent's turn ${payload.turn.status}.`,
+              }),
+            );
+            return;
+          }
           const setup = (yield* Ref.get(connection.setupTurns)).get(payload.threadId);
-          // Realtime handoff turns land here too; only the setup turn is awaited.
+          // Realtime handoff turns land here too; only setup and memo turns are awaited.
           if (setup === undefined) return;
           if (payload.turn.status === "completed") {
             yield* Deferred.succeed(setup, undefined);
@@ -293,6 +377,8 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
         setupTurns: yield* Ref.make<
           ReadonlyMap<string, Deferred.Deferred<void, VoiceSessionError>>
         >(new Map()),
+        textTurns: yield* Ref.make<ReadonlyMap<string, TextTurnState>>(new Map()),
+        abandonedTurns: yield* Ref.make<ReadonlySet<string>>(new Set()),
       };
       // A dead app-server sends no `closed`; end everything that ran on it.
       yield* Scope.addFinalizer(
@@ -305,11 +391,12 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
               message: "The Codex session ended.",
             });
           }
+          const ended = new VoiceSessionError({ message: "The Codex session ended." });
           for (const setup of (yield* Ref.get(connection.setupTurns)).values()) {
-            yield* Deferred.fail(
-              setup,
-              new VoiceSessionError({ message: "The Codex session ended." }),
-            );
+            yield* Deferred.fail(setup, ended);
+          }
+          for (const turn of (yield* Ref.get(connection.textTurns)).values()) {
+            yield* Deferred.fail(turn.done, ended);
           }
         }),
       );
@@ -437,18 +524,76 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
       return { sdpAnswer, ended: Deferred.await(call.ended), stop, appendText, appendSpeech };
     });
 
+  /** One memo turn at a time per thread; memos are serialized upstream anyway. */
+  const runTextTurn = (connection: Connection, threadId: string, text: string) =>
+    Effect.gen(function* () {
+      const done = yield* Deferred.make<string, VoiceSessionError>();
+      const registered = yield* Ref.modify(connection.textTurns, (turns) =>
+        turns.has(threadId)
+          ? ([false, turns] as const)
+          : ([
+              true,
+              new Map(turns).set(threadId, { turnId: undefined, messages: [], done }),
+            ] as const),
+      );
+      if (!registered) {
+        return yield* new VoiceSessionError({
+          message: "The voice agent is still answering the last memo.",
+        });
+      }
+      return yield* Effect.gen(function* () {
+        const started = yield* connection.client
+          .request("turn/start", { threadId, input: [{ type: "text", text }] })
+          .pipe(toSessionError("Failed to reach the voice agent."));
+        yield* Ref.update(connection.textTurns, (turns) => {
+          const current = turns.get(threadId);
+          return current?.done !== done
+            ? turns
+            : new Map(turns).set(threadId, { ...current, turnId: started.turn.id });
+        });
+        return yield* Deferred.await(done).pipe(
+          Effect.timeoutOrElse({
+            duration: TEXT_TURN_TIMEOUT,
+            orElse: () =>
+              Ref.update(connection.abandonedTurns, (ids) => new Set(ids).add(started.turn.id))
+                .pipe(
+                  Effect.andThen(
+                    connection.client.request("turn/interrupt", {
+                      threadId,
+                      turnId: started.turn.id,
+                    }),
+                  ),
+                )
+                .pipe(
+                  Effect.timeout(RELEASE_REQUEST_TIMEOUT),
+                  Effect.ignore,
+                  Effect.andThen(
+                    Effect.fail(
+                      new VoiceSessionError({
+                        message: "The voice agent took too long to answer.",
+                      }),
+                    ),
+                  ),
+                ),
+          }),
+        );
+      }).pipe(
+        Effect.ensuring(Ref.update(connection.textTurns, (turns) => without(turns, threadId))),
+      );
+    });
+
   /**
    * The setup turn gives the agent its instructions before the first handoff,
    * and creates the native thread realtime attaches to (Codex only persists a
    * thread once a turn has started on it).
    */
-  const runSetupTurn = (connection: Connection, threadId: string) =>
+  const runSetupTurn = (connection: Connection, threadId: string, instructions: string) =>
     Effect.gen(function* () {
       const done = yield* Deferred.make<void, VoiceSessionError>();
       yield* Ref.update(connection.setupTurns, (turns) => new Map(turns).set(threadId, done));
       yield* connection.client.request("turn/start", {
         threadId,
-        input: [{ type: "text", text: SESSION_AGENT_INSTRUCTIONS }],
+        input: [{ type: "text", text: instructions }],
       });
       yield* Deferred.await(done).pipe(
         Effect.timeoutOrElse({
@@ -490,7 +635,7 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
       ),
     );
 
-  const prepare: VoiceSessionServiceShape["prepare"] = ({ generation }) =>
+  const prepare: VoiceSessionServiceShape["prepare"] = ({ generation, mode = "call" }) =>
     Effect.gen(function* () {
       yield* fs.makeDirectory(config.workspaceRoot, { recursive: true });
       const live = yield* connection;
@@ -508,17 +653,19 @@ export const make = Effect.fn("voice/CodexSessions.make")(function* (config: Cod
       yield* Ref.update(sessionThreads, (threads) => new Map(threads).set(nativeThreadId, live));
       // Before the setup turn, which may already call voice tools.
       yield* registry.register(sessionThreadId, token);
-      yield* runSetupTurn(live, nativeThreadId).pipe(
+      const instructions = mode === "memo" ? MEMO_AGENT_INSTRUCTIONS : SESSION_AGENT_INSTRUCTIONS;
+      yield* runSetupTurn(live, nativeThreadId, instructions).pipe(
         Effect.onError(() => release(sessionThreadId)),
       );
       const prepared: PreparedSessionThread = {
         sessionThreadId,
         startRealtimeCall: (input) => startRealtimeCall(live, nativeThreadId, input),
+        runTurn: (text) => runTextTurn(live, nativeThreadId, text),
       };
       return prepared;
     }).pipe(
       toSessionError("The voice session could not start."),
-      Effect.annotateLogs({ generation }),
+      Effect.annotateLogs({ generation, mode }),
     );
 
   return VoiceSessionService.of({ prepare, release });

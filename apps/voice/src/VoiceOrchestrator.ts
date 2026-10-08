@@ -21,10 +21,12 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -47,6 +49,7 @@ import {
 import {
   type PreparedSessionThread,
   type RealtimeCall,
+  VoiceSessionError,
   VoiceSessionService,
 } from "./VoiceSessionService.ts";
 import { VoiceStore } from "./VoiceStore.ts";
@@ -66,6 +69,15 @@ export interface LiveVoiceSession {
 export interface VoiceOrchestratorShape {
   /** One generation. See `VoiceSessionOpenInput`. */
   readonly open: (input: VoiceSessionOpenInput) => Stream.Stream<VoiceSessionEvent>;
+  /**
+   * Answers one transcribed voice memo with the text to read aloud. Memos share
+   * a memo generation, which goes live like a call does and ends after
+   * `MEMO_IDLE` without one. Fails while a realtime call is live.
+   */
+  readonly memo: (input: {
+    readonly text: string;
+    readonly focusThreadId?: ThreadId;
+  }) => Effect.Effect<string, VoiceSessionError>;
   /** The phone's Approve or Deny for a pending confirmation. */
   readonly respond: (input: VoiceSessionRespondInput) => Effect.Effect<VoiceSessionRespondResult>;
   /** The live session whose session thread is `threadId`, if any. */
@@ -122,6 +134,8 @@ export class VoiceOrchestrator extends Context.Service<VoiceOrchestrator, VoiceO
 export const ROTATE_AFTER = Duration.minutes(40);
 /** The next session thread is prepared this long before rotation. */
 const PREWARM_LEAD = Duration.minutes(2);
+/** A memo generation ends after this long without a memo. */
+export const MEMO_IDLE = Duration.minutes(20);
 /** Keep in step with the `expiresAt` shown on the card. */
 const CONFIRM_TIMEOUT = Duration.minutes(2);
 /** Transcript parts can split a reply, so spoken writes wait for two seconds without activity. */
@@ -181,7 +195,8 @@ interface GenerationEnd {
 
 interface Generation extends LiveVoiceSession {
   readonly supportsRequestNotices: boolean;
-  readonly call: RealtimeCall;
+  /** The live call, or null for a memo generation, which speaks only in its replies. */
+  readonly call: RealtimeCall | null;
   readonly events: Queue.Queue<VoiceSessionEvent>;
   readonly end: Deferred.Deferred<GenerationEnd>;
   /** Epoch millis of the last transcript delta from either side. */
@@ -193,6 +208,46 @@ interface Generation extends LiveVoiceSession {
    */
   readonly lastUserActivity: Ref.Ref<number>;
 }
+
+/** The memo generation's own handles, beside the `Generation` that goes live. */
+interface MemoSession {
+  readonly current: Generation;
+  readonly prepared: PreparedSessionThread;
+  readonly startedAt: number;
+  /**
+   * When the briefing was taken. Replies read out only news recorded since;
+   * older news is in the briefing, and a backlog from days without voice stays quiet.
+   */
+  readonly newsSince: DateTime.Utc;
+  /** Briefing for the agent, sent with the first memo and then cleared. */
+  readonly intro: Ref.Ref<string | undefined>;
+  readonly focusThreadId: Ref.Ref<ThreadId | undefined>;
+}
+
+/**
+ * Renders a call briefing's `initialItems` as one text block for a memo
+ * agent, which has no realtime session to seed.
+ */
+export const memoIntroText = (
+  items: ReadonlyArray<{
+    readonly role: "user" | "assistant" | "developer";
+    readonly text: string;
+  }>,
+  agentNote: string,
+) => {
+  const context = items.filter((item) => item.role === "developer").map((item) => item.text);
+  const conversation = items
+    .filter((item) => item.role !== "developer")
+    .map((item) => `${item.role === "user" ? "Tanner" : "You"}: ${item.text}`);
+  return [
+    ...context,
+    agentNote,
+    ...(conversation.length === 0 ? [] : ["Recent conversation:", ...conversation]),
+  ].join("\n\n");
+};
+
+/** Whether a reply ends by asking the user something, so news must wait for the next memo. */
+const endsWithQuestion = (text: string) => /[?？]\s*$/.test(text);
 
 interface State {
   readonly live: Generation | undefined;
@@ -291,7 +346,8 @@ export const make = Effect.gen(function* () {
       yield* offerToLive({ type: "confirm_resolved", requestId, approved: completed });
       if (allowed) {
         const active = (yield* Ref.get(state)).live;
-        if (active?.generation === pending.generation) {
+        // A memo agent hears the result from voice_approve and says it in its reply.
+        if (active?.generation === pending.generation && active.call !== null) {
           yield* active.call
             .appendSpeech(
               completed
@@ -758,6 +814,39 @@ export const make = Effect.gen(function* () {
       Effect.catchCause((cause) => Effect.logWarning("voice-session.notice-failed", { cause })),
     );
 
+  /**
+   * The part of `batch` still worth telling: questions resolved since are
+   * cleared, and anything voice_pending_notices already handed out is dropped.
+   */
+  const freshNotices = (batch: ReadonlyArray<VoiceNotice>) =>
+    Effect.gen(function* () {
+      // Resolve queued questions against current state before delayed speech.
+      for (const threadId of new Set(
+        batch.filter((notice) => notice.requestId !== undefined).map((notice) => notice.threadId),
+      )) {
+        const records = yield* t3.threadProjection(threadId);
+        const pending = new Set(
+          records.runtimeRequests
+            .filter((request) => request.status === "pending")
+            .map((request) => request.id),
+        );
+        for (const notice of batch) {
+          if (
+            notice.threadId === threadId &&
+            notice.requestId !== undefined &&
+            !pending.has(notice.requestId)
+          ) {
+            yield* store.resolveRequestNotice(threadId, notice.requestId);
+          }
+        }
+      }
+      const undelivered = new Set(
+        (yield* store.undeliveredNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
+      );
+      yield* publishRequestNotices;
+      return batch.filter((notice) => undelivered.has(notice.id));
+    }).pipe(noticeLock.withPermits(1));
+
   /** Waits until the call has been quiet for `quiet`, or `NOTICE_MAX_WAIT` passed. */
   const awaitPause = (live: Generation, quiet: Duration.Duration) =>
     Effect.gen(function* () {
@@ -778,41 +867,17 @@ export const make = Effect.gen(function* () {
   const deliver = (batch: ReadonlyArray<VoiceNotice>) =>
     Effect.gen(function* () {
       const initial = (yield* Ref.get(state)).live;
-      if (initial === undefined || batch.length === 0) return;
+      // A memo generation leaves news undelivered; the next reply carries it.
+      if (initial === undefined || initial.call === null || batch.length === 0) return;
       yield* awaitPause(initial, isUrgentBatch(batch) ? QUIET_BEFORE_URGENT : QUIET_BEFORE_ROUTINE);
       // A rotation while waiting hands the batch to the newer generation.
       const { live } = yield* Ref.get(state);
-      if (live === undefined) return;
+      if (live?.call == null) return;
+      const call = live.call;
       // voice_pending_notices may have handed some to the agent already.
-      const fresh = yield* Effect.gen(function* () {
-        // Resolve queued questions against current state before delayed speech.
-        for (const threadId of new Set(
-          batch.filter((notice) => notice.requestId !== undefined).map((notice) => notice.threadId),
-        )) {
-          const records = yield* t3.threadProjection(threadId);
-          const pending = new Set(
-            records.runtimeRequests
-              .filter((request) => request.status === "pending")
-              .map((request) => request.id),
-          );
-          for (const notice of batch) {
-            if (
-              notice.threadId === threadId &&
-              notice.requestId !== undefined &&
-              !pending.has(notice.requestId)
-            ) {
-              yield* store.resolveRequestNotice(threadId, notice.requestId);
-            }
-          }
-        }
-        const undelivered = new Set(
-          (yield* store.undeliveredNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
-        );
-        yield* publishRequestNotices;
-        return batch.filter((notice) => undelivered.has(notice.id));
-      }).pipe(noticeLock.withPermits(1));
+      const fresh = yield* freshNotices(batch);
       if (fresh.length === 0) return;
-      yield* live.call.appendSpeech(composeNoticeBatch(fresh));
+      yield* call.appendSpeech(composeNoticeBatch(fresh));
       yield* Effect.gen(function* () {
         const pendingIds = new Set(
           (yield* store.pendingRequestNotices(NOTICE_LOOKBACK)).map((notice) => notice.id),
@@ -916,6 +981,83 @@ export const make = Effect.gen(function* () {
       Effect.catchCause((cause) => Effect.logWarning("voice-session.prewarm-failed", { cause })),
     );
 
+  /**
+   * Retires `current` when the enclosing scope closes: its confirmations fail,
+   * and if it is still live the slot empties. Hanging up (not rotating) also
+   * drops a warm thread nobody will use. Register it before `current` goes
+   * live, so it can never be left live.
+   */
+  const retireOnClose = (current: Generation) =>
+    Effect.addFinalizer(() =>
+      Ref.get(confirmations).pipe(
+        Effect.flatMap((pending) =>
+          Effect.forEach([...pending.values()], (entry) =>
+            entry.generation === current.generation
+              ? resolveConfirmation(entry.request.id, false)
+              : Effect.void,
+          ),
+        ),
+        Effect.andThen(
+          Ref.modify(state, (existing) =>
+            existing.live === current
+              ? [existing.warm, { live: undefined, warm: undefined }]
+              : [undefined, existing],
+          ).pipe(
+            Effect.flatMap((warm) =>
+              warm === undefined ? Effect.void : sessions.release(warm.sessionThreadId),
+            ),
+          ),
+        ),
+      ),
+    );
+
+  /** Makes `current` the live generation, rotating out the previous one, and rebuilds its gates. */
+  const goLive = (current: Generation) =>
+    Effect.gen(function* () {
+      // Generations are numbered before setup, so a slow older open that
+      // finishes after a newer one yields to it instead of replacing it.
+      const previous = yield* Ref.modify(state, (existing) =>
+        existing.live !== undefined && existing.live.generation > current.generation
+          ? [current, existing]
+          : [existing.live, { ...existing, live: current }],
+      );
+      if (previous !== undefined) {
+        yield* Deferred.succeed(previous.end, { reason: "rotated" });
+      }
+      // Publish after going live under the same lock as request events. A
+      // resolution during setup cannot be overwritten by an older snapshot.
+      yield* Effect.gen(function* () {
+        if ((yield* Ref.get(state)).live !== current) return;
+        // Retire the old call's gates before scheduling fresh gates for this generation.
+        yield* Effect.forEach([...(yield* Ref.get(confirmations)).values()], (pending) =>
+          pending.generation < current.generation
+            ? resolveConfirmation(pending.request.id, false)
+            : Effect.void,
+        );
+        for (const [key, attempt] of (yield* Ref.get(approvalAttempts)).entries()) {
+          if (attempt.generation < current.generation) yield* clearApprovalAttempt(key);
+        }
+        yield* reconcileRequests(true);
+        if (current.supportsRequestNotices) {
+          yield* Queue.offer(current.events, {
+            type: "request_notices",
+            notices: yield* store.pendingRequestNotices(BRIEFING_NOTICES),
+          });
+        }
+        yield* Effect.forEach((yield* Ref.get(confirmations)).values(), (pending) =>
+          Deferred.isDone(pending.decided).pipe(
+            Effect.flatMap((done) =>
+              done || pending.generation !== current.generation
+                ? Effect.void
+                : Queue.offer(current.events, { type: "confirm", request: pending.request }).pipe(
+                    Effect.asVoid,
+                  ),
+            ),
+          ),
+        );
+      }).pipe(noticeLock.withPermits(1));
+    });
+
   const openGeneration = (
     input: VoiceSessionOpenInput,
     startupEvents: Queue.Queue<VoiceSessionEvent>,
@@ -979,72 +1121,8 @@ export const make = Effect.gen(function* () {
           lastActivity,
           lastUserActivity,
         };
-        // Registered before `current` goes live, so it can never be left live.
-        // Hanging up (not rotating) also drops a warm thread nobody will use.
-        yield* Effect.addFinalizer(() =>
-          Ref.get(confirmations).pipe(
-            Effect.flatMap((pending) =>
-              Effect.forEach([...pending.values()], (entry) =>
-                entry.generation === generation
-                  ? resolveConfirmation(entry.request.id, false)
-                  : Effect.void,
-              ),
-            ),
-            Effect.andThen(
-              Ref.modify(state, (existing) =>
-                existing.live === current
-                  ? [existing.warm, { live: undefined, warm: undefined }]
-                  : [undefined, existing],
-              ).pipe(
-                Effect.flatMap((warm) =>
-                  warm === undefined ? Effect.void : sessions.release(warm.sessionThreadId),
-                ),
-              ),
-            ),
-          ),
-        );
-        // Generations are numbered before setup, so a slow older open that
-        // finishes after a newer one yields to it instead of replacing it.
-        const previous = yield* Ref.modify(state, (existing) =>
-          existing.live !== undefined && existing.live.generation > generation
-            ? [current, existing]
-            : [existing.live, { ...existing, live: current }],
-        );
-        if (previous !== undefined) {
-          yield* Deferred.succeed(previous.end, { reason: "rotated" });
-        }
-        // Publish after going live under the same lock as request events. A
-        // resolution during setup cannot be overwritten by an older snapshot.
-        yield* Effect.gen(function* () {
-          if ((yield* Ref.get(state)).live !== current) return;
-          // Retire the old call's gates before scheduling fresh gates for this generation.
-          yield* Effect.forEach([...(yield* Ref.get(confirmations)).values()], (pending) =>
-            pending.generation < current.generation
-              ? resolveConfirmation(pending.request.id, false)
-              : Effect.void,
-          );
-          for (const [key, attempt] of (yield* Ref.get(approvalAttempts)).entries()) {
-            if (attempt.generation < current.generation) yield* clearApprovalAttempt(key);
-          }
-          yield* reconcileRequests(true);
-          if (current.supportsRequestNotices) {
-            yield* Queue.offer(current.events, {
-              type: "request_notices",
-              notices: yield* store.pendingRequestNotices(BRIEFING_NOTICES),
-            });
-          }
-          yield* Effect.forEach((yield* Ref.get(confirmations)).values(), (pending) =>
-            Deferred.isDone(pending.decided).pipe(
-              Effect.flatMap((done) =>
-                done || pending.generation !== current.generation
-                  ? Effect.void
-                  : Queue.offer(current.events, { type: "confirm", request: pending.request }).pipe(
-                      Effect.asVoid,
-                    ),
-              ),
-            ),
-          );
-        }).pipe(noticeLock.withPermits(1));
+        yield* retireOnClose(current);
+        yield* goLive(current);
         yield* store.markDelivered(pending.map((notice) => notice.id));
 
         const rotateAt = Duration.toMillis(ROTATE_AFTER);
@@ -1105,6 +1183,157 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const nowMillis = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
+  const memoLock = yield* Semaphore.make(1);
+  const memoSession = yield* Ref.make<MemoSession | undefined>(undefined);
+
+  /**
+   * Prepares a memo generation and makes it live. It owns a scope under the
+   * orchestrator's; ending the generation (idle, rotation, or a call taking
+   * over) closes it, which retires the generation and releases its thread.
+   */
+  const startMemoSession = (focusThreadId: ThreadId | undefined) =>
+    Effect.gen(function* () {
+      const sessionScope = yield* Scope.fork(scope);
+      return yield* Effect.gen(function* () {
+        const generation = yield* store.nextGeneration;
+        const prepared = yield* Effect.acquireRelease(
+          sessions.prepare({ generation, mode: "memo" }),
+          ({ sessionThreadId }) => sessions.release(sessionThreadId),
+        );
+        const newsSince = yield* DateTime.now;
+        const { briefing, pending, focus, agenda } = yield* briefingFor(generation, focusThreadId);
+        const current: Generation = {
+          supportsRequestNotices: false,
+          generation,
+          sessionThreadId: prepared.sessionThreadId,
+          focusThreadId,
+          call: null,
+          // Nobody reads a memo generation's events; keep only the latest few.
+          events: yield* Queue.sliding<VoiceSessionEvent>(16),
+          end: yield* Deferred.make<GenerationEnd>(),
+          lastActivity: yield* Ref.make(yield* nowMillis),
+          lastUserActivity: yield* Ref.make(0),
+        };
+        yield* retireOnClose(current);
+        yield* goLive(current);
+        yield* store.markDelivered(pending.map((notice) => notice.id));
+        yield* Effect.gen(function* () {
+          while (true) {
+            const idle = (yield* nowMillis) - (yield* Ref.get(current.lastActivity));
+            if (idle >= Duration.toMillis(MEMO_IDLE)) break;
+            yield* Effect.sleep(Duration.millis(Duration.toMillis(MEMO_IDLE) - idle));
+          }
+          yield* Deferred.succeed(current.end, { reason: "closed" });
+        }).pipe(Effect.forkIn(sessionScope));
+        // Forked in the orchestrator's scope: closing `sessionScope` from a
+        // fiber it owns would interrupt the fiber mid-close.
+        yield* Deferred.await(current.end).pipe(
+          Effect.andThen(Scope.close(sessionScope, Exit.void)),
+          Effect.forkIn(scope),
+        );
+        const session: MemoSession = {
+          current,
+          prepared,
+          startedAt: yield* nowMillis,
+          newsSince,
+          intro: yield* Ref.make<string | undefined>(
+            memoIntroText(briefing.initialItems, agentBriefing(focus, agenda)),
+          ),
+          focusThreadId: yield* Ref.make(focusThreadId),
+        };
+        return session;
+      }).pipe(
+        Scope.provide(sessionScope),
+        Effect.onError((cause) => Scope.close(sessionScope, Exit.failCause(cause))),
+      );
+    });
+
+  const memo: VoiceOrchestratorShape["memo"] = (input) =>
+    Effect.gen(function* () {
+      const { live } = yield* Ref.get(state);
+      if (live !== undefined && live.call !== null) {
+        return yield* new VoiceSessionError({ message: "Hang up the live call to send a memo." });
+      }
+      const existing = yield* Ref.get(memoSession);
+      // An old session rotates like a call does; the briefing carries the transcript over.
+      const session =
+        existing !== undefined &&
+        existing.current === live &&
+        (yield* nowMillis) - existing.startedAt < Duration.toMillis(ROTATE_AFTER)
+          ? existing
+          : yield* startMemoSession(input.focusThreadId);
+      yield* Ref.set(memoSession, session);
+      const { current } = session;
+      if ((yield* Ref.get(state)).live !== current) {
+        return yield* new VoiceSessionError({ message: "Another voice session took over." });
+      }
+
+      const heardAt = yield* DateTime.now;
+      yield* Ref.set(current.lastActivity, DateTime.toEpochMillis(heardAt));
+      yield* Ref.set(current.lastUserActivity, DateTime.toEpochMillis(heardAt));
+      // A retry after a failed turn repeats the memo; it is the same reply, not a new one.
+      const [last] = yield* store.recentTranscript(1);
+      if (
+        last?.generation !== current.generation ||
+        last.role !== "user" ||
+        last.text !== input.text
+      ) {
+        yield* store.appendTranscript({
+          generation: current.generation,
+          role: "user",
+          text: input.text,
+          at: heardAt,
+        });
+      }
+      const intro = yield* Ref.get(session.intro);
+      const previousFocus = yield* Ref.get(session.focusThreadId);
+      const focusNote =
+        intro === undefined &&
+        input.focusThreadId !== undefined &&
+        input.focusThreadId !== previousFocus
+          ? `The user sent this memo from the thread "${(yield* threadInfo(input.focusThreadId)).title}" (threadId ${input.focusThreadId}). "This thread" now means that one.`
+          : undefined;
+      const context = [intro, focusNote].filter((part) => part !== undefined);
+      const answer = yield* session.prepared.runTurn(
+        context.length === 0 ? input.text : [...context, `Memo: ${input.text}`].join("\n\n"),
+      );
+      yield* Ref.set(session.intro, undefined);
+      yield* Ref.set(session.focusThreadId, input.focusThreadId ?? previousFocus);
+
+      // News waits when the reply asks something, so the next memo answers only that.
+      const news = endsWithQuestion(answer)
+        ? []
+        : yield* freshNotices(
+            yield* store.undeliveredNoticesSince(session.newsSince, NOTICE_LOOKBACK),
+          );
+      const newsText = composeNoticeBatch(news);
+      const answeredAt = yield* DateTime.now;
+      for (const text of newsText === "" ? [answer] : [answer, newsText]) {
+        yield* store.appendTranscript({
+          generation: current.generation,
+          role: "assistant",
+          text,
+          at: answeredAt,
+        });
+      }
+      yield* store.markDelivered(news.map((notice) => notice.id));
+      yield* Ref.set(current.lastActivity, yield* nowMillis);
+      return newsText === "" ? answer : `${answer}\n\n${newsText}`;
+    }).pipe(
+      Effect.catchTags({
+        T3ClientError: (cause) =>
+          Effect.logWarning("voice-session.memo-t3-failed", { cause }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new VoiceSessionError({ message: "Couldn't reach T3. Try again shortly." }),
+              ),
+            ),
+          ),
+      }),
+      memoLock.withPermits(1),
+    );
+
   const open: VoiceOrchestratorShape["open"] = (input) =>
     Stream.unwrap(
       Effect.gen(function* () {
@@ -1124,6 +1353,7 @@ export const make = Effect.gen(function* () {
 
   return VoiceOrchestrator.of({
     open,
+    memo,
     respond,
     requestConfirmation,
     proposeAction,

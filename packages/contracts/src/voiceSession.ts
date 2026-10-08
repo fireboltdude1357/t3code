@@ -162,6 +162,44 @@ export const VOICE_SIDECAR_INFO_PATH = "/voice/info";
 export const VOICE_SIDECAR_RPC_PATH = "/voice/rpc";
 
 /**
+ * Voice memos: the phone records one message, sends it, and plays the spoken
+ * reply. Unlike a call, nothing streams, so a dropped connection only delays
+ * the reply.
+ *
+ * `POST /voice/memo?memoId=…&focusThreadId=…` takes the raw recording as the
+ * body (m4a/AAC as `audio/mp4`) and answers with `VoiceMemoReply` once the
+ * reply is ready, which can take a minute. Failures answer with
+ * `VoiceMemoFailure` and a 4xx or 5xx status.
+ */
+export const VOICE_SIDECAR_MEMO_PATH = "/voice/memo";
+
+export const VoiceMemoSubmitParams = Schema.Struct({
+  /**
+   * A UUID the phone picks per recording. Sending the same id again returns
+   * the same reply, so retrying after a dropped connection never runs the memo
+   * twice.
+   */
+  memoId: TrimmedNonEmptyString,
+  /** Thread the memo was recorded from, so "this thread" means it. */
+  focusThreadId: Schema.optional(ThreadId),
+});
+export type VoiceMemoSubmitParams = typeof VoiceMemoSubmitParams.Type;
+
+export const VoiceMemoReply = Schema.Struct({
+  memoId: TrimmedNonEmptyString,
+  /** What the server heard. */
+  transcript: Schema.String,
+  /** What the reply audio says, including any news from other threads. */
+  reply: Schema.String,
+  /** Path of the spoken reply (`audio/mp4`) on the sidecar, served by `GET`. */
+  audioPath: Schema.String,
+});
+export type VoiceMemoReply = typeof VoiceMemoReply.Type;
+
+export const VoiceMemoFailure = Schema.Struct({ message: Schema.String });
+export type VoiceMemoFailure = typeof VoiceMemoFailure.Type;
+
+/**
  * The voice sidecar's RPC surface, served at `VOICE_SIDECAR_RPC_PATH` over a
  * WebSocket. It lives outside `WsRpcGroup` because the T3 server never serves it.
  */
