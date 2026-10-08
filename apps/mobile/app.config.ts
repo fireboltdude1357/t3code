@@ -295,10 +295,12 @@ const config: ExpoConfig = {
       NSLocalNetworkUsageDescription:
         "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
       NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
-      ITSAppUsesNonExemptEncryption: false,
-      // Keeps a voice orchestrator call talking while the phone is locked or
-      // another app is in front.
+      // "Audio, AirPlay, and Picture in Picture": the browser screen's system
+      // picture in picture needs it to start and to stay up outside the app.
+      // "voip" keeps a voice orchestrator call talking while the phone is
+      // locked or another app is in front.
       UIBackgroundModes: ["audio", "voip"],
+      ITSAppUsesNonExemptEncryption: false,
       // The App Store screenshot harness rotates the iPad interface from
       // inside the app (CI denies osascript the Accessibility access that
       // Simulator menu scripting needs), and iPadOS ignores programmatic

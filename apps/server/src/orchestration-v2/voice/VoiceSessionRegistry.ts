@@ -12,15 +12,13 @@ import * as RuntimePolicy from "../RuntimePolicy.ts";
  * A thread is registered before its setup turn, so that turn already runs
  * with the voice policy.
  */
-export interface VoiceSessionRegistryShape {
-  readonly register: (sessionThreadId: ThreadId) => Effect.Effect<void>;
-  readonly unregister: (sessionThreadId: ThreadId) => Effect.Effect<void>;
-  readonly has: (threadId: ThreadId) => Effect.Effect<boolean>;
-}
-
 export class VoiceSessionRegistry extends Context.Service<
   VoiceSessionRegistry,
-  VoiceSessionRegistryShape
+  {
+    readonly register: (sessionThreadId: ThreadId) => Effect.Effect<void>;
+    readonly unregister: (sessionThreadId: ThreadId) => Effect.Effect<void>;
+    readonly has: (threadId: ThreadId) => Effect.Effect<boolean>;
+  }
 >()("t3/orchestration-v2/voice/VoiceSessionRegistry") {}
 
 export const layer = Layer.effect(

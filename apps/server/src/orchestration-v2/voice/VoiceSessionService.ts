@@ -15,10 +15,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import type { ProviderAdapterV2SessionRuntime } from "../ProviderAdapter.ts";
-import { ProviderSessionManagerV2 } from "../ProviderSessionManager.ts";
-import { ThreadManagementService } from "../ThreadManagementService.ts";
+import * as ProviderSessionManager from "../ProviderSessionManager.ts";
+import * as ThreadManagementService from "../ThreadManagementService.ts";
 import { userFacingDispatchErrorMessage } from "../UserFacingErrors.ts";
-import { VoiceSessionRegistry } from "./VoiceSessionRegistry.ts";
+import * as VoiceSessionRegistry from "./VoiceSessionRegistry.ts";
 
 /** The backing agent of every voice session. */
 export const VOICE_SESSION_MODEL = "gpt-6.1-sol";
@@ -41,18 +41,16 @@ export interface PreparedSessionThread {
  * One generation's plumbing, with no product logic: create a session thread,
  * run its setup turn, and archive it afterwards. The orchestrator decides when.
  */
-export interface VoiceSessionServiceShape {
-  readonly prepare: (input: {
-    readonly projectId: ProjectId;
-    readonly generation: number;
-  }) => Effect.Effect<PreparedSessionThread, VoiceSessionError>;
-  /** Unregisters and archives a session thread. Never fails. */
-  readonly release: (sessionThreadId: ThreadId) => Effect.Effect<void>;
-}
-
 export class VoiceSessionService extends Context.Service<
   VoiceSessionService,
-  VoiceSessionServiceShape
+  {
+    readonly prepare: (input: {
+      readonly projectId: ProjectId;
+      readonly generation: number;
+    }) => Effect.Effect<PreparedSessionThread, VoiceSessionError>;
+    /** Unregisters and archives a session thread. Never fails. */
+    readonly release: (sessionThreadId: ThreadId) => Effect.Effect<void>;
+  }
 >()("t3/orchestration-v2/voice/VoiceSessionService") {}
 
 /**
@@ -71,15 +69,17 @@ export const SESSION_AGENT_INSTRUCTIONS = [
   "Reply to this message with just: Ready.",
 ].join("\n");
 
+const isVoiceSessionError = Schema.is(VoiceSessionError);
+
 const toSessionError = (fallback: string) => (cause: unknown) =>
-  Schema.is(VoiceSessionError)(cause)
+  isVoiceSessionError(cause)
     ? cause
     : new VoiceSessionError({ message: userFacingDispatchErrorMessage(cause) ?? fallback });
 
 export const make = Effect.gen(function* () {
-  const threads = yield* ThreadManagementService;
-  const providerSessions = yield* ProviderSessionManagerV2;
-  const registry = yield* VoiceSessionRegistry;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const registry = yield* VoiceSessionRegistry.VoiceSessionRegistry;
   const crypto = yield* Crypto.Crypto;
 
   const uuid = crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -87,7 +87,7 @@ export const make = Effect.gen(function* () {
     uuid.pipe(Effect.map((id) => CommandId.make(`server:voice-session:${tag}:${id}`)));
   const fail = (message: string) => Effect.fail(new VoiceSessionError({ message }));
 
-  const release: VoiceSessionServiceShape["release"] = (sessionThreadId) =>
+  const release: VoiceSessionService["Service"]["release"] = (sessionThreadId) =>
     registry.unregister(sessionThreadId).pipe(
       Effect.andThen(commandId("archive")),
       Effect.flatMap((id) =>
@@ -152,7 +152,7 @@ export const make = Effect.gen(function* () {
       return prepared;
     });
 
-  const prepare: VoiceSessionServiceShape["prepare"] = ({ projectId, generation }) =>
+  const prepare: VoiceSessionService["Service"]["prepare"] = ({ projectId, generation }) =>
     Effect.gen(function* () {
       const sessionThreadId = ThreadId.make(yield* uuid);
       yield* registry.register(sessionThreadId);

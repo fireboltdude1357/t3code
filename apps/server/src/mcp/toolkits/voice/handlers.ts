@@ -13,15 +13,16 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
-import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
-import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
-import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
+import * as ProviderSessionManager from "../../../orchestration-v2/ProviderSessionManager.ts";
+import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { confirmationReadback } from "../../../orchestration-v2/voice/VoiceConfirmation.ts";
-import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
-import { VoiceStore } from "../../../orchestration-v2/voice/VoiceStore.ts";
-import { ProjectService } from "../../../project/ProjectService.ts";
-import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
-import { McpInvocationContext } from "../../McpInvocationContext.ts";
+import * as VoiceOrchestrator from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
+import * as VoiceStore from "../../../orchestration-v2/voice/VoiceStore.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId } from "../../threadAccess.ts";
 import { VoiceToolkit } from "./tools.ts";
 
@@ -58,55 +59,57 @@ function summaryOf(
 }
 
 const make = Effect.gen(function* () {
-  const voice = yield* VoiceOrchestrator;
-  const store = yield* VoiceStore;
-  const threads = yield* ThreadManagementService;
-  const providerSessions = yield* ProviderSessionManagerV2;
-  const launches = yield* ThreadLaunchService;
-  const projects = yield* ProjectService;
-  const providers = yield* ProviderRegistry;
+  const voice = yield* VoiceOrchestrator.VoiceOrchestrator;
+  const store = yield* VoiceStore.VoiceStore;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const launches = yield* ThreadLaunchService.ThreadLaunchService;
+  const projects = yield* ProjectService.ProjectService;
+  const providers = yield* ProviderRegistry.ProviderRegistry;
   /** Refuses every caller except a live voice session thread. */
   const requireVoiceSession = Effect.gen(function* () {
-    const scope = yield* McpInvocationContext;
-    const thread = scope.thread;
-    if (thread === undefined)
-      return yield* new OrchestratorMcpFailure({
-        code: "capability_denied",
-        message: "Voice tools only work in a live voice session.",
-      });
-    const session = yield* voice.liveSession(thread.threadId);
-    if (Option.isNone(session) || !scope.capabilities.has("orchestration"))
+    const scope = yield* McpInvocationContext.McpInvocationContext;
+    const callerThread = scope.thread;
+    const session =
+      callerThread === undefined
+        ? Option.none<VoiceOrchestrator.LiveVoiceSession>()
+        : yield* voice.liveSession(callerThread.threadId);
+    if (
+      callerThread === undefined ||
+      Option.isNone(session) ||
+      !scope.capabilities.has("orchestration")
+    )
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "Voice tools only work in a live voice session.",
       });
     const caller = yield* threads
-      .getThreadShell(thread.threadId)
+      .getThreadShell(callerThread.threadId)
       .pipe(Effect.mapError(orchestrationError("Could not read the voice session thread.")));
     // Realtime turns are untracked, so activeRunId is not an ownership check here.
     if (
       caller === null ||
       caller.deletedAt !== null ||
       caller.archivedAt !== null ||
-      caller.providerInstanceId !== thread.providerInstanceId
+      caller.providerInstanceId !== callerThread.providerInstanceId
     )
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "The calling provider no longer owns the live voice session.",
       });
     const records = yield* threads
-      .getThreadRecords(thread.threadId, ["providerThreads", "providerSessions"])
+      .getThreadRecords(callerThread.threadId, ["providerThreads", "providerSessions"])
       .pipe(Effect.mapError(orchestrationError("Could not read the voice provider binding.")));
     const providerThread = records.providerThreads.find(
       (thread) =>
         thread.id === caller.activeProviderThreadId &&
         thread.appThreadId === caller.id &&
-        thread.providerInstanceId === thread.providerInstanceId,
+        thread.providerInstanceId === callerThread.providerInstanceId,
     );
     const binding = records.providerSessions.find(
       (binding) =>
         binding.id === providerThread?.providerSessionId &&
-        binding.providerInstanceId === thread.providerInstanceId &&
+        binding.providerInstanceId === callerThread.providerInstanceId &&
         binding.status !== "stopped" &&
         binding.status !== "error",
     );
@@ -116,7 +119,7 @@ const make = Effect.gen(function* () {
         : yield* providerSessions
             .get(binding.id)
             .pipe(Effect.mapError(orchestrationError("Could not read the live voice provider.")));
-    if (Option.isNone(runtime) || runtime.value.instanceId !== thread.providerInstanceId)
+    if (Option.isNone(runtime) || runtime.value.instanceId !== callerThread.providerInstanceId)
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "The voice session's provider is no longer attached and running.",
@@ -177,8 +180,8 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  return VoiceToolkit.of({
-    voice_threads: (input) =>
+  return {
+    voice_threads: McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         const sessionThread = yield* requireThread(session.sessionThreadId);
@@ -204,8 +207,9 @@ const make = Effect.gen(function* () {
             .map((thread) => summaryOf(thread, titles)),
         };
       }),
+    ),
 
-    voice_thread_read: (input) =>
+    voice_thread_read: McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         yield* requireVoiceSession;
         const thread = yield* requireThread(input.threadId);
@@ -233,8 +237,9 @@ const make = Effect.gen(function* () {
             .slice(-(input.limit ?? DEFAULT_READ_LIMIT)),
         };
       }),
+    ),
 
-    voice_pending_question_list: (input) =>
+    voice_pending_question_list: McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         yield* requireVoiceSession;
         yield* requireThread(input.threadId);
@@ -248,8 +253,9 @@ const make = Effect.gen(function* () {
             .map((request) => request.id),
         };
       }),
+    ),
 
-    voice_pending_question_read: (input) =>
+    voice_pending_question_read: McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         yield* requireVoiceSession;
         yield* requireThread(input.threadId);
@@ -278,37 +284,42 @@ const make = Effect.gen(function* () {
           questions: item.questions,
         };
       }),
+    ),
 
-    voice_pending_notices: () =>
+    voice_pending_notices: McpToolAccess.actsForVoiceSession(() =>
       Effect.gen(function* () {
         yield* requireVoiceSession;
         const notices = yield* store.undeliveredNotices(20);
         yield* store.markDelivered(notices.map((notice) => notice.id));
         return { notices };
       }),
+    ),
 
-    voice_agenda_list: () =>
+    voice_agenda_list: McpToolAccess.reads(() =>
       Effect.gen(function* () {
         yield* requireVoiceSession;
         return { items: yield* store.listAgenda({ status: "open" }) };
       }),
+    ),
 
-    voice_topic_open: (input) =>
+    voice_topic_open: McpToolAccess.actsForVoiceSession((input) =>
       Effect.gen(function* () {
         yield* requireVoiceSession;
         return { item: yield* store.openTopic(input) };
       }),
+    ),
 
-    voice_topic_close: (input) =>
+    voice_topic_close: McpToolAccess.actsForVoiceSession((input) =>
       Effect.gen(function* () {
         yield* requireVoiceSession;
         return { closed: yield* store.closeItem(input.id) };
       }),
+    ),
 
     // The gate is the user's own words: the draft must match something they
     // said yes to in the call transcript. The session thread's read-only mode
     // does not apply to the target, which sits in another project.
-    voice_send: (input) =>
+    voice_send: McpToolAccess.actsForVoiceSession((input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         const target = yield* requireThread(input.threadId);
@@ -319,7 +330,12 @@ const make = Effect.gen(function* () {
             targetTitle: target.title,
           }))
         )
-          return { status: "needs_spoken_yes" as const, instruction: NEEDS_SPOKEN_YES };
+          return {
+            status: "needs_spoken_yes" as const,
+            instruction: NEEDS_SPOKEN_YES,
+            // Names the thread and holds the whole draft, which is what the gate looks for.
+            readback: `Send to ${target.title}: ${input.text}`,
+          };
         const commandId = yield* newCommandId();
         yield* requireVoiceSession;
         const result = yield* threads
@@ -339,12 +355,12 @@ const make = Effect.gen(function* () {
         return {
           status: "sent" as const,
           threadId: target.id,
-          runId: result.run.id,
-          delivery: result.delivery,
+          delivery: result.delivery === "queued" ? ("queued" as const) : ("auto" as const),
         };
       }),
+    ),
 
-    voice_confirmations: () =>
+    voice_confirmations: McpToolAccess.reads(() =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         const requests = yield* voice.pendingConfirmations(session.sessionThreadId);
@@ -355,8 +371,9 @@ const make = Effect.gen(function* () {
           })),
         };
       }),
+    ),
 
-    voice_approve: (input) =>
+    voice_approve: McpToolAccess.actsForVoiceSession((input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         return yield* voice.approveSpoken({
@@ -364,8 +381,9 @@ const make = Effect.gen(function* () {
           requestId: input.requestId,
         });
       }),
+    ),
 
-    voice_launch: (input) =>
+    voice_launch: McpToolAccess.actsForVoiceSession((input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         const project = yield* projects.getById(input.projectId).pipe(
@@ -423,8 +441,9 @@ const make = Effect.gen(function* () {
               readback: confirmationReadback(request.value),
             };
       }),
+    ),
 
-    voice_interrupt: (input) =>
+    voice_interrupt: McpToolAccess.actsForVoiceSession((input) =>
       Effect.gen(function* () {
         const session = yield* requireVoiceSession;
         const target = yield* requireThread(input.threadId);
@@ -462,7 +481,8 @@ const make = Effect.gen(function* () {
               readback: confirmationReadback(request.value),
             };
       }),
-  });
+    ),
+  } satisfies McpToolAccess.Handlers<typeof VoiceToolkit.tools>;
 });
 
-export const VoiceToolkitHandlersLive = VoiceToolkit.toLayer(make);
+export const layer = McpToolAccess.toLayer(VoiceToolkit, make);

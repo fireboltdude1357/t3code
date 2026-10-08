@@ -16,11 +16,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { McpSchema, McpServer } from "effect/ai";
 
-import { OrchestratorV2 } from "../../../orchestration-v2/Orchestrator.ts";
+import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
-import { VoiceOrchestrator } from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
-import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { layerThreadToolkit } from "../../McpHttpServer.ts";
+import * as VoiceOrchestrator from "../../../orchestration-v2/voice/VoiceOrchestrator.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as McpHttpServer from "../../McpHttpServer.ts";
 
 const SESSION_THREAD = ThreadId.make("voice-session");
 const SAME_PROJECT_THREAD = ThreadId.make("voice-project-thread");
@@ -76,7 +76,7 @@ const client = McpSchema.McpServerClient.of({
 
 const makeHarness = Effect.fn("makePendingQuestionHarness")(function* () {
   const dispatched: Array<OrchestrationV2ServerCommand> = [];
-  const voice = Layer.mock(VoiceOrchestrator)({
+  const voice = Layer.mock(VoiceOrchestrator.VoiceOrchestrator)({
     liveSession: (threadId) =>
       Effect.succeed(
         threadId === SESSION_THREAD
@@ -90,7 +90,7 @@ const makeHarness = Effect.fn("makePendingQuestionHarness")(function* () {
   });
   const management = ThreadManagement.layer.pipe(
     Layer.provide(
-      Layer.mock(OrchestratorV2)({
+      Layer.mock(Orchestrator.OrchestratorV2)({
         getThreadShell: (id) =>
           Effect.succeed(shell(id, id === OTHER_PROJECT_THREAD ? WORK_PROJECT : VOICE_PROJECT)),
         getThreadRecords: (id) =>
@@ -108,7 +108,7 @@ const makeHarness = Effect.fn("makePendingQuestionHarness")(function* () {
   const dependencies = Layer.mergeAll(management, voice, NodeCrypto.layer);
   const server = yield* McpServer.McpServer.pipe(
     Effect.provide(
-      layerThreadToolkit.pipe(
+      McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(dependencies),
       ),
@@ -116,22 +116,22 @@ const makeHarness = Effect.fn("makePendingQuestionHarness")(function* () {
   );
   const call = (name: string, args: Record<string, unknown>) =>
     server.callTool({ name, arguments: args }).pipe(
-      Effect.provideService(McpInvocationContext, {
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
-        requestNamespace: "test",
+        issuedAt: 0,
+        requestNamespace: "pending-question-test",
+        capabilities: new Set(["orchestration" as const]),
         thread: {
           threadId: SESSION_THREAD,
           providerSessionId: "voice-provider-session",
           providerInstanceId,
         },
         client: undefined,
-        issuedAt: 0,
-        capabilities: new Set(["orchestration" as const]),
       }),
       Effect.provideService(McpSchema.McpServerClient, client),
       Effect.provide(dependencies),
     );
-  const liveSession = yield* VoiceOrchestrator.pipe(Effect.provide(voice));
+  const liveSession = yield* VoiceOrchestrator.VoiceOrchestrator.pipe(Effect.provide(voice));
   expect(Option.isSome(yield* liveSession.liveSession(SESSION_THREAD))).toBe(true);
   return { call, dispatched };
 });
@@ -172,10 +172,9 @@ describe("normal pending-question tools from a live voice session", () => {
         requestId: APPROVAL,
         answers: { approval: "yes" },
       });
-      // Declared tool failures arrive as `isError` with the payload as JSON text.
-      const text = result.content[0];
+      const failure = result.content[0];
       expect(result.isError).toBe(true);
-      expect(text?.type === "text" ? JSON.parse(text.text) : undefined).toMatchObject({
+      expect(failure?.type === "text" ? JSON.parse(failure.text) : undefined).toMatchObject({
         code: "invalid_request",
       });
       expect(harness.dispatched).toEqual([]);
