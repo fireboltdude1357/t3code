@@ -201,6 +201,13 @@ export class ProviderSessionManagerV2 extends Context.Service<
 
 interface LiveSessionEntry {
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
+  /**
+   * Threads that detached from this runtime, most recent last. A thread that
+   * re-attaches stays listed. Release still owes these threads its records:
+   * their pending requests on this runtime are resolved, and once no thread is
+   * attached the most recent one carries the session's terminal status.
+   */
+  readonly detachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /**
    * MCP credential session id issued for each attached thread. Revocation on
@@ -661,9 +668,15 @@ export const layerWithOptions = (
                 ? (input.detail ?? "Provider runtime failed.")
                 : null,
           };
+          // After every thread detaches, the status still needs one event.
+          // The session row is global, so the thread that detached last can
+          // carry it. Without it the row stays "ready" for good.
           yield* writeProviderSessionEvents({
             runtime: input.entry.runtime,
-            threadIds: input.entry.attachedThreadIds,
+            threadIds:
+              input.entry.attachedThreadIds.size > 0
+                ? input.entry.attachedThreadIds
+                : [...input.entry.detachedThreadIds].slice(-1),
             type: "provider-session.updated",
             payload,
           });
@@ -685,7 +698,13 @@ export const layerWithOptions = (
               : "Provider session was closed before this runtime request was resolved.";
 
           const events: Array<OrchestrationV2DomainEvent> = [];
-          for (const threadId of input.entry.attachedThreadIds) {
+          // A thread that detached can still hold a pending request on this
+          // runtime, and nothing can answer it once the runtime is gone.
+          const threadIds = new Set([
+            ...input.entry.attachedThreadIds,
+            ...input.entry.detachedThreadIds,
+          ]);
+          for (const threadId of threadIds) {
             const projection = yield* projectionStore.getThreadRecords(
               threadId,
               ["runtimeRequests", "nodes", "turnItems"],
@@ -2148,6 +2167,7 @@ export const layerWithOptions = (
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
+                detachedThreadIds: new Set(),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:
                   mcpCredentialId === undefined
@@ -2326,6 +2346,9 @@ export const layerWithOptions = (
               }
               const attachedThreadIds = new Set(entry.attachedThreadIds);
               attachedThreadIds.delete(input.threadId);
+              const detachedThreadIds = new Set(entry.detachedThreadIds);
+              detachedThreadIds.delete(input.threadId);
+              detachedThreadIds.add(input.threadId);
               const loadedProviderThreadKeyByThread = new Map(
                 entry.loadedProviderThreadKeyByThread,
               );
@@ -2349,6 +2372,7 @@ export const layerWithOptions = (
               const updatedEntry = {
                 ...entry,
                 attachedThreadIds,
+                detachedThreadIds,
                 loadedProviderThreadKeyByThread,
                 mcpCredentialIdByThread,
                 idleThreadUnloads,
