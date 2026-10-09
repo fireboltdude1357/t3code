@@ -375,7 +375,7 @@ export const make = Effect.gen(function* () {
         // Sessions can outlive their run and can be shared across app threads.
         const sessionRows = yield* sql<{ payload_json: string }>`
           SELECT payload_json FROM orchestration_v2_projection_provider_sessions
-          WHERE status NOT IN ('stopped', 'error')
+          WHERE status != 'stopped'
         `;
         const sessions = yield* Effect.forEach(sessionRows, (row) =>
           decodeCleanupSession(row.payload_json),
