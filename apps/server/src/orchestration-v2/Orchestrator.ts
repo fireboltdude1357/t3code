@@ -604,10 +604,14 @@ function delegatedTaskTerminalStatus(
   }
 }
 
+/**
+ * The next queued run that may start. Held runs wait for the user; the only
+ * runs queued unheld beside them are provider wakes, which never wait.
+ */
 function nextQueuedRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): OrchestrationV2Run | undefined {
-  return queuedRunsInDeliveryOrder(projection)[0];
+  return queuedRunsInDeliveryOrder(projection).find((run) => run.queueHeld !== true);
 }
 
 function latestStableRun(
@@ -1278,8 +1282,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
-        projection.runs.some(isBlockingRun) ||
-        projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+        projection.runs.some(isBlockingRun)
       ) {
         return;
       }
@@ -4974,6 +4977,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
+        const isProviderWake =
+          command.createdBy === "agent" && command.creationSource === "provider";
         const run: OrchestrationV2Run = {
           id: runId,
           threadId: command.threadId,
@@ -4985,7 +4990,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
-          ...(projection.runs.some(
+          // A provider wake is not held with the queue: the provider is already
+          // running that turn, and this run only attaches its output. Held, the
+          // turn would run with no T3 run, so its T3 tool calls fail.
+          ...(!isProviderWake &&
+          projection.runs.some(
             (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
           )
             ? { queueHeld: true }
