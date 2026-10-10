@@ -1070,6 +1070,8 @@ it.effect("Stop holds a provider wake that queues before the stopped turn ends",
 
         // The interrupt ends the stopped run, and nothing starts after it.
         yield* worker.drain();
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
         const after = yield* orchestrator.getThreadProjection(threadId);
         assert.deepEqual(
           after.runs.map((run) => run.status),

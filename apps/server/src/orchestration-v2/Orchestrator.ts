@@ -4980,10 +4980,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const queueIsHeld = projection.runs.some(
           (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
         );
-        // A provider wake doesn't inherit a hold left by a restart or a provider failure. That
-        // hold keeps back earlier messages. A Claude wake is a turn the CLI already runs, so
-        // holding it leaves that turn with no T3 run and its T3 tool calls fail. A wake that
-        // arrives after Stop reached the active run still waits, since Stop starts nothing.
+        // A provider wake adopts a turn the provider already started, such as Claude's
+        // background-task wake. It doesn't inherit a hold left by a restart or a provider
+        // failure. Holding it doesn't stop that turn. It only leaves the turn with no T3 run,
+        // so its T3 tool calls fail. A wake that arrives after Stop reached the active run
+        // still waits, since Stop starts nothing.
         const wakeSkipsHold =
           queueIsHeld &&
           command.createdBy === "agent" &&
