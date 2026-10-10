@@ -606,7 +606,7 @@ function delegatedTaskTerminalStatus(
 
 /**
  * The next queued run that may start. Held runs wait for the user; the only
- * runs queued unheld beside them are provider wakes, which never wait.
+ * runs queued unheld beside them are provider wakes that skipped the hold.
  */
 function nextQueuedRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
@@ -4977,8 +4977,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
-        const isProviderWake =
-          command.createdBy === "agent" && command.creationSource === "provider";
+        const queueIsHeld = projection.runs.some(
+          (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
+        );
+        // A provider wake doesn't inherit a hold left by a restart or a provider failure. That
+        // hold keeps back earlier messages. A Claude wake is a turn the CLI already runs, so
+        // holding it leaves that turn with no T3 run and its T3 tool calls fail. A wake that
+        // arrives after Stop reached the active run still waits, since Stop starts nothing.
+        const wakeSkipsHold =
+          queueIsHeld &&
+          command.createdBy === "agent" &&
+          command.creationSource === "provider" &&
+          !(yield* stopReachedRun(command, command.threadId, activeRun.id));
         const run: OrchestrationV2Run = {
           id: runId,
           threadId: command.threadId,
@@ -4990,15 +5000,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
-          // A provider wake is not held with the queue: the provider is already
-          // running that turn, and this run only attaches its output. Held, the
-          // turn would run with no T3 run, so its T3 tool calls fail.
-          ...(!isProviderWake &&
-          projection.runs.some(
-            (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
-          )
-            ? { queueHeld: true }
-            : {}),
+          ...(queueIsHeld && !wakeSkipsHold ? { queueHeld: true } : {}),
           queuePosition:
             Math.max(
               0,
