@@ -12,7 +12,7 @@ import * as Option from "effect/Option";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import { refuseHomeFolder } from "../../../home/FleetService.ts";
 import * as HomeService from "../../../home/HomeService.ts";
-import { callerIsHome, routeHome, runAsHome } from "../../homeRouting.ts";
+import { callerIsHome, readHomeChangeCaller, routeHome, runAsHome } from "../../homeRouting.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -95,6 +95,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // Home is always a thread caller; its id scopes the watches it saves.
         const homeThreadId = (yield* callerIsHome()) ? caller?.id : undefined;
         const isHome = homeThreadId !== undefined;
+        // Checked before any path or watch: Home in plan or a narrower runtime
+        // mode is read-only, including launches that carry attachments.
+        if (isHome) yield* readHomeChangeCaller();
         const targetEnvironmentId = input.environmentId ?? scope.environmentId;
         const remote = targetEnvironmentId !== scope.environmentId;
         // Home's folder carries Home's own instructions, so nothing launches there.

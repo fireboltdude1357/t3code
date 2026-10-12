@@ -212,6 +212,7 @@ it.effect("makes Home name a project and watches the thread before launching it"
       archivedAt: null,
       deletedAt: null,
     } as OrchestrationV2ThreadShell;
+    let interactionMode = "default";
     const steps: Array<string> = [];
     const launched: Array<unknown> = [];
     let home = { threadId: homeThreadId, watchAll: false, watches: [] } as HomeSettings;
@@ -249,7 +250,7 @@ it.effect("makes Home name a project and watches the thread before launching it"
         capabilities: new Set(["orchestration" as const]),
       }),
       Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: () => Effect.succeed(caller),
+        getThreadShell: () => Effect.succeed({ ...caller, interactionMode } as typeof caller),
       }),
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
         launch: (input) => {
@@ -305,6 +306,12 @@ it.effect("makes Home name a project and watches the thread before launching it"
       .handle("t3_project_delete", { projectId: ProjectId.make("project:app"), force: true })
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
     expect(deleted.at(-1)?.result).toMatchObject({ code: "capability_denied" });
+
+    // Home in plan mode is read-only: refused before anything is watched.
+    interactionMode = "plan";
+    const planned = yield* handle({ title: "Audit", projectId: ProjectId.make("project:app") });
+    expect(planned.at(-1)?.result).toMatchObject({ code: "capability_denied" });
+    expect(steps).toHaveLength(2);
   }),
 );
 
