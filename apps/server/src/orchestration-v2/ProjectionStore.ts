@@ -35,7 +35,6 @@ import type {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
-  ProviderTurnId,
   RunAttemptId,
 } from "@t3tools/contracts";
 import {
@@ -56,6 +55,8 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
+  ProviderDriverKind,
+  ProviderTurnId,
   RunId,
   MessageId,
   RuntimeRequestId,
@@ -167,6 +168,87 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   | "limitRecovery"
   | "snoozedUntil"
 >;
+
+/** An idle thread whose latest completed provider turn reported its context size. */
+export interface ProjectionCacheExpiryCompactionCandidate {
+  readonly threadId: ThreadId;
+  readonly providerTurnId: ProviderTurnId;
+  readonly driver: ProviderDriverKind;
+  readonly usedTokens: number;
+  readonly usageUpdatedAt: string;
+  readonly promptCacheTtlMs: number | undefined;
+}
+
+const CACHE_EXPIRY_COMPACTION_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
+const IDLE_BLOCKING_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+/**
+ * The candidate a parked thread offers for compaction before its prompt cache
+ * expires: idle, unparked, its last run a normal completed turn (not itself a
+ * `/compact`), on Claude or Codex, and at least `minTokens` large.
+ */
+export function cacheExpiryCompactionCandidateFromProjection(
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "thread" | "runs" | "runtimeRequests" | "messages" | "providerThreads" | "providerTurns"
+  >,
+  minTokens: number,
+): ProjectionCacheExpiryCompactionCandidate | null {
+  const { thread } = projection;
+  if (
+    thread.deletedAt !== null ||
+    thread.archivedAt !== null ||
+    thread.settledOverride === "settled" ||
+    thread.snoozedUntil != null ||
+    projection.runs.some((run) => IDLE_BLOCKING_RUN_STATUSES.has(run.status)) ||
+    projection.runtimeRequests.some((request) => request.status === "pending")
+  )
+    return null;
+  const latestRun = projection.runs
+    .filter((run) => run.completedAt !== null)
+    .toSorted(
+      (left, right) =>
+        DateTime.toEpochMillis(right.completedAt!) - DateTime.toEpochMillis(left.completedAt!) ||
+        right.ordinal - left.ordinal,
+    )[0];
+  const message = projection.messages.find(
+    (candidate) => candidate.id === latestRun?.userMessageId,
+  );
+  if (
+    latestRun?.status !== "completed" ||
+    message === undefined ||
+    message.text.trim().toLowerCase() === "/compact"
+  )
+    return null;
+  const providerThread = projection.providerThreads.find(
+    (candidate) => candidate.id === thread.activeProviderThreadId,
+  );
+  const turn = projection.providerTurns
+    .filter((candidate) => candidate.providerThreadId === providerThread?.id)
+    .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+  if (
+    providerThread === undefined ||
+    !CACHE_EXPIRY_COMPACTION_DRIVERS.has(providerThread.driver) ||
+    turn?.status !== "completed" ||
+    turn.tokenUsage === undefined ||
+    turn.tokenUsage.usedTokens < minTokens
+  )
+    return null;
+  return {
+    threadId: thread.id,
+    providerTurnId: turn.id,
+    driver: providerThread.driver,
+    usedTokens: turn.tokenUsage.usedTokens,
+    usageUpdatedAt: turn.tokenUsage.updatedAt,
+    promptCacheTtlMs: turn.tokenUsage.promptCacheTtlMs,
+  };
+}
 
 /** The thread fields pull request sync reads, for a thread with at least one link. */
 export type ProjectionThreadPullRequests = Pick<
@@ -402,6 +484,14 @@ export interface ProjectionStoreV2Shape {
     readonly autoResume: boolean;
     readonly snooze: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
+  /** Idle Claude and Codex threads whose latest usage report is recent and at least `minTokens`. */
+  readonly getCacheExpiryCompactionCandidates: (options: {
+    readonly now: DateTime.Utc;
+    readonly minTokens: number;
+  }) => Effect.Effect<
+    ReadonlyArray<ProjectionCacheExpiryCompactionCandidate>,
+    ProjectionStoreV2Error
+  >;
   /** Every candidate, or only `threadId` when a sweep checks one thread. */
   readonly getSettlementCandidates: (
     threadId?: ThreadId,
@@ -3574,6 +3664,78 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getCacheExpiryCompactionCandidates = Effect.fn(
+      "ProjectionStore.getCacheExpiryCompactionCandidates",
+    )(
+      function* (
+        options: Parameters<ProjectionStoreV2Shape["getCacheExpiryCompactionCandidates"]>[0],
+      ) {
+        // Mirrors cacheExpiryCompactionCandidateFromProjection with indexed
+        // latest-row lookups. No prompt cache outlives an hour, so older usage
+        // reports are skipped before any run or message is read.
+        const rows = yield* sql<{
+          readonly thread_id: string;
+          readonly provider_turn_id: string;
+          readonly driver: string;
+          readonly used_tokens: number;
+          readonly usage_updated_at: string;
+          readonly prompt_cache_ttl_ms: number | null;
+        }>`
+          SELECT t.thread_id, turn.provider_turn_id,
+            json_extract(provider_thread.payload_json, '$.driver') AS driver,
+            json_extract(turn.payload_json, '$.tokenUsage.usedTokens') AS used_tokens,
+            json_extract(turn.payload_json, '$.tokenUsage.updatedAt') AS usage_updated_at,
+            json_extract(turn.payload_json, '$.tokenUsage.promptCacheTtlMs') AS prompt_cache_ttl_ms
+          FROM orchestration_v2_projection_threads t
+          INNER JOIN orchestration_v2_projection_provider_turns turn ON turn.provider_turn_id = (
+            SELECT latest.provider_turn_id FROM orchestration_v2_projection_provider_turns latest
+            WHERE latest.provider_thread_id = t.active_provider_thread_id
+            ORDER BY latest.ordinal DESC
+            LIMIT 1
+          )
+          INNER JOIN orchestration_v2_projection_provider_threads provider_thread
+            ON provider_thread.provider_thread_id = turn.provider_thread_id
+          INNER JOIN orchestration_v2_projection_runs r ON r.run_id = (
+            SELECT latest.run_id FROM orchestration_v2_projection_runs latest
+            WHERE latest.thread_id = t.thread_id AND latest.completed_at IS NOT NULL
+            ORDER BY latest.completed_at DESC, latest.ordinal DESC
+            LIMIT 1
+          ) AND r.status = 'completed'
+          INNER JOIN orchestration_v2_projection_messages message
+            ON message.message_id = json_extract(r.payload_json, '$.userMessageId')
+          WHERE t.deleted_at IS NULL
+            AND json_extract(t.payload_json, '$.archivedAt') IS NULL
+            AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+            AND json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+            AND turn.status = 'completed'
+            AND json_extract(turn.payload_json, '$.tokenUsage.usedTokens') >= ${options.minTokens}
+            AND julianday(json_extract(turn.payload_json, '$.tokenUsage.updatedAt'))
+              > julianday(${DateTime.formatIso(options.now)}) - 1.0 / 24
+            AND json_extract(provider_thread.payload_json, '$.driver') IN ('claudeAgent', 'codex')
+            AND lower(trim(json_extract(message.payload_json, '$.text'), ${javascriptTrimWhitespace})) <> '/compact'
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs active
+              WHERE active.thread_id = t.thread_id
+                AND active.status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+            )
+          ORDER BY t.thread_id
+        `;
+        return rows.map((row): ProjectionCacheExpiryCompactionCandidate => ({
+          threadId: ThreadId.make(row.thread_id),
+          providerTurnId: ProviderTurnId.make(row.provider_turn_id),
+          driver: ProviderDriverKind.make(row.driver),
+          usedTokens: row.used_tokens,
+          usageUpdatedAt: row.usage_updated_at,
+          promptCacheTtlMs: row.prompt_cache_ttl_ms ?? undefined,
+        }));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getRecoveryThreadIds = Effect.fn("ProjectionStore.getRecoveryThreadIds")(
       function* (kind: ProjectionRecoveryKind) {
         const candidates = (() => {
@@ -5967,6 +6129,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getPlan,
       getProviderControlContext,
       getLimitRecoveryCandidates,
+      getCacheExpiryCompactionCandidates,
       getRecoveryThreadIds,
       getUnreadableThreadIds,
       getThreadSnapshot,
@@ -6161,6 +6324,24 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 );
               })
               .toSorted((left, right) => left.id.localeCompare(right.id)),
+          ),
+        ),
+      getCacheExpiryCompactionCandidates: (options) =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            [...state.projections.values()]
+              .flatMap((projection) => {
+                const candidate = cacheExpiryCompactionCandidateFromProjection(
+                  projection,
+                  options.minTokens,
+                );
+                return candidate === null ||
+                  DateTime.toEpochMillis(options.now) - Date.parse(candidate.usageUpdatedAt) >=
+                    60 * 60_000
+                  ? []
+                  : [candidate];
+              })
+              .toSorted((left, right) => left.threadId.localeCompare(right.threadId)),
           ),
         ),
       getRecoveryThreadIds: (kind) =>

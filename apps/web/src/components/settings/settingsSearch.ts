@@ -356,6 +356,19 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset recover continue"],
   },
   {
+    id: "compact-before-cache-expires",
+    title: "Compact before cache expires",
+    to: "/settings/general",
+    searchTerms: ["compact compaction prompt cache cold idle context tokens claude codex"],
+  },
+  {
+    id: "compact-before-cache-expires-min-context",
+    title: "Minimum context to compact",
+    to: "/settings/general",
+    targetId: "compact-before-cache-expires",
+    searchTerms: ["compact compaction threshold tokens context size"],
+  },
+  {
     id: "working-shelf",
     title: "Working section (beta)",
     to: "/settings/general",

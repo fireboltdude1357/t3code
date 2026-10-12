@@ -96,6 +96,7 @@ function AutoSettleSettingsRows() {
     patch: Partial<AutoSettleSettings> & {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
+      cacheExpiryCompactionMinTokens?: number | null;
     },
   ) => {
     if (
@@ -204,6 +205,29 @@ function AutoSettleSettingsRows() {
             value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
             disabled={disabled}
             onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
+          />
+        </SettingsSection>
+      ) : null}
+      {!projectSelected ? (
+        <SettingsSection title="Context">
+          <SettingsSwitchRow
+            icon="clock"
+            label="Compact before cache expires"
+            value={
+              displayTargets.every(
+                (target) => target.settings.cacheExpiryCompactionMinTokens !== null,
+              )
+                ? true
+                : displayTargets.every(
+                      (target) => target.settings.cacheExpiryCompactionMinTokens === null,
+                    )
+                  ? false
+                  : null
+            }
+            disabled={disabled}
+            onValueChange={(value) =>
+              writeToAll({ cacheExpiryCompactionMinTokens: value ? 150_000 : null })
+            }
           />
         </SettingsSection>
       ) : null}
