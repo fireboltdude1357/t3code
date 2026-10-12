@@ -129,15 +129,15 @@ export function HomeRouteScreen() {
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
   const projectScopeKey = listOptions.selectedProjectKey;
-  const selectedProjectKey = resolveScratchProjectScopeKey(projectScopeKey, projects, {
+  const resolvedProjectKey = resolveScratchProjectScopeKey(projectScopeKey, projects, {
     sidebarProjectGroupingMode: listOptions.projectGroupingMode,
     sidebarProjectGroupingOverrides: {},
   });
   useEffect(() => {
-    if (selectedProjectKey !== projectScopeKey) {
-      setSelectedProjectKey(selectedProjectKey);
+    if (resolvedProjectKey !== projectScopeKey) {
+      setSelectedProjectKey(resolvedProjectKey);
     }
-  }, [projectScopeKey, selectedProjectKey, setSelectedProjectKey]);
+  }, [projectScopeKey, resolvedProjectKey, setSelectedProjectKey]);
   // The voice sidecar serves one environment. The button shows while that
   // environment is connected and matches the filter, if there is one.
   const voiceSidecarEnvironmentId = useVoiceSidecarEnvironmentId();
@@ -170,14 +170,12 @@ export function HomeRouteScreen() {
       })),
     [listOptions.projectGroupingMode, projects, selectedEnvironmentId],
   );
-  useEffect(() => {
-    if (
-      selectedProjectKey !== null &&
-      !projectFilterOptions.some((project) => project.key === selectedProjectKey)
-    ) {
-      setSelectedProjectKey(null);
-    }
-  }, [projectFilterOptions, selectedProjectKey, setSelectedProjectKey]);
+  // A saved project stays selected while its environment is offline or filtered out.
+  const selectedProjectKey = projectFilterOptions.some(
+    (project) => project.key === resolvedProjectKey,
+  )
+    ? resolvedProjectKey
+    : null;
 
   // In split layouts the persistent sidebar IS the thread list — Home becomes
   // an empty detail pane so selecting a thread never transitions layouts.
@@ -231,7 +229,7 @@ export function HomeRouteScreen() {
 
   return (
     <AndroidHomeFabLayout
-      disabled={workspace !== null}
+      disabled={workspace !== null && Platform.OS !== "android"}
       onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
     >
       <>
@@ -253,7 +251,7 @@ export function HomeRouteScreen() {
                     params: { screen: "SettingsEnvironments" },
                   }),
               }),
-              headerShown: true,
+              headerShown: Platform.OS !== "android",
             }}
           />
         )}
