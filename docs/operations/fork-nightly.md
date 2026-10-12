@@ -60,15 +60,16 @@ Windows builds are unsigned. The updater installs them because their `app-update
 
 Mac builds are signed with Architech's Developer ID and notarized, from the `CSC_LINK`, `CSC_KEY_PASSWORD` and `APPLE_API_KEY*` secrets, when `FORK_BUILD_MACOS` is `true`. macOS only installs an update signed by the running app's identity, so a Mac moves from Theo's build to the fork's by hand once. There is no provisioning profile: `com.t3tools.t3code` belongs to Theo's team, and the passkey domains only trust his. Without one the build skips the passkey entitlements, so the in-app browser can't use passkeys.
 
-## Turning it on
+## Setup
 
-These steps change shared state and machines, so each one is done deliberately:
+- `patch/release` is the fork's default branch. GitHub only runs schedules and manual dispatches from workflows on the default branch, and this way a workflow change takes effect without a build.
+- The upstream workflows are disabled in the fork. Their runs wait forever for Blacksmith runners.
+- `FORK_NIGHTLY_ENABLED` and `FORK_BUILD_MACOS` are `true`. `FORK_NIGHTLY_WEBHOOK` is optional.
+- Fleet's updater on stl-wsl (`services/t3-preview-update/`) installs each fork nightly on the WSL server.
 
-1. Run the workflow by hand with `publish` checked and install the result on one machine first.
-2. Make `fork-main` the fork's default branch. GitHub only runs schedules and manual dispatches from workflows on the default branch.
-3. Disable the upstream workflows in the fork (`Release` and the others). Their scheduled runs wait forever for Blacksmith runners.
-4. Set the `FORK_NIGHTLY_ENABLED` variable to `true`, and optionally `FORK_NIGHTLY_WEBHOOK`.
-5. Move each machine onto fork builds once. On the WSL server, an explicit version skips the release index:
-   `T3CODE_RELEASE_BASE_URL=https://github.com/fireboltdude1357/t3code/releases/download t3 update <version> --yes`.
-   On Windows, run the fork installer over the stock app. On a Mac, quit T3 Code and replace the app in `/Applications` with the one from the fork's DMG.
-6. Point the Fleet update timer at the fork's releases. It reads `repos/pingdotgg/t3code` in `services/t3-preview-update/preview-update.sh`.
+A machine moves onto fork builds once:
+
+- WSL server: an explicit version skips the release index.
+  `T3CODE_RELEASE_BASE_URL=https://github.com/fireboltdude1357/t3code/releases/download t3 update <version> --yes`
+- Windows: run the fork installer over the stock app with `/S`.
+- Mac: quit T3 Code and replace `/Applications/T3 Code (Nightly).app` with the app from the fork's zip or DMG.
