@@ -212,6 +212,8 @@ it.effect(
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
+          getCacheExpiryCompactionCandidates: () =>
+            Effect.die("unused getCacheExpiryCompactionCandidates"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
