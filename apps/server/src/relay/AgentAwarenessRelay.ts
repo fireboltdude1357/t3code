@@ -6,6 +6,7 @@ import type {
   Project,
   ThreadId,
 } from "@t3tools/contracts";
+import { threadBotName } from "@t3tools/contracts";
 import {
   RelayApi,
   type RelayAgentActivityPublishProofPayload,
@@ -129,8 +130,15 @@ export function shouldPublishAgentAwarenessEvent(
     case "provider-turn.updated":
     case "turn-item.updated":
       return isTurnItemPayload(event.payload) && turnItemUpdateCanEndBackgroundWork(event.payload);
-    case "message.updated":
+    // A bot thread's finished row depends on its proposed plan staying actionable.
     case "plan.updated":
+      return (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        "kind" in event.payload &&
+        event.payload.kind === "proposed_plan"
+      );
+    case "message.updated":
     case "checkpoint-scope.created":
     case "checkpoint.captured":
     case "checkpoint.rollback-requested":
@@ -635,7 +643,10 @@ export const make = Effect.gen(function* () {
     publishConfirmDeadlines.delete(threadId);
     yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
       const nextPublishedStates = new Map(publishedStates);
-      if (snapshot.state === null) {
+      // A finished bot thread keeps its tombstone identity, so later events on
+      // it (PR syncs, title updates) match it instead of each publishing
+      // another tombstone. Lost history still sends one, clearing stale rows.
+      if (snapshot.state === null && threadBotName(threadId) === null) {
         nextPublishedStates.delete(threadId);
       } else {
         nextPublishedStates.set(threadId, publishIdentity);
