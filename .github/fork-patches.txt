@@ -1,0 +1,8 @@
+# Patches the fork merges onto each upstream nightly, in this order.
+# Format: <name> <fork branch> [<owner>/<repo>#<pr> the branch follows]
+# See docs/operations/fork-nightly.md.
+
+release  patch/release
+voice    patch/voice
+home     patch/home    pingdotgg/t3code#15975
+bots     patch/bots
