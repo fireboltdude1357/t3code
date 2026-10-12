@@ -269,7 +269,7 @@ const make = Effect.gen(function* () {
           { projects, folders },
           { projectId, workspaceStrategy: input.workspaceStrategy },
         );
-        // Like t3_thread_launch: a base ref that cannot resolve is refused before the launch.
+        // Like t3_thread_launch, refuse a base ref that cannot resolve before launching.
         const strategy = input.workspaceStrategy;
         if (strategy?.type === "worktree")
           yield* launches
