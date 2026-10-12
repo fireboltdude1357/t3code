@@ -4,7 +4,7 @@ import {
   ThreadId,
   OrchestratorMcpFailure,
   ProjectId,
-  threadBotName,
+  threadOwnerBotName,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -73,7 +73,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.bot === undefined
             ? caller === undefined
               ? null
-              : threadBotName(caller.id)
+              : threadOwnerBotName(caller)
             : input.bot;
         const threadId = ThreadId.make(bot === null ? commandId : botThreadId(bot, commandId));
         const messageId = MessageId.make(commandId);

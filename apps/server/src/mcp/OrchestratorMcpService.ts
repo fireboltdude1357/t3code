@@ -57,7 +57,7 @@ import {
   type ServerProvider,
   ThreadId,
   botThreadId,
-  threadBotName,
+  threadOwnerBotName,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Clock from "effect/Clock";
@@ -2282,7 +2282,7 @@ const make = Effect.gen(function* () {
               );
               const stableId = stableThreadId({ scope, requestKey: key, index });
               // A bot's threads create more bot work; the id stays stable for retries.
-              const bot = threadBotName(parent.thread.id);
+              const bot = threadOwnerBotName(parent.thread);
               const threadId = bot === null ? stableId : ThreadId.make(botThreadId(bot, stableId));
               yield* assertTargetEnabledForProject(
                 parent,

@@ -7,7 +7,7 @@ import {
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
-  threadBotName,
+  threadOwnerBotName,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -121,7 +121,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const { threads, projection, caller } = yield* readThread(input.threadId);
       const commandId = yield* newCommandId();
       // A fork a bot's thread makes is bot work too, like its launches.
-      const bot = caller === undefined ? null : threadBotName(caller.id);
+      const bot = caller === undefined ? null : threadOwnerBotName(caller);
       const forkId = `${commandId}:fork`;
       const targetThreadId = ThreadId.make(bot === null ? forkId : botThreadId(bot, forkId));
       const result = yield* threads

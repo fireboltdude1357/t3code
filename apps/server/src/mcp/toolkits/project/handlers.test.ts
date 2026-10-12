@@ -46,6 +46,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       activeRunId: "active-run",
       archivedAt: null,
       deletedAt: null,
+      lineage: { rootThreadId: sourceThreadId, parentThreadId: null, relationshipToParent: null },
     } as OrchestrationV2ThreadShell;
     let launchedSender: ThreadId | undefined;
     const layerDependencies = Layer.mergeAll(
@@ -118,6 +119,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
       activeRunId: "active-run",
       archivedAt: null,
       deletedAt: null,
+      lineage: { rootThreadId: sourceThreadId, parentThreadId: null, relationshipToParent: null },
     } as OrchestrationV2ThreadShell;
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
     const layerDependencies = Layer.mergeAll(
@@ -207,6 +209,11 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
           activeRunId: "active-run",
           archivedAt: null,
           deletedAt: null,
+          lineage: {
+            rootThreadId: ThreadId.make(callerId),
+            parentThreadId: null,
+            relationshipToParent: null,
+          },
         } as OrchestrationV2ThreadShell;
         const layerDependencies = Layer.mergeAll(
           ServerSettings.layerTest(),
@@ -282,6 +289,7 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
       activeRunId: "active-run",
       archivedAt: null,
       deletedAt: null,
+      lineage: { rootThreadId: sourceThreadId, parentThreadId: null, relationshipToParent: null },
     } as OrchestrationV2ThreadShell;
     const named: Array<string> = [];
     const registered: Array<string> = [];

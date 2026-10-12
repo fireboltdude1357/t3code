@@ -1284,7 +1284,18 @@ describe("OrchestratorMcpService provider resolution", () => {
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === callerId
-                  ? { ...parent, thread: { ...parent.thread, id: callerId } }
+                  ? {
+                      ...parent,
+                      thread: {
+                        ...parent.thread,
+                        id: callerId,
+                        lineage: {
+                          rootThreadId: callerId,
+                          parentThreadId: null,
+                          relationshipToParent: null,
+                        },
+                      },
+                    }
                   : childProjection,
               ),
             dispatch: (command) =>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { BotName, botThreadId, threadBotName } from "./botThreads.ts";
+import { BotName, botThreadId, threadBotName, threadOwnerBotName } from "./botThreads.ts";
 
 describe("bot thread ids", () => {
   it("round-trips the bot name through a launched thread id", () => {
@@ -31,5 +31,16 @@ describe("bot thread ids", () => {
     expect(valid("a")).toBe(true);
     expect(valid("bot:warden")).toBe(false);
     expect(valid("")).toBe(false);
+  });
+
+  it("finds the bot behind a delegated child through its lineage root", () => {
+    const lineage = (rootThreadId: string) => ({ rootThreadId });
+    expect(
+      threadOwnerBotName({ id: "thread:delegated-task:1", lineage: lineage("bot:warden:root") }),
+    ).toBe("warden");
+    expect(threadOwnerBotName({ id: "bot:ledger:own", lineage: lineage("bot:warden:root") })).toBe(
+      "ledger",
+    );
+    expect(threadOwnerBotName({ id: "cmd-1", lineage: lineage("cmd-1") })).toBeNull();
   });
 });

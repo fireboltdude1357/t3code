@@ -22,6 +22,14 @@ export const BOT_THREAD_ID_PREFIX = "bot:";
 export const botThreadId = (bot: BotName, id: string): string =>
   `${BOT_THREAD_ID_PREFIX}${bot}:${id}`;
 
+/** The bot whose work a thread is: its own marker, or its lineage root's for
+    a delegated child. MCP create paths use this to mark what a bot's thread
+    creates. */
+export const threadOwnerBotName = (thread: {
+  readonly id: string;
+  readonly lineage: { readonly rootThreadId: string };
+}): BotName | null => threadBotName(thread.id) ?? threadBotName(thread.lineage.rootThreadId);
+
 /** The bot that launched a thread, or null for every other thread. */
 export function threadBotName(threadId: string): BotName | null {
   if (!threadId.startsWith(BOT_THREAD_ID_PREFIX)) return null;
