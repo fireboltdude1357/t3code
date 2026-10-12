@@ -155,9 +155,12 @@ jobs:
       - name: Install browser secret helper build libraries
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
-      # T3 Connect stays off in fork builds: no relay or Clerk config is set.
+      # .env.example holds the public relay and Clerk identifiers official
+      # builds bake in, so fork builds keep T3 Connect.
       - name: Build JS bundle
-        run: vp run build:desktop
+        run: |
+          cp .env.example .env
+          vp run build:desktop
 
       - name: Upload JS bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -294,8 +297,8 @@ jobs:
             release/nightly.yml
           if-no-files-found: error
 
-  # macOS updates only install when the app is signed, so this stays off until
-  # the fork has Apple signing secrets and FORK_BUILD_MACOS is "true".
+  # macOS only installs updates signed by the running app's identity, so this
+  # stays off until FORK_BUILD_MACOS is "true" and the Developer ID secrets are set.
   macos:
     name: macOS arm64 desktop
     needs: [sync, linux]
@@ -339,7 +342,8 @@ jobs:
           name: js-bundle
           path: apps
 
-      # Same signing setup as release-desktop.yml.
+      # Signed with the fork's Developer ID and notarized. There is no
+      # provisioning profile, so the build skips the passkey entitlements.
       - name: Build desktop artifact
         env:
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
@@ -348,30 +352,17 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
-          T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.CLERK_PASSKEY_RP_DOMAINS }}
         run: |
           set -euo pipefail
-          args=(--platform mac --target dmg --arch arm64 --build-version "$VERSION" --skip-build --verbose)
-          if [[ -n "$CSC_LINK" && -n "$CSC_KEY_PASSWORD" && -n "$APPLE_API_KEY" && -n "$APPLE_API_KEY_ID" && -n "$APPLE_API_ISSUER" ]]; then
-            if [[ -z "$APPLE_TEAM_ID" || -z "$MACOS_PROVISIONING_PROFILE" ]]; then
-              echo "macOS signing is configured, but APPLE_TEAM_ID or MACOS_PROVISIONING_PROFILE is missing." >&2
-              exit 1
-            fi
-            key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-            printf '%s' "$APPLE_API_KEY" > "$key_path"
-            export APPLE_API_KEY="$key_path"
-            profile_path="$RUNNER_TEMP/t3code.provisionprofile"
-            printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
-            security cms -D -i "$profile_path" >/dev/null
-            export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
-            export T3CODE_MACOS_PROVISIONING_PROFILE="$profile_path"
-            args+=(--signed)
-          else
-            echo "::warning::Building macOS unsigned. Installed copies won't be able to update."
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" || -z "$APPLE_API_KEY" || -z "$APPLE_API_KEY_ID" || -z "$APPLE_API_ISSUER" ]]; then
+            echo "macOS builds need CSC_LINK, CSC_KEY_PASSWORD and the APPLE_API_KEY secrets." >&2
+            exit 1
           fi
-          vp run dist:desktop:artifact "${args[@]}"
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key_path"
+          export APPLE_API_KEY="$key_path"
+          vp run dist:desktop:artifact --platform mac --target dmg --arch arm64 \
+            --build-version "$VERSION" --skip-build --signed --verbose
 
       - name: Upload desktop artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

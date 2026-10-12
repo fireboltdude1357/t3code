@@ -54,9 +54,11 @@ node scripts/fork-sync.ts --force --workdir /tmp/fork-sync
 4. `release` publishes `v<version>` as a prerelease, then fast-forwards `fork-main` to the commit it built.
 5. `notify` posts the run URL to `FORK_NIGHTLY_WEBHOOK` when anything fails.
 
-A manual run builds without publishing unless `publish` is checked. Fork builds have T3 Connect off, because the workflow sets no relay or Clerk config.
+A manual run builds without publishing unless `publish` is checked. The bundle build copies `.env.example` to `.env`, so fork builds use upstream's relay and Clerk instance and T3 Connect works as it does on stock builds.
 
-Windows builds are unsigned. The updater installs them because their `app-update.yml` has no publisher to check, and SmartScreen warns once on the first manual install. macOS only installs updates signed with the same identity as the running app, so Mac builds stay off until the fork has a Developer ID, notarization keys and a provisioning profile, set as the secrets and variables `release-desktop.yml` uses.
+Windows builds are unsigned. The updater installs them because their `app-update.yml` has no publisher to check, and SmartScreen warns once on the first manual install.
+
+Mac builds are signed with Architech's Developer ID and notarized, from the `CSC_LINK`, `CSC_KEY_PASSWORD` and `APPLE_API_KEY*` secrets, when `FORK_BUILD_MACOS` is `true`. macOS only installs an update signed by the running app's identity, so a Mac moves from Theo's build to the fork's by hand once. There is no provisioning profile: `com.t3tools.t3code` belongs to Theo's team, and the passkey domains only trust his. Without one the build skips the passkey entitlements, so the in-app browser can't use passkeys.
 
 ## Turning it on
 
@@ -68,5 +70,5 @@ These steps change shared state and machines, so each one is done deliberately:
 4. Set the `FORK_NIGHTLY_ENABLED` variable to `true`, and optionally `FORK_NIGHTLY_WEBHOOK`.
 5. Move each machine onto fork builds once. On the WSL server, an explicit version skips the release index:
    `T3CODE_RELEASE_BASE_URL=https://github.com/fireboltdude1357/t3code/releases/download t3 update <version> --yes`.
-   On Windows, run the fork installer over the stock app.
+   On Windows, run the fork installer over the stock app. On a Mac, quit T3 Code and replace the app in `/Applications` with the one from the fork's DMG.
 6. Point the Fleet update timer at the fork's releases. It reads `repos/pingdotgg/t3code` in `services/t3-preview-update/preview-update.sh`.
