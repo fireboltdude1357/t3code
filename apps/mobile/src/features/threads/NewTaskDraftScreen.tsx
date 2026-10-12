@@ -1254,8 +1254,11 @@ export function NewTaskDraftScreen(props: {
         draft.modelSelection ?? null,
         selectedProject.id,
       ) ?? flow.selectedModel;
-    const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
-    const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
+    // A project without a workspace choice ignores any saved pick, as the
+    // message builder does, so Start never silently waits on a hidden branch.
+    const workspaceSelection = flow.canChooseWorkspace ? draft.workspaceSelection : undefined;
+    const workspaceMode = workspaceSelection?.mode ?? flow.workspaceMode;
+    const selectedBranchName = workspaceSelection?.branch ?? flow.selectedBranchName;
     const initialMessageText = draft.text.trim();
 
     if (

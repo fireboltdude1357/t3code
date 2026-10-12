@@ -195,10 +195,12 @@ export default defineConfig({
         },
       },
       {
-        // These clients are session metadata, device streams, and an Expo update adapter.
+        // These clients are session metadata, device streams, an Expo update
+        // adapter, and the voice sidecar's own socket.
         files: [
           "apps/web/src/components/settings/ConnectionsSettings.tsx",
           "apps/mobile/src/features/updates/app-updates.ts",
+          "apps/mobile/src/features/voice-session/voiceSessionController.ts",
           "apps/web/src/components/device/DevicePhoneViewport.tsx",
           "apps/web/src/components/device/DeviceDuoViewport.tsx",
         ],
@@ -225,6 +227,12 @@ export default defineConfig({
       {
         // The registration helpers that only accept handlers built by McpToolAccess.
         files: ["apps/server/src/mcp/McpHttpServer.ts"],
+        rules: { "t3code/no-raw-mcp-registration": "off" },
+      },
+      {
+        // The voice sidecar runs its own MCP server, outside T3's McpToolAccess;
+        // its auth middleware resolves each caller to a voice session.
+        files: ["apps/voice/src/Http.ts", "apps/voice/src/mcp/handlers.ts"],
         rules: { "t3code/no-raw-mcp-registration": "off" },
       },
       {
