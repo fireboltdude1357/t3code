@@ -15,6 +15,7 @@ import {
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -24,19 +25,23 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ClaudeAdapterV2 from "./Adapters/ClaudeAdapterV2.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
-import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 
 const sessionId = "automatic-delivery-session";
 const settings = Schema.decodeSync(ClaudeSettings)({});
@@ -129,13 +134,14 @@ it.effect.each(["child completion", "scheduled message", "user steering"] as con
         const offers: SDKUserMessage[] = [];
         const nativeQueue: SDKUserMessage[] = [];
         const batchAbort = new AbortController();
-        const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+        const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
           instanceId: modelSelection.instanceId,
           settings,
           environment: {},
           attachmentsDir: cwd,
           fileSystem: yield* FileSystem.FileSystem,
           path: yield* Path.Path,
+          crypto: yield* Crypto.Crypto,
           idAllocator: yield* IdAllocator.IdAllocatorV2,
           queryRunner: {
             allocateSessionId: Effect.succeed(sessionId),
@@ -154,6 +160,7 @@ it.effect.each(["child completion", "scheduled message", "user steering"] as con
                   }),
                 setModel: () => Effect.void,
                 setPermissionMode: () => Effect.void,
+                stopTask: () => Effect.void,
                 interrupt: Effect.die("automatic delivery must never interrupt"),
                 close: Effect.void,
               }),
@@ -308,6 +315,7 @@ it.effect.each(["child completion", "scheduled message", "user steering"] as con
               Effect.provide(
                 ScheduledTaskService.layer.pipe(
                   Layer.provide(ThreadManagementService.layer),
+                  Layer.provide(ServerSettings.layerTest()),
                   Layer.provide(
                     Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
                       ensureTranscript: () =>
@@ -315,8 +323,16 @@ it.effect.each(["child completion", "scheduled message", "user steering"] as con
                     }),
                   ),
                   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+                  Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
                   Layer.provide(
-                    Layer.mergeAll(NodeCrypto.layer, Scheduler.layer, SqlitePersistenceMemory),
+                    CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+                  ),
+                  Layer.provide(
+                    Layer.mergeAll(
+                      NodeCrypto.layer,
+                      Scheduler.layer,
+                      SqlitePersistence.layerMemory,
+                    ),
                   ),
                 ),
               ),
@@ -408,13 +424,17 @@ it.effect.each(["child completion", "scheduled message", "user steering"] as con
           assert.equal(offers.length, 2);
         }).pipe(
           Effect.provide(
-            makeOrchestratorV2ReplayLayerWithRegistry(
+            ProviderReplayHarness.layerWithRegistry(
               { name: "claude-automatic-delivery" },
-              ProviderAdapterRegistry.makeSingleLayer(adapter),
+              ProviderAdapterRegistry.layerSingle(adapter),
               { runEffectWorker: false },
             ),
           ),
         );
-      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
     ),
 );

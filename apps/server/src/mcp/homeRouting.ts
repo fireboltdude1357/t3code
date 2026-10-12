@@ -13,7 +13,7 @@ import * as FleetBroker from "../home/FleetBroker.ts";
 import * as FleetService from "../home/FleetService.ts";
 import * as HomeService from "../home/HomeService.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
-import { readCaller, readFullAccessCaller } from "./threadAccess.ts";
+import { assertFullAccess, assertLiveCaller, readCaller } from "./threadAccess.ts";
 
 /** Services a tool needs to declare when it routes Home calls. */
 export const homeRoutingDependencies = [
@@ -56,7 +56,10 @@ const CHANGES_STATE = {
  * mode makes it read-only everywhere.
  */
 export const readHomeChangeCaller = Effect.fn("mcp.readHomeChangeCaller")(function* () {
-  return yield* readFullAccessCaller("Home makes changes only in full-access/default mode.");
+  const caller = yield* readCaller();
+  yield* assertLiveCaller(caller);
+  yield* assertFullAccess(caller, "Home makes changes only in full-access/default mode.");
+  return caller;
 });
 
 /** Runs a fleet operation as Home, here or in the environment it names. */

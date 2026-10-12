@@ -9,19 +9,12 @@ import * as Cause from "effect/Cause";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import * as Haptics from "expo-haptics";
 import { Accelerometer } from "expo-sensors";
-import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  BackHandler,
-  Pressable,
-  StatusBar,
-  View,
-} from "react-native";
+import { Alert, AppState, BackHandler, Pressable, StatusBar, View } from "react-native";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SymbolView } from "../../components/AppSymbol";
+import { AppActivityIndicator } from "../../components/AppActivityIndicator";
 import { AppText } from "../../components/AppText";
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { GlassSurface } from "../../components/GlassSurface";
@@ -54,10 +47,17 @@ type DevicePreviewRouteScreenProps = StaticScreenProps<{
 export function DevicePreviewRouteScreen({ route }: DevicePreviewRouteScreenProps) {
   const navigation = useNavigation();
   const onClose = useCallback(() => navigation.goBack(), [navigation]);
+  const { environmentId, threadId } = route.params;
+  // A hand-typed deep link can carry a blank ID, which the branded IDs reject.
+  const isBlankLink = environmentId.trim().length === 0 || threadId.trim().length === 0;
+  useEffect(() => {
+    if (isBlankLink) onClose();
+  }, [isBlankLink, onClose]);
+  if (isBlankLink) return null;
   return (
     <DevicePreviewScreen
-      environmentId={EnvironmentId.make(route.params.environmentId)}
-      threadId={ThreadId.make(route.params.threadId)}
+      environmentId={EnvironmentId.make(environmentId)}
+      threadId={ThreadId.make(threadId)}
       onClose={onClose}
     />
   );
@@ -288,7 +288,7 @@ function DevicePreviewScreen({
               </Pressable>
             </>
           ) : focused && foreground ? (
-            <ActivityIndicator color={themeVariables["--color-icon"]} />
+            <AppActivityIndicator color={themeVariables["--color-icon"]} />
           ) : null}
         </View>
       )}
@@ -421,7 +421,7 @@ function OpenDevicePreview({
         </>
       ) : (
         <>
-          <ActivityIndicator color={themeVariables["--color-icon"]} />
+          <AppActivityIndicator color={themeVariables["--color-icon"]} />
           <AppText className="text-sm text-foreground-muted">Connecting to device...</AppText>
         </>
       )}

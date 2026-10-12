@@ -13,6 +13,7 @@ import {
   ProjectId,
   RunId,
   ScheduledTaskId,
+  SecretRef,
   ThreadId,
   TrimmedNonEmptyString,
   TurnItemId,
@@ -65,7 +66,7 @@ const OrchestratorMcpSchedule = Schema.Union([
   OrchestratorMcpScheduleFromJsonString,
 ]).annotate({
   description:
-    "Recurring schedule object: {type:'interval', everyMs} or {type:'fixed_time', timeOfDay, weekdays?}. Never stringify it unless the provider requires the compatibility form.",
+    "Trigger object: {type:'interval', everyMs}, {type:'fixed_time', timeOfDay, weekdays?}, or {type:'webhook'} to run on each request to a generated URL. Never stringify it unless the provider requires the compatibility form.",
 });
 
 /**
@@ -321,8 +322,6 @@ export type OrchestratorMcpThreadListInput = typeof OrchestratorMcpThreadListInp
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
   threadId: ThreadId,
-  /** Paste this whenever you mention the thread, so the user can click to open it. */
-  link: Schema.String,
   projectId: ProjectId,
   title: Schema.String,
   createdBy: OrchestrationV2Actor,
@@ -373,8 +372,6 @@ export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInp
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
   threadId: ThreadId,
-  /** Paste this whenever you mention the thread, so the user can click to open it. */
-  link: Schema.String,
   projectId: ProjectId,
   title: Schema.String,
   createdBy: OrchestrationV2Actor,
@@ -423,6 +420,7 @@ export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
   visibility: Schema.Literals(["local", "inherited", "synthetic"]),
   sourceThreadId: ThreadId,
   itemId: TurnItemId,
+  subagentId: Schema.optional(NodeId),
   runId: Schema.NullOr(RunId),
   messageId: Schema.NullOr(MessageId),
   createdBy: Schema.NullOr(OrchestrationV2Actor),
@@ -459,6 +457,8 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   runId: RunId,
+  /** Fresh task for a follow-up to an app-owned child; the previous task stays terminal. */
+  taskId: Schema.optional(NodeId),
   status: OrchestrationV2RunStatus,
   delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
 });
@@ -511,6 +511,8 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
       options: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
     }),
   ),
+  /** Runtime modes the provider offers; omitted when it offers all of them. */
+  runtimeModes: Schema.optional(Schema.Array(RuntimeMode)),
   canRunChildTask: Schema.Boolean,
   canRunCrossProviderChildTask: Schema.Boolean,
   constraints: Schema.Array(Schema.String),
@@ -575,6 +577,14 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,
+  /** For webhook tasks: the public T3 Connect URL. Absent when this environment has no managed tunnel. */
+  webhookUrl: Schema.optional(Schema.String).annotate({
+    description:
+      "Public URL to give the sender. Absent when this environment has no T3 Connect managed tunnel; the user must enable T3 Connect remote access first.",
+  }),
+  webhookSignature: Schema.optional(Schema.Literals(["none", "set"])).annotate({
+    description: "Whether requests must carry a valid signature.",
+  }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -608,6 +618,44 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
+
+export const OrchestratorMcpRequestSecretInput = Schema.Struct({
+  label: TrimmedNonEmptyString.annotate({
+    description: "What you need, shown as the card's title, e.g. 'GitHub webhook secret'.",
+  }),
+  reason: TrimmedNonEmptyString.annotate({
+    description:
+      "One or two sentences on what it is for and where the user gets or also enters it.",
+  }),
+  placeholder: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "Hint inside the input, e.g. 'Paste your GitHub token'.",
+  }),
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
+  ).annotate({ description: "How long to wait for the user. Default 10 minutes." }),
+  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
+    description:
+      "Reuse when retrying a call that lost its result, so the user sees one card and its answer is returned again. Use a new id to ask again after timed_out or cancelled.",
+  }),
+});
+export type OrchestratorMcpRequestSecretInput = typeof OrchestratorMcpRequestSecretInput.Type;
+
+export const OrchestratorMcpRequestSecretResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("saved").annotate({ description: "secretRef holds the value." }),
+    secretRef: SecretRef.annotate({
+      description:
+        "Pass it to a tool that accepts a secretRef; it works once, and you never see the value.",
+    }),
+  }),
+  Schema.Struct({
+    status: Schema.Literals(["declined", "cancelled", "timed_out"]).annotate({
+      description:
+        "declined: the user chose not to. cancelled: the request ended with the run. timed_out: the user did not answer in time; the card is closed, so ask again with a new clientRequestId if still needed.",
+    }),
+  }),
+]);
+export type OrchestratorMcpRequestSecretResult = typeof OrchestratorMcpRequestSecretResult.Type;
 
 export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
   scheduledTaskId: ScheduledTaskId,

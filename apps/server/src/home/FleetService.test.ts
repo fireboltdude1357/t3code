@@ -2,7 +2,6 @@ import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   type FleetInput,
-  type ExecutionEnvironmentDescriptor,
   type Project as ContractProject,
   ProjectId,
   RuntimeRequestId,
@@ -21,8 +20,7 @@ import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Project from "../project/ProjectService.ts";
-import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
-import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as FleetService from "./FleetService.ts";
 
@@ -68,11 +66,6 @@ const setup = () => {
       Layer.mergeAll(
         NodeCrypto.layer,
         ServerSettings.layerTest(),
-        Layer.mock(ServerEnvironment.ServerEnvironment)({
-          getDescriptor: Effect.succeed({
-            environmentId: EnvironmentId.make("studio"),
-          } as ExecutionEnvironmentDescriptor),
-        }),
         Layer.mock(Project.ProjectService)({
           getById: (projectId) =>
             Effect.succeed(
@@ -135,7 +128,6 @@ it.effect("lists threads from every project, newest first, with snooze state", (
       threads: [
         {
           threadId: "newer",
-          link: "[newer](t3-thread://v1/studio/newer)",
           projectId: "b",
           snoozed: false,
           snoozedUntil: null,

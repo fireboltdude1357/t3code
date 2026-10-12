@@ -24,7 +24,6 @@ import {
   OrchestratorMcpFailure,
   ThreadId,
 } from "@t3tools/contracts";
-import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -48,8 +47,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
-import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -117,10 +115,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const settings = yield* ServerSettings.ServerSettingsService;
-  const environment = yield* ServerEnvironment.ServerEnvironment;
   const crypto = yield* Crypto.Crypto;
-  // Links in results point at this environment, wherever the call came from.
-  const environmentId = (yield* environment.getDescriptor).environmentId;
 
   // A retried request with the same clientRequestId maps to the same command
   // for the same target thread; another target gets its own command.
@@ -169,7 +164,11 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const providers = yield* providerRegistry.getProviders;
         const capable = new Set<string>(yield* adapters.list());
-        return { providers: providerCapabilities(providers, capable) };
+        const modelPreferences = yield* settings.getSettings.pipe(
+          Effect.map((current) => current.providerModelPreferences ?? {}),
+          Effect.mapError(orchestrationError),
+        );
+        return { providers: providerCapabilities(providers, capable, modelPreferences) };
       }),
 
     "projects.list": (input) =>
@@ -225,7 +224,7 @@ const make = Effect.gen(function* () {
           currentThreadId: filtered.some((thread) => thread.id === actor.threadId)
             ? actor.threadId
             : null,
-          threads: page.map((shell) => listItemFromShell(shell, { environmentId, nowMs })),
+          threads: page.map((shell) => listItemFromShell(shell, nowMs)),
           nextCursor: next < filtered.length ? next : null,
           total: filtered.length,
         };
@@ -233,13 +232,11 @@ const make = Effect.gen(function* () {
 
     "threads.read": (input) =>
       Effect.gen(function* () {
+        const shell = yield* loadShell(input.threadId);
         const target = yield* threads
           .getThreadRecords(input.threadId, ["runs", "runtimeRequests", "contextTransfers"])
           .pipe(Effect.mapError(threadManagementFailure));
-        if (target.thread.deletedAt !== null) {
-          return yield* failure("thread_not_found", `Thread ${input.threadId} was not found.`);
-        }
-        return (yield* readThreadPage(threads, target, input, environmentId)).result;
+        return (yield* readThreadPage(threads, target, shell, input)).result;
       }),
 
     "threads.launch": (input, actor) =>
@@ -272,6 +269,23 @@ const make = Effect.gen(function* () {
           { projects, folders },
           { projectId, workspaceStrategy: input.workspaceStrategy },
         );
+        // Like t3_thread_launch, refuse a base ref that cannot resolve before launching.
+        const strategy = input.workspaceStrategy;
+        if (strategy?.type === "worktree")
+          yield* launches
+            .checkWorktreeBase({ projectId, workspaceStrategy: strategy })
+            .pipe(
+              Effect.mapError((error) =>
+                failure(
+                  "invalid_request",
+                  `${error.message} No thread was created. Pass a branch, tag, or commit that exists there${
+                    strategy.startFromOrigin === true
+                      ? "; the project has no origin remote to fetch it from."
+                      : ", or set startFromOrigin:true if it exists only on origin."
+                  }`,
+                ),
+              ),
+            );
         const current = yield* settings.getSettings.pipe(Effect.mapError(orchestrationError));
         const modelSelection = input.modelSelection ?? current.defaultModelSelection;
         if (modelSelection === null) {
@@ -312,7 +326,6 @@ const make = Effect.gen(function* () {
         );
         return {
           threadId: thread.id,
-          link: formatThreadLink({ environmentId, threadId: thread.id, title: thread.title }),
           projectId: thread.projectId,
           modelSelection: thread.modelSelection,
           runId: run?.id ?? null,

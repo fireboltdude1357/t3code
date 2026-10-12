@@ -24,7 +24,7 @@ import {
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
@@ -34,9 +34,12 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply; this does not schedule a future action. Home can organize any thread in any environment.",
+    "Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active. Home can organize any thread in any environment.",
   parameters: FleetThreadOrganizeInput,
-  success: OrchestrationV2DispatchCommandResult,
+  success: Schema.Union([
+    OrchestrationV2DispatchCommandResult,
+    Schema.Struct({ settlesWhenTurnEnds: Schema.Literal(true) }),
+  ]),
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
   dependencies: [

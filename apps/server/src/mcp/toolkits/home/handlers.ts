@@ -5,11 +5,12 @@ import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as FleetBroker from "../../../home/FleetBroker.ts";
 import * as HomeService from "../../../home/HomeService.ts";
 import { callerIsHome, readHomeChangeCaller } from "../../homeRouting.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller, unavailable } from "../../threadAccess.ts";
 import { HomeToolkit } from "./tools.ts";
 
-export const HomeHandlersLive = HomeToolkit.toLayer({
-  t3_environment_list: () =>
+export const layer = McpToolAccess.toLayer(HomeToolkit, {
+  t3_environment_list: McpToolAccess.reads(() =>
     Effect.gen(function* () {
       const { scope } = yield* readCaller();
       const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -39,8 +40,9 @@ export const HomeHandlersLive = HomeToolkit.toLayer({
         ],
       };
     }),
+  ),
 
-  t3_thread_watch: (input) =>
+  t3_thread_watch: McpToolAccess.writes((input) =>
     Effect.gen(function* () {
       if (!(yield* callerIsHome()))
         return yield* new OrchestratorMcpFailure({
@@ -82,4 +84,5 @@ export const HomeHandlersLive = HomeToolkit.toLayer({
         .pipe(Effect.mapError(unavailable));
       return { watchAll: next.watchAll, watches: next.watches };
     }),
+  ),
 });

@@ -173,8 +173,6 @@ export type FleetThreadLaunchInput = typeof FleetThreadLaunchInput.Type;
 
 export const FleetThreadLaunchResult = Schema.Struct({
   threadId: ThreadId,
-  /** Paste this whenever you mention the thread, so the user can click to open it. */
-  link: Schema.String,
   projectId: ProjectId,
   modelSelection: ModelSelection,
   runId: Schema.NullOr(RunId),
@@ -248,6 +246,7 @@ const FleetQuestion = Schema.Struct({
   ),
   multiSelect: Schema.optional(Schema.Boolean),
   allowCustomAnswer: Schema.optional(Schema.Boolean),
+  initialAnswer: Schema.optional(Schema.String),
   required: Schema.optional(Schema.Boolean),
 });
 

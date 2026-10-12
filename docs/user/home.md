@@ -17,8 +17,8 @@ so choose a model you trust with that.
 
 - Threads Home starts are normal threads in your sidebar. You can open and steer
   them yourself.
-- Home links every thread it mentions. Click a link to open that thread, on any
-  of your machines.
+- Home links the threads it mentions on the machine it runs on. Click a link to
+  open that thread. Home names threads on your other machines by title and machine.
 - Home hears about the threads it started when they finish, fail, ask a question
   or need an approval. The desktop app does not notify you about those threads; Home
   tells you what matters in its own thread.
