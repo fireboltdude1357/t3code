@@ -1,3 +1,5 @@
+import { threadBotName, type BotName } from "@t3tools/contracts";
+
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 
@@ -21,6 +23,12 @@ export function isThreadWorking(thread: WorkingThreadInput): boolean {
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
   if (!threadRuntimeIsActive(thread.runtime) && thread.runtime?.status !== "idle") return false;
   // A plan prompt outranks lingering background work: the user has to act on it.
+  return !hasReadyPlan(thread);
+}
+
+/** A plan-mode thread whose run settled with a proposed plan is waiting for
+    the user to implement or revise it. */
+function hasReadyPlan(thread: WorkingThreadInput): boolean {
   const run = thread.latestRun;
   const runSettled =
     run !== null &&
@@ -30,7 +38,7 @@ export function isThreadWorking(thread: WorkingThreadInput): boolean {
     run.status !== "running" &&
     run.status !== "waiting" &&
     thread.runtime?.activeRunId !== run.runId;
-  return !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan && runSettled);
+  return thread.interactionMode === "plan" && thread.hasActionableProposedPlan && runSettled;
 }
 
 type InboxThreadInput = Pick<
@@ -86,6 +94,39 @@ export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: re
     ]),
   );
   return sortNewestFirst(threads, timestamps);
+}
+
+/** The bot whose shelf an inbox thread folds into, or null for the inbox.
+    Threads a bot launched skip the inbox and the Working section until they
+    need the user: a pending approval, question, or ready plan brings one back
+    to the inbox until it is answered. Pins, snoozes, and settlement still win. */
+export function botShelfName(
+  thread: Pick<EnvironmentThreadShell, "id"> & WorkingThreadInput,
+): BotName | null {
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput || hasReadyPlan(thread)) {
+    return null;
+  }
+  return threadBotName(thread.id);
+}
+
+/** The Bots section groups rows by bot, then lists each bot's threads like
+    the Working section: newest send first. */
+export function sortBotThreads<T extends WorkingSortInput>(threads: readonly T[]): T[] {
+  // sortWorkingThreadsBySend returns a fresh array, and sort is stable.
+  return sortWorkingThreadsBySend(threads).sort((left, right) =>
+    (threadBotName(left.id) ?? "").localeCompare(threadBotName(right.id) ?? ""),
+  );
+}
+
+/** A row's project label, led by the bot's name on threads a bot launched,
+    so bot work stays recognizable wherever it lists. */
+export function threadProjectLabel(
+  thread: Pick<EnvironmentThreadShell, "id">,
+  projectName: string | null,
+): string | null {
+  const bot = threadBotName(thread.id);
+  if (bot === null) return projectName;
+  return projectName === null ? bot : `${bot} · ${projectName}`;
 }
 
 function sortNewestFirst<T extends Pick<EnvironmentThreadShell, "id" | "environmentId">>(
