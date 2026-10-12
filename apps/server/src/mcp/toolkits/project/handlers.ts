@@ -1,5 +1,7 @@
 import {
   botThreadId,
+  type EnvironmentId,
+  HOME_LAUNCHED_THREAD_ID_PREFIX,
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
@@ -10,6 +12,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import { refuseHomeFolder } from "../../../home/FleetService.ts";
+import * as HomeService from "../../../home/HomeService.ts";
+import { callerIsHome, readHomeChangeCaller, routeHome, runAsHome } from "../../homeRouting.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -59,25 +64,67 @@ const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
 });
+/**
+ * Threads Home launches are watched for it, wherever they run. The watch is
+ * saved before the launch, and a launch whose watch cannot be saved does not
+ * run. A failed launch keeps its watch: a relay timeout does not prove the
+ * thread was not created, and a watch whose thread never appears ends at the
+ * next start.
+ */
+const watchLaunched = (homeThreadId: ThreadId, environmentId: EnvironmentId, threadId: ThreadId) =>
+  HomeService.HomeService.pipe(
+    Effect.flatMap((home) =>
+      home.updateWatches(homeThreadId, (current) =>
+        HomeService.addWatch(current, { environmentId, threadId, reason: "launched" }),
+      ),
+    ),
+    Effect.mapError(
+      () =>
+        new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: "Home could not watch the new thread, so it was not launched.",
+        }),
+    ),
+  );
+
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
     (input, { runtimeMode, interactionMode }) =>
       Effect.gen(function* () {
         const context = yield* readCaller();
-        const { caller } = context;
-        const commandId = yield* newCommandId();
-        // A bot's own threads launch more bot work, so the marker carries over
-        // unless the caller passes null for ordinary work.
-        const bot =
-          input.bot === undefined
-            ? caller === undefined
-              ? null
-              : threadOwnerBotName(caller)
-            : input.bot;
-        const threadId = ThreadId.make(bot === null ? commandId : botThreadId(bot, commandId));
-        const messageId = MessageId.make(commandId);
+        const { caller, scope } = context;
+        // Home is always a thread caller; its id scopes the watches it saves.
+        const homeThreadId = (yield* callerIsHome()) ? caller?.id : undefined;
+        const isHome = homeThreadId !== undefined;
+        // Checked before any path or watch: Home in plan or a narrower runtime
+        // mode is read-only, including launches that carry attachments.
+        if (isHome) yield* readHomeChangeCaller();
+        const targetEnvironmentId = input.environmentId ?? scope.environmentId;
+        const remote = targetEnvironmentId !== scope.environmentId;
+        // Home's folder carries Home's own instructions, so nothing launches there.
+        if (isHome && input.projectId === undefined && input.scratch !== true)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Home must pass projectId or scratch:true. Threads never launch in Home's folder.",
+          });
+        if (isHome && typeof input.bot === "string")
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Home launches threads for the user; omit bot.",
+          });
+        if (remote && !isHome)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Only Home can act in another environment.",
+          });
         const attachments = input.attachments ?? [];
+        if (remote && attachments.length > 0)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Attachments cannot be sent to another environment.",
+          });
         if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
@@ -92,6 +139,70 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "scratch:true picks its own project and folder; omit projectId and workspaceStrategy.",
           });
+        // Checked before the watch is saved, so a refused launch leaves no watch.
+        // Another environment checks its own Home folder in FleetService.
+        if (isHome && !remote && input.projectId !== undefined) {
+          const services = {
+            projects: yield* Project.ProjectService,
+            folders: yield* ManagedProjectFolders.ManagedProjectFolders,
+          };
+          yield* refuseHomeFolder(services, {
+            projectId: input.projectId,
+            workspaceStrategy: input.workspaceStrategy,
+          });
+          if (input.workspaceStrategy?.type === "existing_worktree") {
+            const project = yield* services.projects
+              .getById(input.projectId)
+              .pipe(Effect.mapError(unavailable), Effect.map(Option.getOrUndefined));
+            if (project === undefined)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "The project was not found.",
+              });
+            yield* assertProjectWorktree(
+              project.workspaceRoot,
+              input.workspaceStrategy.worktreePath,
+            );
+          }
+        }
+        const commandId = yield* newCommandId();
+        // A bot's own threads launch more bot work, so the marker carries over
+        // unless the caller passes null for ordinary work. Home never launches
+        // bot work: its threads carry the Home marker instead.
+        const bot = isHome
+          ? null
+          : input.bot === undefined
+            ? caller === undefined
+              ? null
+              : threadOwnerBotName(caller)
+            : input.bot;
+        const threadId = ThreadId.make(
+          isHome
+            ? `${HOME_LAUNCHED_THREAD_ID_PREFIX}${commandId}`
+            : bot === null
+              ? commandId
+              : botThreadId(bot, commandId),
+        );
+        const messageId = MessageId.make(commandId);
+        if (homeThreadId !== undefined && attachments.length === 0) {
+          // Provider instances differ per machine, so another machine uses its own default.
+          const modelSelection =
+            input.modelSelection ?? (remote ? undefined : caller?.modelSelection);
+          yield* watchLaunched(homeThreadId, targetEnvironmentId, threadId);
+          return yield* runAsHome(input.environmentId, "threads.launch", {
+            threadId,
+            ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+            ...(input.scratch === undefined ? {} : { scratch: input.scratch }),
+            title: input.title,
+            ...(modelSelection === undefined ? {} : { modelSelection }),
+            runtimeMode,
+            interactionMode,
+            ...(input.workspaceStrategy === undefined
+              ? {}
+              : { workspaceStrategy: input.workspaceStrategy }),
+            ...(input.message === undefined ? {} : { message: input.message }),
+          });
+        }
         const projectId =
           input.scratch === true
             ? (yield* ManagedProjectFolders.ManagedProjectFolders.pipe(
@@ -150,6 +261,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
           });
+        if (homeThreadId !== undefined)
+          yield* watchLaunched(homeThreadId, scope.environmentId, threadId);
         const result = yield* ThreadMessageIntake.launchThread({
           commandId,
           threadId,
@@ -201,6 +314,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
+      const routed = yield* routeHome(input.environmentId, "projects.list", input);
+      if (Option.isSome(routed)) return routed.value;
       const projects = yield* access;
       const snapshot = yield* projects.snapshot.pipe(Effect.mapError(unavailable));
       const rows = snapshot.projects.filter((project) => project.deletedAt === null);
@@ -275,6 +390,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_delete: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
+      // Home archives and settles; it never deletes.
+      if (yield* callerIsHome())
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Home cannot delete projects. Archive or settle their threads instead.",
+        });
       const projects = yield* Project.ProjectService;
       return yield* projects
         .delete({ ...input, commandId: yield* newCommandId() })
