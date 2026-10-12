@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * Builds the fork's next integration commit: the newest upstream nightly with
- * every patch branch listed in .github/fork-patches.txt merged on top, in
- * order. The result is a commit whose tree is that fresh merge and whose first
- * parent is the current integration branch, so the branch only ever
- * fast-forwards while each build starts clean from the nightly.
+ * Builds the fork's next integration commit: upstream main with every patch
+ * branch listed in .github/fork-patches.txt merged on top, in order. The result
+ * is a commit whose tree is that fresh merge and whose first parent is the
+ * current integration branch, so the branch only ever fast-forwards while each
+ * build starts clean from upstream.
  *
- * Inputs (nightly tag and patch heads) are recorded as `Fork-*` trailers on
- * the commit. When they match the last integration commit there is nothing to
+ * Inputs (the upstream commit and patch heads) are recorded as `Fork-*`
+ * trailers on the commit, with the newest upstream nightly the version counts
+ * from. When the inputs match the last integration commit there is nothing to
  * build. See docs/operations/fork-nightly.md.
  */
 
@@ -25,7 +26,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const DEFAULT_UPSTREAM = "https://github.com/pingdotgg/t3code.git";
-const UPSTREAM_MAIN_REF = "refs/fork-sync/upstream-main";
+const UPSTREAM_REF = "refs/fork-sync/upstream";
 
 export interface ForkPatch {
   readonly name: string;
@@ -36,7 +37,10 @@ export interface ForkPatch {
 
 export interface ForkManifest {
   readonly version: string;
+  /** Upstream main commit the patches merge onto. */
   readonly base: string;
+  /** Newest upstream nightly tag when this was built; versions count from it. */
+  readonly nightly: string;
   readonly patches: ReadonlyArray<{ readonly name: string; readonly sha: string }>;
 }
 
@@ -50,11 +54,11 @@ export class GitCommandError extends Schema.TaggedError<GitCommandError>()("GitC
 }
 
 export class ForkVersionError extends Schema.TaggedError<ForkVersionError>()("ForkVersionError", {
-  base: Schema.String,
+  nightly: Schema.String,
   reason: Schema.String,
 }) {
   override get message(): string {
-    return `Can't version a fork build of ${this.base}: ${this.reason}.`;
+    return `Can't version a fork build after ${this.nightly}: ${this.reason}.`;
   }
 }
 
@@ -73,15 +77,6 @@ export class NoNightlyTagError extends Schema.TaggedError<NoNightlyTagError>()(
 ) {
   override get message(): string {
     return `No nightly tags found on ${this.upstream}.`;
-  }
-}
-
-export class PatchAheadOfBaseError extends Schema.TaggedError<PatchAheadOfBaseError>()(
-  "PatchAheadOfBaseError",
-  { patch: Schema.String, base: Schema.String },
-) {
-  override get message(): string {
-    return `Patch '${this.patch}' is based on upstream commits newer than ${this.base}. Base it on a nightly tag, or wait for a nightly that includes them.`;
   }
 }
 
@@ -140,28 +135,29 @@ export const latestNightlyTag = (tags: ReadonlyArray<string>): Option.Option<str
 };
 
 /**
- * The fork release version for a base tag. The run number becomes
- * `run * 100 + n` for the fork's nth build of that nightly, so
- * `v0.0.46-nightly.20261011.2994` builds as `0.0.46-nightly.20261011.299401`.
- * The version stays a plain nightly that every channel check accepts, which a
- * suffix like `.fork.1` would not.
+ * The fork release version, counted from the newest upstream nightly tag. The
+ * run number becomes `run * 100 + n` for the fork's nth build since that
+ * nightly, so builds after `v0.0.46-nightly.20261011.2994` are
+ * `0.0.46-nightly.20261011.299401`, `…299402` and so on. The version stays a
+ * plain nightly that every channel check accepts, which a suffix like
+ * `.fork.1` would not.
  */
 export const forkVersion = Effect.fn("forkVersion")(function* (
-  base: string,
+  nightly: string,
   previous: Option.Option<ForkManifest>,
 ) {
-  const match = NIGHTLY_TAG.exec(base);
+  const match = NIGHTLY_TAG.exec(nightly);
   if (!match) {
-    return yield* new ForkVersionError({ base, reason: "not a nightly tag" });
+    return yield* new ForkVersionError({ nightly, reason: "not a nightly tag" });
   }
   const [, major, minor, patch, date, run] = match;
   const build = Option.match(previous, {
     onNone: () => 1,
     onSome: (manifest) =>
-      manifest.base === base ? (Number(manifest.version.split(".").at(-1)) % 100) + 1 : 1,
+      manifest.nightly === nightly ? (Number(manifest.version.split(".").at(-1)) % 100) + 1 : 1,
   });
   if (build > 99) {
-    return yield* new ForkVersionError({ base, reason: "already built 99 times" });
+    return yield* new ForkVersionError({ nightly, reason: "already built 99 times" });
   }
   return `${major}.${minor}.${patch}-nightly.${date}.${Number(run) * 100 + build}`;
 });
@@ -170,10 +166,11 @@ export const formatForkManifest = (manifest: ForkManifest): string =>
   [
     `fork: ${manifest.version}`,
     "",
-    `Upstream nightly ${manifest.base} with the fork patches merged on top.`,
+    `Upstream main at ${manifest.base} with the fork patches merged on top.`,
     "",
     `Fork-Version: ${manifest.version}`,
     `Fork-Base: ${manifest.base}`,
+    `Fork-Nightly: ${manifest.nightly}`,
     ...manifest.patches.map((patch) => `Fork-Patch: ${patch.name} ${patch.sha}`),
   ].join("\n");
 
@@ -181,24 +178,27 @@ export const formatForkManifest = (manifest: ForkManifest): string =>
 export const parseForkManifest = (message: string): Option.Option<ForkManifest> => {
   let version: string | undefined;
   let base: string | undefined;
+  let nightly: string | undefined;
   const patches: Array<ForkManifest["patches"][number]> = [];
   for (const line of message.split(/\r?\n/)) {
-    const match = /^Fork-(Version|Base|Patch): (.+)$/.exec(line.trim());
+    const match = /^Fork-(Version|Base|Nightly|Patch): (.+)$/.exec(line.trim());
     if (!match) continue;
     const value = match[2] ?? "";
     if (match[1] === "Version") version = value;
     else if (match[1] === "Base") base = value;
+    else if (match[1] === "Nightly") nightly = value;
     else {
       const [name, sha] = value.split(" ");
       if (name !== undefined && sha !== undefined) patches.push({ name, sha });
     }
   }
+  // Builds before the fork followed main used the nightly tag as their base.
   return version === undefined || base === undefined
     ? Option.none()
-    : Option.some({ version, base, patches });
+    : Option.some({ version, base, nightly: nightly ?? base, patches });
 };
 
-const sameInputs = (a: ForkManifest, b: Omit<ForkManifest, "version">) =>
+const sameInputs = (a: ForkManifest, b: Omit<ForkManifest, "version" | "nightly">) =>
   a.base === b.base &&
   a.patches.length === b.patches.length &&
   a.patches.every(
@@ -236,7 +236,7 @@ interface SyncOptions {
   readonly remote: string;
   readonly upstream: string;
   readonly integrationBranch: string;
-  readonly base: Option.Option<string>;
+  readonly base: string;
   readonly workdir: string;
   readonly force: boolean;
 }
@@ -256,34 +256,33 @@ export const syncFork = Effect.fn("syncFork")(function* (options: SyncOptions) {
     ),
   ]);
 
-  const base = Option.isSome(options.base)
-    ? options.base.value
-    : yield* git(["ls-remote", "--tags", "--refs", options.upstream, "v*-nightly.*"]).pipe(
-        Effect.map((out) => out.split("\n").map((line) => line.replace(/^.*refs\/tags\//, ""))),
-        Effect.flatMap((tags) =>
-          Effect.fromOption(latestNightlyTag(tags)).pipe(
-            Effect.mapError(() => new NoNightlyTagError({ upstream: options.upstream })),
-          ),
-        ),
-      );
+  const nightly = yield* git([
+    "ls-remote",
+    "--tags",
+    "--refs",
+    options.upstream,
+    "v*-nightly.*",
+  ]).pipe(
+    Effect.map((out) => out.split("\n").map((line) => line.replace(/^.*refs\/tags\//, ""))),
+    Effect.flatMap((tags) =>
+      Effect.fromOption(latestNightlyTag(tags)).pipe(
+        Effect.mapError(() => new NoNightlyTagError({ upstream: options.upstream })),
+      ),
+    ),
+  );
   yield* git([
     "fetch",
     "--quiet",
     "--no-tags",
     options.upstream,
-    `+refs/tags/${base}:refs/tags/${base}`,
-    `+refs/heads/main:${UPSTREAM_MAIN_REF}`,
+    `+${options.base}:${UPSTREAM_REF}`,
   ]);
+  const base = yield* git(["rev-parse", UPSTREAM_REF]);
 
   const warnings: Array<string> = [];
   const resolved: Array<ForkPatch & { readonly sha: string }> = [];
   for (const patch of patches) {
     const sha = yield* git(["rev-parse", remoteRef(patch.branch)]);
-    // A patch built on upstream commits the nightly lacks would drag them in.
-    const forkPoint = yield* git(["merge-base", sha, UPSTREAM_MAIN_REF]);
-    if (!(yield* gitSucceeds(["merge-base", "--is-ancestor", forkPoint, base]))) {
-      return yield* new PatchAheadOfBaseError({ patch: patch.name, base });
-    }
     if (Option.isSome(patch.tracks)) {
       const { repo, number } = patch.tracks.value;
       const prRef = `refs/fork-sync/pr/${number}`;
@@ -315,7 +314,11 @@ export const syncFork = Effect.fn("syncFork")(function* (options: SyncOptions) {
     return Option.none();
   }
 
-  const manifest: ForkManifest = { version: yield* forkVersion(base, previous), ...inputs };
+  const manifest: ForkManifest = {
+    version: yield* forkVersion(nightly, previous),
+    nightly,
+    ...inputs,
+  };
   const integration = yield* Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.acquireRelease(
@@ -384,7 +387,7 @@ const command = Command.make(
       Flag.withDefault("origin"),
     ),
     upstream: Flag.String("upstream").pipe(
-      Flag.withDescription("Upstream repository URL to take nightly tags from."),
+      Flag.withDescription("Upstream repository URL to build from."),
       Flag.withDefault(DEFAULT_UPSTREAM),
     ),
     integrationBranch: Flag.String("integration-branch").pipe(
@@ -392,8 +395,8 @@ const command = Command.make(
       Flag.withDefault("fork-main"),
     ),
     base: Flag.String("base").pipe(
-      Flag.withDescription("Upstream nightly tag to build on. Defaults to the newest."),
-      Flag.optional,
+      Flag.withDescription("Upstream ref to build on."),
+      Flag.withDefault("refs/heads/main"),
     ),
     workdir: Flag.String("workdir").pipe(
       Flag.withDescription("Scratch worktree path for the merge."),
@@ -427,7 +430,7 @@ const command = Command.make(
         ),
       ),
     ),
-).pipe(Command.withDescription("Merge the fork patches onto the newest upstream nightly."));
+).pipe(Command.withDescription("Merge the fork patches onto upstream main."));
 
 if (import.meta.main) {
   Command.run(command, { version: "0.0.0" }).pipe(
