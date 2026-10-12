@@ -31,8 +31,6 @@ jobs:
     name: Merge patches onto upstream main
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: write
     outputs:
       changed: ${{ steps.sync.outputs.changed }}
       version: ${{ steps.sync.outputs.version }}
@@ -42,11 +40,14 @@ jobs:
     steps:
       # The patch list and this script come from patch/release, so a list
       # change takes effect on the next run without waiting for a build.
+      # No stored credentials: the checkout's GITHUB_TOKEN header would
+      # override the push token.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: patch/release
           fetch-depth: 0
+          persist-credentials: false
           sparse-checkout: |
             /*
             !/.repos/
@@ -71,10 +72,17 @@ jobs:
             ${{ inputs.force && '--force' || '' }}
 
       # Builds on other runners fetch the commit from here. fork-main only
-      # moves once a release is published.
+      # moves once a release is published. Upstream commits change workflow
+      # files, which GITHUB_TOKEN may not push, so pushes use FORK_PUSH_TOKEN:
+      # a fine-grained token for this repo with Contents and Workflows write.
+      # Only the push steps see it.
       - name: Push candidate
         if: steps.sync.outputs.changed == 'true'
-        run: git push --force origin "${{ steps.sync.outputs.commit }}:refs/heads/fork-candidate"
+        env:
+          FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
+        run: |
+          git push --force "https://x-access-token:${FORK_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${{ steps.sync.outputs.commit }}:refs/heads/fork-candidate"
 
   check:
     name: Typecheck and touched tests
@@ -426,6 +434,7 @@ jobs:
         with:
           ref: ${{ needs.sync.outputs.commit }}
           fetch-depth: 0
+          persist-credentials: false
           sparse-checkout: .github
 
       - name: Download CLI archives
@@ -476,7 +485,9 @@ jobs:
           gh release edit "$TAG" --draft=false
 
       - name: Advance fork-main
-        run: git push origin "$COMMIT:refs/heads/fork-main"
+        env:
+          FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
+        run: git push "https://x-access-token:${FORK_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$COMMIT:refs/heads/fork-main"
 
   # Set FORK_NIGHTLY_WEBHOOK to a T3 scheduled-task webhook so a failed run
   # wakes an agent instead of waiting for someone to read the email.

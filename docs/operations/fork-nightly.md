@@ -64,6 +64,7 @@ Mac builds are signed with Architech's Developer ID and notarized, from the `CSC
 
 - `patch/release` is the fork's default branch. GitHub only dispatches workflows that exist on the default branch, and this way a workflow change takes effect without a build.
 - The upstream workflows are disabled in the fork. Their runs wait forever for Blacksmith runners.
+- `FORK_PUSH_TOKEN` is a fine-grained token for this repo with Contents and Workflows read and write. The workflow pushes `fork-candidate` and `fork-main` with it, because upstream commits change workflow files and `GITHUB_TOKEN` may not push those. When it expires, the sync job fails at its push step until the secret is replaced.
 - `FORK_BUILD_MACOS` is `true`. `FORK_NIGHTLY_WEBHOOK` is optional. Stopping `t3-fork-build.timer` on stl-wsl stops the builds.
 - Fleet's updater on stl-wsl (`services/t3-preview-update/`) installs each fork nightly on the WSL server.
 
