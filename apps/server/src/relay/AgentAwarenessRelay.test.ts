@@ -317,6 +317,21 @@ describe("AgentAwarenessRelay", () => {
     }
   });
 
+  it("republishes on proposed plan updates, not todo lists", () => {
+    assert.isTrue(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        type: "plan.updated",
+        payload: { kind: "proposed_plan" },
+      }),
+    );
+    assert.isFalse(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        type: "plan.updated",
+        payload: { kind: "todo_list" },
+      }),
+    );
+  });
+
   it("does not publish imported thread creation as new agent activity", () => {
     assert.isFalse(
       AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
@@ -694,6 +709,58 @@ describe("AgentAwarenessRelay", () => {
       yield* TestClock.adjust("5 seconds");
       yield* relay.drain;
       assert.equal(publications.length, 0);
+    }),
+  );
+
+  it.effect("publishes a bot thread's work quietly and clears it once when it finishes", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const botId = ThreadId.make("bot:warden:relay-thread");
+      yield* Ref.set(currentShell, shell({ id: botId }));
+      yield* relay.publishThread(botId);
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running"],
+      );
+
+      yield* Ref.set(
+        currentShell,
+        shell({
+          id: botId,
+          status: "completed",
+          latestRunCompletedAt: DateTime.add(yield* DateTime.now, { seconds: 1 }),
+        }),
+      );
+      yield* relay.publishThread(botId);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      // Later events on the finished thread publish nothing more.
+      yield* relay.publishThread(botId);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
+  it.effect("clears a bot thread's stale row once after losing publish history", () =>
+    Effect.gen(function* () {
+      // A fresh relay, as after a restart: a row published before it may remain.
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const botId = ThreadId.make("bot:warden:relay-thread");
+      yield* Ref.set(currentShell, shell({ id: botId, status: "cancelled" }));
+      for (let event = 0; event < 2; event++) {
+        yield* relay.publishThread(botId);
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+      }
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        [null],
+      );
     }),
   );
 
