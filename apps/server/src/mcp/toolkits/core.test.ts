@@ -15,6 +15,7 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  threadBotName,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -559,6 +560,50 @@ it.effect("a read-only client reads threads and is refused every write before it
   ),
 );
 const dispatched: Array<string> = [];
+
+it.effect("marks a fork a bot's thread makes as that bot's", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    for (const [callerId, expectedBot] of [
+      [ThreadId.make("bot:warden:caller"), "warden"],
+      [threadId, null],
+    ] as const) {
+      const forked = yield* server
+        .callTool({ name: "t3_thread_fork", arguments: { sourcePoint: { type: "latest_stable" } } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...scope,
+            thread: {
+              threadId: callerId,
+              providerSessionId: "mcp-core-session",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+            },
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(forked.isError).toBe(false);
+      const { targetThreadId } = forked.structuredContent as { targetThreadId: string };
+      expect(threadBotName(targetThreadId), callerId).toBe(expectedBot);
+    }
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+            getProjectThreadRecords: ({ threadId: id }) =>
+              Effect.succeed(
+                McpToolAccessTestkit.idleThreadProjection(McpToolAccessTestkit.liveThreadShell(id)),
+              ),
+            dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }),
+          }),
+        ),
+      ),
+    ),
+  ),
+);
 
 it.effect("refuses act-as-caller tools to a client caller", () =>
   Effect.gen(function* () {

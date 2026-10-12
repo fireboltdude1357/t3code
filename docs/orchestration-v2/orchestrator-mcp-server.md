@@ -345,6 +345,15 @@ its own under the environment's Scratch project. For stacked PRs, use the parent
 interaction modes than the caller. Launch has no retry key, so inspect existing threads after a failed or lost response before
 launching again. `create_threads` remains the batch option for a shared checkout.
 
+A bot that launches work on its own passes `bot` with its short name. The new
+thread's id becomes `bot:<name>:<id>`. Threads that a marked thread creates
+through `t3_thread_launch`, `create_threads`, or `t3_thread_fork` keep the
+marker; `bot: null` launches ordinary work from one instead. Clients list
+marked threads in the sidebar's Bots section instead of the inbox, and they
+notify only when the thread needs an approval, an answer, or a decision on a
+proposed plan. The id carries the marker so it needs no new thread state, the
+same way Home marks the threads it launches.
+
 ### `t3_thread_list`
 
 Lists durable thread shells in one project, newest first: `projectId` when
