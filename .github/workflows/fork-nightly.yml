@@ -342,20 +342,46 @@ jobs:
           name: js-bundle
           path: apps
 
-      # Signed with the fork's Developer ID and notarized. There is no
-      # provisioning profile, so the build skips the passkey entitlements.
+      # electron-builder's own CSC_LINK keychain fails set-key-partition-list on
+      # these runners, so the identity goes into a throwaway keychain first, as
+      # in Atrium's ci-keychain.sh. The runner is discarded after the job.
+      - name: Import Developer ID
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+            echo "macOS builds need the CSC_LINK and CSC_KEY_PASSWORD secrets." >&2
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          printf '%s' "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          rm "$RUNNER_TEMP/developer-id.p12"
+          security list-keychains -d user -s "$keychain"
+          identities=$(security find-identity -v -p codesigning "$keychain")
+          echo "$identities"
+          grep -q '"Developer ID Application: ' <<<"$identities"
+          echo "CSC_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      # Notarized with the App Store Connect key. There is no provisioning
+      # profile, so the build skips the passkey entitlements.
       - name: Build desktop artifact
         env:
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -euo pipefail
-          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" || -z "$APPLE_API_KEY" || -z "$APPLE_API_KEY_ID" || -z "$APPLE_API_ISSUER" ]]; then
-            echo "macOS builds need CSC_LINK, CSC_KEY_PASSWORD and the APPLE_API_KEY secrets." >&2
+          if [[ -z "$APPLE_API_KEY" || -z "$APPLE_API_KEY_ID" || -z "$APPLE_API_ISSUER" ]]; then
+            echo "macOS builds need the APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER secrets." >&2
             exit 1
           fi
           key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
