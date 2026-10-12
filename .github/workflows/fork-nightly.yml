@@ -1,0 +1,489 @@
+name: Fork nightly
+
+# Fork-only, see docs/operations/fork-nightly.md. Merges the patches in
+# .github/fork-patches.txt onto the newest upstream nightly, checks and builds
+# the result, and publishes it as a fork prerelease that fork builds update
+# from. The schedule does nothing until the FORK_NIGHTLY_ENABLED repository
+# variable is "true"; a manual run builds but publishes only when asked.
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even when the nightly and patches haven't changed
+        type: boolean
+        default: false
+      publish:
+        description: Publish the release and advance fork-main
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-nightly
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge patches onto the nightly
+    if: github.event_name == 'workflow_dispatch' || vars.FORK_NIGHTLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      version: ${{ steps.sync.outputs.version }}
+      tag: ${{ steps.sync.outputs.tag }}
+      base: ${{ steps.sync.outputs.base }}
+      commit: ${{ steps.sync.outputs.commit }}
+    steps:
+      # The patch list and this script come from patch/release, so a list
+      # change takes effect on the next run without waiting for a build.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: patch/release
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install script dependencies
+        run: vp install --filter=@t3tools/scripts...
+
+      - name: Merge
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/fork-sync.ts --github-output --workdir "$RUNNER_TEMP/fork-sync" \
+            ${{ inputs.force && '--force' || '' }}
+
+      # Builds on other runners fetch the commit from here. fork-main only
+      # moves once a release is published.
+      - name: Push candidate
+        if: steps.sync.outputs.changed == 'true'
+        run: git push --force origin "${{ steps.sync.outputs.commit }}:refs/heads/fork-candidate"
+
+  check:
+    name: Typecheck and touched tests
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Typecheck
+        run: vpr typecheck
+
+      # Upstream already tested the nightly. This runs the test files the
+      # patches add or change.
+      - name: Touched tests
+        env:
+          BASE: ${{ needs.sync.outputs.base }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --no-tags https://github.com/pingdotgg/t3code.git "+refs/tags/$BASE:refs/tags/$BASE"
+          mapfile -t files < <(git diff --name-only --diff-filter=AM "$BASE" HEAD -- '*.test.ts' '*.test.tsx')
+          if [ "${#files[@]}" -eq 0 ]; then echo "No touched tests."; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          vp test run "${files[@]}"
+
+  linux:
+    name: Linux x64 CLI archive
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.sync.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      # .env.example holds the public relay and Clerk identifiers official
+      # builds bake in, so fork builds keep T3 Connect.
+      - name: Build JS bundle
+        run: |
+          cp .env.example .env
+          vp run build:desktop
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build resource monitor
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
+          mkdir -p "$RUNNER_TEMP/cli-resource-monitor/linux-x64"
+          cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor "$RUNNER_TEMP/cli-resource-monitor/linux-x64/"
+
+      # Keep VP_NODE_VERSION in step with release-desktop.yml.
+      - name: Build CLI single-executable
+        env:
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build CLI archive
+        run: |
+          node scripts/build-cli-archive.ts --platform linux --arch x64 --version "$VERSION" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli
+
+      - name: Smoke-test CLI archive
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "$VERSION"
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cli-linux-x64
+          path: release-cli/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64 desktop
+    needs: [sync, linux]
+    runs-on: windows-latest
+    timeout-minutes: 70
+    env:
+      VERSION: ${{ needs.sync.outputs.version }}
+    steps:
+      # actions/checkout trips on the orphaned gitlinks in .repos on Windows.
+      - name: Checkout
+        shell: bash
+        env:
+          COMMIT: ${{ needs.sync.outputs.commit }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$COMMIT"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Install desktop dependencies
+        run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Spectre-mitigated MSVC libs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Align package versions to release version
+        shell: bash
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+
+      - name: Download JS bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: js-bundle
+          path: apps
+
+      - name: Download Linux CLI archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: cli-linux-x64
+          path: wsl-runtime
+
+      # Unsigned: without a publisherName in app-update.yml, the updater
+      # installs fork builds without checking a signature.
+      - name: Build desktop artifact
+        shell: bash
+        env:
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+        run: |
+          vp run dist:desktop:artifact --platform win --target nsis --arch x64 \
+            --build-version "$VERSION" --skip-build --verbose \
+            --wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-x64.tar.gz
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-win-x64
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/nightly.yml
+          if-no-files-found: error
+
+  # macOS only installs updates signed by the running app's identity, so this
+  # stays off until FORK_BUILD_MACOS is "true" and the Developer ID secrets are set.
+  macos:
+    name: macOS arm64 desktop
+    needs: [sync, linux]
+    if: vars.FORK_BUILD_MACOS == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.sync.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install desktop dependencies
+        run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+
+      - name: Download JS bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: js-bundle
+          path: apps
+
+      # electron-builder's own CSC_LINK keychain fails set-key-partition-list on
+      # these runners, so the identity goes into a throwaway keychain first, as
+      # in Atrium's ci-keychain.sh. The runner is discarded after the job.
+      - name: Import Developer ID
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+            echo "macOS builds need the CSC_LINK and CSC_KEY_PASSWORD secrets." >&2
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          printf '%s' "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          rm "$RUNNER_TEMP/developer-id.p12"
+          security list-keychains -d user -s "$keychain"
+          identities=$(security find-identity -v -p codesigning "$keychain")
+          echo "$identities"
+          grep -q '"Developer ID Application: ' <<<"$identities"
+          echo "CSC_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      # Notarized with the App Store Connect key. There is no provisioning
+      # profile, so the build skips the passkey entitlements.
+      - name: Build desktop artifact
+        env:
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APPLE_API_KEY" || -z "$APPLE_API_KEY_ID" || -z "$APPLE_API_ISSUER" ]]; then
+            echo "macOS builds need the APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER secrets." >&2
+            exit 1
+          fi
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key_path"
+          export APPLE_API_KEY="$key_path"
+          vp run dist:desktop:artifact --platform mac --target dmg --arch arm64 \
+            --build-version "$VERSION" --skip-build --signed --verbose
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-mac-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/nightly-mac.yml
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: [sync, check, linux, windows, macos]
+    if: >-
+      always() &&
+      needs.sync.outputs.changed == 'true' &&
+      needs.check.result == 'success' &&
+      needs.linux.result == 'success' &&
+      needs.windows.result == 'success' &&
+      (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
+      (github.event_name == 'schedule' || inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.sync.outputs.version }}
+      TAG: ${{ needs.sync.outputs.tag }}
+      BASE: ${{ needs.sync.outputs.base }}
+      COMMIT: ${{ needs.sync.outputs.commit }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          fetch-depth: 0
+          sparse-checkout: .github
+
+      - name: Download CLI archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: cli-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Write checksums
+        run: |
+          set -euo pipefail
+          cd release-assets
+          rm -f builder-debug.yml
+          sha256sum t3-*.tar.gz > SHA256SUMS
+          test -f nightly.yml
+
+      # Created as a draft so no client sees a release with assets missing.
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          {
+            echo "Upstream nightly $BASE with the fork patches merged on top."
+            echo
+            git log -1 --format=%B "$COMMIT" | grep '^Fork-Patch:' | sed 's/^Fork-Patch: /- /'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --draft --prerelease --latest=false --target "$COMMIT" \
+            --title "T3 Code Nightly $VERSION (fork)" --notes-file "$RUNNER_TEMP/notes.md" \
+            release-assets/*
+          gh release edit "$TAG" --draft=false
+
+      - name: Advance fork-main
+        run: git push origin "$COMMIT:refs/heads/fork-main"
+
+  # Set FORK_NIGHTLY_WEBHOOK to a T3 scheduled-task webhook so a failed run
+  # wakes an agent instead of waiting for someone to read the email.
+  notify:
+    name: Report failure
+    needs: [sync, check, linux, windows, macos, release]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call webhook
+        env:
+          WEBHOOK: ${{ secrets.FORK_NIGHTLY_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE: ${{ needs.sync.outputs.base }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "FORK_NIGHTLY_WEBHOOK is not set."; exit 0; fi
+          jq -n --arg run "$RUN_URL" --arg base "$BASE" '{event: "fork-nightly-failed", run: $run, base: $base}' |
+            curl -fsS -X POST -H 'content-type: application/json' --data @- "$WEBHOOK"
