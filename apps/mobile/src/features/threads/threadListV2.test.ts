@@ -14,6 +14,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { resolveSnoozePresets } from "@t3tools/client-runtime/state/thread-settled";
 import {
+  botThreadId,
   CommandId,
   EnvironmentId,
   MessageId,
@@ -2434,6 +2435,108 @@ describe("Working section beta", () => {
       "snoozed",
       "v2-settled-shelf",
       "settled",
+    ]);
+  });
+});
+
+describe("Bots shelf", () => {
+  const running = {
+    status: "running" as const,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: null,
+    updatedAt: NOW,
+  };
+  const botThread = (id: string, input: Partial<EnvironmentThreadShell> = {}) =>
+    makeThread({ id: ThreadId.make(botThreadId("warden", id)), title: id, ...input });
+  const build = (
+    threads: EnvironmentThreadShell[],
+    input: Partial<Parameters<typeof buildThreadListV2Items>[0]> = {},
+  ) =>
+    buildThreadListV2Items({ threads, environmentId: null, searchQuery: "", now: NOW, ...input });
+  const titles = (layout: ReturnType<typeof buildThreadListV2Items>) =>
+    layout.items.map((item) => item.thread.title);
+
+  it("folds a running bot thread onto the Bots shelf instead of the inbox or Working", () => {
+    const threads = [
+      makeThread({ id: ThreadId.make("human"), title: "human" }),
+      botThread("running", { runtime: running }),
+    ];
+    for (const workingShelfEnabled of [false, true]) {
+      const layout = build(threads, { workingShelfEnabled });
+      expect(titles(layout)).toEqual(["human"]);
+      expect(layout.botCount).toBe(1);
+      expect(layout.botShelfHeaderIndex).toBe(1);
+      expect(layout.workingCount).toBe(0);
+    }
+    expect(build(threads, { botShelfExpanded: true }).items.at(-1)).toMatchObject({
+      thread: { title: "running" },
+      variant: "card",
+    });
+    expect(
+      getThreadListV2OrderedSection({ threads, section: "active", now: NOW }).map(
+        (thread) => thread.title,
+      ),
+    ).toEqual(["human"]);
+  });
+
+  it("keeps a bot thread waiting on an approval in the inbox", () => {
+    const layout = build([botThread("asks", { runtime: running, hasPendingApprovals: true })], {
+      workingShelfEnabled: true,
+    });
+    expect(titles(layout)).toEqual(["asks"]);
+    expect(layout.items[0]).toMatchObject({ pinned: false, variant: "card" });
+    expect(layout.botCount).toBe(0);
+  });
+
+  it("keeps a pinned bot thread pinned", () => {
+    const layout = build([botThread("pinned", { pinnedAt: "2026-06-01T00:00:00.000Z" })]);
+    expect(layout.items).toEqual([expect.objectContaining({ pinned: true, variant: "card" })]);
+    expect(layout.botCount).toBe(0);
+  });
+
+  it("places the shelf after Working and before snoozed threads", () => {
+    const layout = build(
+      [
+        makeThread({ id: ThreadId.make("working"), title: "working", runtime: running }),
+        botThread("bot"),
+        makeThread({
+          id: ThreadId.make("snoozed"),
+          title: "snoozed",
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+      ],
+      {
+        workingShelfEnabled: true,
+        workingShelfExpanded: true,
+        botShelfExpanded: true,
+        snoozedShelfExpanded: true,
+      },
+    );
+    const items = buildThreadListV2ListItems({
+      items: layout.items,
+      pendingTasks: [],
+      workingCount: layout.workingCount,
+      workingShelfExpanded: true,
+      workingShelfHeaderIndex: layout.workingShelfHeaderIndex,
+      botCount: layout.botCount,
+      botShelfExpanded: true,
+      botShelfHeaderIndex: layout.botShelfHeaderIndex,
+      snoozedCount: layout.snoozedCount,
+      snoozedShelfExpanded: true,
+      snoozedShelfHeaderIndex: layout.snoozedShelfHeaderIndex,
+    });
+    expect(
+      items.map((item) => (item.type === "v2-thread" ? item.item.thread.title : item.type)),
+    ).toEqual([
+      "v2-working-shelf",
+      "working",
+      "v2-bot-shelf",
+      "bot",
+      "v2-snoozed-shelf",
+      "snoozed",
     ]);
   });
 });
