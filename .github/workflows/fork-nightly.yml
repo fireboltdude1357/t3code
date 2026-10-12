@@ -40,14 +40,11 @@ jobs:
     steps:
       # The patch list and this script come from patch/release, so a list
       # change takes effect on the next run without waiting for a build.
-      # No stored credentials: the checkout's GITHUB_TOKEN header would
-      # override the push token.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: patch/release
           fetch-depth: 0
-          persist-credentials: false
           sparse-checkout: |
             /*
             !/.repos/
@@ -75,13 +72,14 @@ jobs:
       # moves once a release is published. Upstream commits change workflow
       # files, which GITHUB_TOKEN may not push, so pushes use FORK_PUSH_TOKEN:
       # a fine-grained token for this repo with Contents and Workflows write.
-      # Only the push steps see it.
+      # Only the push steps see it. An empty extraheader drops the
+      # GITHUB_TOKEN header checkout stored, which would override it.
       - name: Push candidate
         if: steps.sync.outputs.changed == 'true'
         env:
           FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
         run: |
-          git push --force "https://x-access-token:${FORK_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+          git -c http.https://github.com/.extraheader= push --force "https://x-access-token:${FORK_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "${{ steps.sync.outputs.commit }}:refs/heads/fork-candidate"
 
   check:
@@ -434,7 +432,6 @@ jobs:
         with:
           ref: ${{ needs.sync.outputs.commit }}
           fetch-depth: 0
-          persist-credentials: false
           sparse-checkout: .github
 
       - name: Download CLI archives
@@ -487,7 +484,7 @@ jobs:
       - name: Advance fork-main
         env:
           FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
-        run: git push "https://x-access-token:${FORK_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$COMMIT:refs/heads/fork-main"
+        run: git -c http.https://github.com/.extraheader= push "https://x-access-token:${FORK_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$COMMIT:refs/heads/fork-main"
 
   # Set FORK_NIGHTLY_WEBHOOK to a T3 scheduled-task webhook so a failed run
   # wakes an agent instead of waiting for someone to read the email.
