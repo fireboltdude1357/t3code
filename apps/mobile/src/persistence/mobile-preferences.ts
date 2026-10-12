@@ -55,6 +55,7 @@ const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 export interface Preferences {
   readonly pullRequestHideTestFiles?: boolean;
   readonly pullRequestMergeMethod?: PullRequestMergeMethod;
+  readonly voiceStartupAudio?: "ringing" | "jazz" | "silence";
   readonly liveActivitiesEnabled?: boolean;
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
@@ -138,6 +139,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
     pullRequestHideTestFiles?: boolean;
     pullRequestMergeMethod?: PullRequestMergeMethod;
+    voiceStartupAudio?: Preferences["voiceStartupAudio"];
     liveActivitiesEnabled?: boolean;
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
@@ -177,6 +179,13 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     preferences.pullRequestMergeMethod = parsed.pullRequestMergeMethod;
   }
 
+  if (
+    parsed.voiceStartupAudio === "ringing" ||
+    parsed.voiceStartupAudio === "jazz" ||
+    parsed.voiceStartupAudio === "silence"
+  ) {
+    preferences.voiceStartupAudio = parsed.voiceStartupAudio;
+  }
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
   }
