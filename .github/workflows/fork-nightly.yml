@@ -1,14 +1,13 @@
 name: Fork nightly
 
 # Fork-only, see docs/operations/fork-nightly.md. Merges the patches in
-# .github/fork-patches.txt onto the newest upstream nightly, checks and builds
-# the result, and publishes it as a fork prerelease that fork builds update
-# from. The schedule does nothing until the FORK_NIGHTLY_ENABLED repository
-# variable is "true"; a manual run builds but publishes only when asked.
+# .github/fork-patches.txt onto upstream main, checks and builds the result,
+# and publishes it as a fork prerelease that fork builds update from. A Fleet
+# timer on stl-wsl dispatches it every two hours with publish set, because
+# GitHub doesn't run cron schedules in this fork. A run with nothing new to
+# build stops after the merge step.
 
 on:
-  schedule:
-    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -29,8 +28,7 @@ concurrency:
 
 jobs:
   sync:
-    name: Merge patches onto the nightly
-    if: github.event_name == 'workflow_dispatch' || vars.FORK_NIGHTLY_ENABLED == 'true'
+    name: Merge patches onto upstream main
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -108,14 +106,14 @@ jobs:
       - name: Typecheck
         run: vpr typecheck
 
-      # Upstream already tested the nightly. This runs the test files the
-      # patches add or change.
+      # Upstream CI tests main. This runs the test files the patches add or
+      # change.
       - name: Touched tests
         env:
           BASE: ${{ needs.sync.outputs.base }}
         run: |
           set -euo pipefail
-          git fetch --quiet --no-tags https://github.com/pingdotgg/t3code.git "+refs/tags/$BASE:refs/tags/$BASE"
+          git fetch --quiet --no-tags https://github.com/pingdotgg/t3code.git "$BASE"
           mapfile -t files < <(git diff --name-only --diff-filter=AM "$BASE" HEAD -- '*.test.ts' '*.test.tsx')
           if [ "${#files[@]}" -eq 0 ]; then echo "No touched tests."; exit 0; fi
           printf '%s\n' "${files[@]}"
@@ -411,7 +409,7 @@ jobs:
       needs.linux.result == 'success' &&
       needs.windows.result == 'success' &&
       (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
-      (github.event_name == 'schedule' || inputs.publish)
+      inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -459,7 +457,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Upstream nightly $BASE with the fork patches merged on top."
+            echo "Upstream main at $BASE with the fork patches merged on top."
             echo
             git log -1 --format=%B "$COMMIT" | grep '^Fork-Patch:' | sed 's/^Fork-Patch: /- /'
           } > "$RUNNER_TEMP/notes.md"
