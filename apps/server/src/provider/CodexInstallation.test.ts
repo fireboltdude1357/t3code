@@ -1,20 +1,17 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ModelManifest from "./ModelManifest.ts";
 import { expect, it } from "@effect/vitest";
-import {
-  HostProcessArchitecture,
-  HostProcessEnvironment,
-  HostProcessPlatform,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import * as NodeCrypto from "node:crypto";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import * as CodexInstallation from "./CodexInstallation.ts";
 
 const archive = Buffer.from(
@@ -25,7 +22,6 @@ const asset = {
   version: "0.156.1",
   target: "aarch64-apple-darwin",
   url: "https://github.com/openai/codex/releases/download/test/package.tar.gz",
-  sha256: NodeCrypto.createHash("sha256").update(archive).digest("hex"),
   archiveBytes: archive.length,
 };
 const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
@@ -52,9 +48,11 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     );
   }
   let downloads = 0;
+  const crypto = yield* Crypto.Crypto;
+  const sha256 = Hex.encode(yield* crypto.digest("SHA-256", archive).pipe(Effect.orDie));
   const installation = yield* CodexInstallation.makeCodexInstallation({
     baseDir,
-    releaseAsset: asset,
+    releaseAsset: { ...asset, sha256 },
     validate: () => Effect.void,
     ...input.options,
   }).pipe(
@@ -64,9 +62,9 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
       refreshInBackground: Effect.void,
     }),
-    Effect.provideService(HostProcessPlatform, "darwin"),
-    Effect.provideService(HostProcessArchitecture, "arm64"),
-    Effect.provideService(HostProcessEnvironment, { PATH: input.local ? localDirectory : "" }),
+    Effect.provideService(HostProcess.Platform, "darwin"),
+    Effect.provideService(HostProcess.Architecture, "arm64"),
+    Effect.provideService(HostProcess.Environment, { PATH: input.local ? localDirectory : "" }),
     Effect.provideService(
       HttpClient.HttpClient,
       HttpClient.make((request) =>
@@ -92,8 +90,9 @@ const terminalState = (installation: CodexInstallation.CodexInstallation["Servic
     Effect.map(Option.getOrThrow),
   );
 
-for (const version of ["0.156.0", "0.156.1", "0.156.2", "0.157.0"]) {
-  it.effect(`reuses installed Codex ${version} without downloading or taking ownership of it`, () =>
+it.effect.each(["0.156.0", "0.156.1", "0.156.2", "0.157.0"])(
+  "reuses installed Codex %s without downloading or taking ownership of it",
+  (version) =>
     Effect.gen(function* () {
       const h = yield* makeHarness({ local: { version } });
       expect(yield* h.installation.start).toMatchObject({
@@ -120,9 +119,8 @@ for (const version of ["0.156.0", "0.156.1", "0.156.2", "0.157.0"]) {
       expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
       expect((yield* h.installation.state).source).toBe("local");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
-}
-for (const local of [
+);
+it.effect.each([
   { version: "0.128.9" },
   { version: "0.145.0" },
   { version: "0.155.1" },
@@ -131,24 +129,20 @@ for (const local of [
   { version: "unknown" },
   { version: "0.156.1", appServerFails: true },
   { version: "0.156.1", versionFails: true },
-]) {
-  it.effect(
-    `downloads the pinned release when the local CLI is unsupported or broken: ${JSON.stringify(local)}`,
-    () =>
-      Effect.gen(function* () {
-        const h = yield* makeHarness({ local });
-        expect((yield* h.installation.state).installedVersion).toBeNull();
-        yield* h.installation.start;
-        const installed = yield* terminalState(h.installation);
-        expect(installed.phase).toBe("succeeded");
-        const executable = yield* h.installation.resolve();
-        expect(executable.source).toBe("managed");
-        expect(installed.executablePath).toBe(executable.executablePath);
-        expect(h.downloads()).toBe(1);
-        expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
-}
+])("downloads the pinned release when the local CLI is unsupported or broken: %j", (local) =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({ local });
+    expect((yield* h.installation.state).installedVersion).toBeNull();
+    yield* h.installation.start;
+    const installed = yield* terminalState(h.installation);
+    expect(installed.phase).toBe("succeeded");
+    const executable = yield* h.installation.resolve();
+    expect(executable.source).toBe("managed");
+    expect(installed.executablePath).toBe(executable.executablePath);
+    expect(h.downloads()).toBe(1);
+    expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 it.effect("falls back to a managed download when the reused local executable disappears", () =>
   Effect.gen(function* () {
     const h = yield* makeHarness({ local: { version: "0.156.1" } });

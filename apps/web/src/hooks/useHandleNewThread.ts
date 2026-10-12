@@ -1,9 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import {
-  scopedProjectKey,
-  scopeProjectRef,
-  scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
+import { scopedProjectKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { DEFAULT_SERVER_SETTINGS, type ScopedProjectRef, type ThreadId } from "@t3tools/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
@@ -22,15 +18,22 @@ import {
   getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { readProjects, readThreadShell, useProjects, useThreadShell } from "../state/entities";
+import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import {
+  readProjects,
+  readThreadShell,
+  readThreadShells,
+  useProjects,
+  useThreadShell,
+} from "../state/entities";
 import {
   hasExplicitComposerModelSelection,
   resolveNewDraftStartFromOrigin,
   resolveNewThreadModelSelectionOverride,
 } from "../lib/chatThreadActions";
 import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
-import { environmentServerConfigsAtom } from "../state/server";
+import { environmentServerConfigsAtom, primaryServerConfigAtom } from "../state/server";
+import { defaultNewThreadProjectRef } from "../lib/chatThreadActions";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
@@ -154,12 +157,21 @@ export function useNewThreadHandler() {
         const projectFile = consultProjectFile
           ? await readT3ProjectFile(project.environmentId, project.workspaceRoot)
           : null;
-        return resolveProjectSettings(
-          targetServerSettings,
-          project?.id ?? null,
-          project,
-          projectFile,
-        ).settings.defaultThreadEnvMode;
+        return resolveNewThreadEnvMode({
+          projectSettings: resolveProjectSettings(
+            targetServerSettings,
+            project?.id ?? null,
+            project,
+            projectFile,
+          ),
+          workspaceRoot: project?.workspaceRoot ?? null,
+          newProjectsRoot: environmentServerConfigs.get(projectRef.environmentId)?.newProjectsRoot,
+          projectHasThreads: readThreadShells().some(
+            (thread) =>
+              thread.environmentId === projectRef.environmentId &&
+              thread.projectId === projectRef.projectId,
+          ),
+        });
       };
       const logicalProjectKey = project
         ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
@@ -464,13 +476,22 @@ export function useHandleNewThread() {
     });
   }, [projectOrder, projects]);
   const handleNewThread = useNewThreadHandler();
+  const primaryEnvironmentId = useAtomValue(
+    primaryServerConfigAtom,
+    (config) => config?.environment.environmentId ?? null,
+  );
+  const homeWorkspaceRoot = useAtomValue(
+    primaryServerConfigAtom,
+    (config) => config?.homeWorkspaceRoot ?? null,
+  );
 
   return {
     activeDraftThread,
     activeThread,
-    defaultProjectRef: orderedProjects[0]
-      ? scopeProjectRef(orderedProjects[0].environmentId, orderedProjects[0].id)
-      : null,
+    defaultProjectRef: defaultNewThreadProjectRef(orderedProjects, {
+      primaryEnvironmentId,
+      homeWorkspaceRoot,
+    }),
     handleNewThread,
     routeDraftId,
     routeThreadRef,

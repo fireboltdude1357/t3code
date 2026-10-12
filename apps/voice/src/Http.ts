@@ -13,19 +13,18 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpServer } from "effect/unstable/ai";
+import { McpProtocol, McpServer } from "effect/ai";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
-import * as RpcServer from "effect/unstable/rpc/RpcServer";
+} from "effect/http";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import * as RpcServer from "effect/rpc/RpcServer";
 
 import packageJson from "../package.json" with { type: "json" };
-import { VoiceToolkitHandlersLive } from "./mcp/handlers.ts";
-import { VoiceToolkit } from "./mcp/tools.ts";
+import { VoiceToolkitRegistration } from "./mcp/handlers.ts";
 import { VoiceMcpCaller } from "./mcp/VoiceMcpCaller.ts";
 import { T3Client } from "./T3Client.ts";
 import { TailnetIdentity } from "./TailnetIdentity.ts";
@@ -162,8 +161,7 @@ const McpAuthLive = HttpRouter.middleware<{ provides: VoiceMcpCaller }>()(
   ),
 ).layer;
 
-const mcpLayer = McpServer.toolkit(VoiceToolkit).pipe(
-  Layer.provide(VoiceToolkitHandlersLive),
+const mcpLayer = VoiceToolkitRegistration.pipe(
   Layer.provideMerge(
     McpServer.layerHttp({
       name: "T3 Voice",

@@ -14,7 +14,9 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { McpServer } from "effect/ai";
 
 import { T3Client } from "../T3Client.ts";
 import {
@@ -452,3 +454,18 @@ const make = Effect.gen(function* () {
 });
 
 export const VoiceToolkitHandlersLive = VoiceToolkit.toLayer(make);
+
+// `McpServer.toolkit` asks for every service its tools declare when it
+// registers them, but the MCP auth middleware provides `VoiceMcpCaller` to each
+// request instead. Registration must not get one: the services it captures
+// would replace the request's.
+const registration = McpServer.toolkit(VoiceToolkit);
+// @effect-diagnostics-next-line unsafeEffectTypeAssertion:off - the auth middleware provides it per request.
+const registered = registration as Layer.Layer<
+  never,
+  never,
+  Exclude<Layer.Services<typeof registration>, VoiceMcpCaller>
+>;
+
+/** Registers the voice toolkit and its handlers on an `McpServer`. */
+export const VoiceToolkitRegistration = registered.pipe(Layer.provide(VoiceToolkitHandlersLive));

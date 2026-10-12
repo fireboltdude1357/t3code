@@ -25,7 +25,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
@@ -190,10 +190,15 @@ const makeTestRelay = Effect.fnUntraced(function* (
         catchUp.shellSnapshotReads += 1;
         return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
       }),
+    readShellSnapshot: unused,
     ensureLegacyTranscript: unused,
     dispatch: unused,
+    searchThread: () => Effect.die("unused"),
+    searchThreadStream: () => Stream.empty,
+    getThreadHistoryPage: () => Effect.die("unused"),
     getTimelinePage: () => Effect.die("Unused timeline read"),
     getMessageCount: () => Effect.die("unused message count"),
+    getTurnItem: () => Effect.die("unused turn item read"),
     getThreadRecords: () => Effect.die("unused record read"),
     getThreadProjection: unused,
     getCheckpointContext: unused,
@@ -203,9 +208,18 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getProjectThread: unused,
     listProjectThreads: unused,
     sendToThread: unused,
+    assertProviderInstanceEnabled: unused,
+    isProviderInstanceEnabledForProject: unused,
+    hasReceipt: unused,
     waitForThread: unused,
+    settleAfterRun: unused,
+    settleThread: unused,
     interruptThread: unused,
+    stopWorkflow: () => Effect.die("unused stopWorkflow"),
+    stopDelegatedTasks: unused,
     getThreadEventSequence: unused,
+    recoverDelegatedTask: unused,
+    delegatedTaskResultPending: unused,
     streamStoredEvents: Stream.empty,
     streamStoredEventsFrom: () => Stream.empty,
     streamDomainEvents: options.domainEvents ?? Stream.empty,
@@ -301,6 +315,21 @@ describe("AgentAwarenessRelay", () => {
     ] as const) {
       assert.isTrue(AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({ type }));
     }
+  });
+
+  it("republishes on proposed plan updates, not todo lists", () => {
+    assert.isTrue(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        type: "plan.updated",
+        payload: { kind: "proposed_plan" },
+      }),
+    );
+    assert.isFalse(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        type: "plan.updated",
+        payload: { kind: "todo_list" },
+      }),
+    );
   });
 
   it("does not publish imported thread creation as new agent activity", () => {
@@ -656,6 +685,82 @@ describe("AgentAwarenessRelay", () => {
       yield* relay.drain;
       assert.equal(publications.length, 2);
       assert.equal(publications[1]?.state, null);
+    }),
+  );
+
+  it.effect.each([
+    { label: "live", archived: false },
+    { label: "archived", archived: true },
+  ])("never publishes tombstones for $label subagent threads", ({ archived }) =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* Ref.set(
+        currentShell,
+        shell({
+          lineage: {
+            rootThreadId: THREAD_ID,
+            parentThreadId: THREAD_ID,
+            relationshipToParent: "subagent",
+          },
+          ...(archived ? { archivedAt: yield* DateTime.now } : {}),
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.equal(publications.length, 0);
+    }),
+  );
+
+  it.effect("publishes a bot thread's work quietly and clears it once when it finishes", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const botId = ThreadId.make("bot:warden:relay-thread");
+      yield* Ref.set(currentShell, shell({ id: botId }));
+      yield* relay.publishThread(botId);
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running"],
+      );
+
+      yield* Ref.set(
+        currentShell,
+        shell({
+          id: botId,
+          status: "completed",
+          latestRunCompletedAt: DateTime.add(yield* DateTime.now, { seconds: 1 }),
+        }),
+      );
+      yield* relay.publishThread(botId);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      // Later events on the finished thread publish nothing more.
+      yield* relay.publishThread(botId);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
+  it.effect("clears a bot thread's stale row once after losing publish history", () =>
+    Effect.gen(function* () {
+      // A fresh relay, as after a restart: a row published before it may remain.
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const botId = ThreadId.make("bot:warden:relay-thread");
+      yield* Ref.set(currentShell, shell({ id: botId, status: "cancelled" }));
+      for (let event = 0; event < 2; event++) {
+        yield* relay.publishThread(botId);
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+      }
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        [null],
+      );
     }),
   );
 

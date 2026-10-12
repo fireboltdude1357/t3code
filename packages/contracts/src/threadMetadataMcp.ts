@@ -1,3 +1,4 @@
+import { OrchestratorMcpEnvironmentTarget } from "./orchestratorMcp.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -79,8 +80,9 @@ export const ThreadMetadataMcpPullRequest = Schema.Struct({
 export type ThreadMetadataMcpPullRequest = typeof ThreadMetadataMcpPullRequest.Type;
 
 export const ThreadMetadataMcpUpdateInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: Schema.optional(ThreadId).annotate({
-    description: "Thread in the calling project. Omit to update the calling thread.",
+    description: "Thread to update. Omit to update the calling thread.",
   }),
   action: ThreadMetadataMcpAction,
   title: Schema.optional(ThreadMetadataTitle),

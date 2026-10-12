@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
-import * as HttpClientError from "effect/unstable/http/HttpClientError";
-import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import * as HttpClientError from "effect/http/HttpClientError";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import { describeSpeechFailure } from "./VoiceSpeech.ts";
 

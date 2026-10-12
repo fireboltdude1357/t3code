@@ -25,7 +25,7 @@ import {
   VoiceMcpTopicOpenInput,
   VoiceMcpTopicOpenResult,
 } from "@t3tools/contracts";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import { VoiceMcpCaller } from "./VoiceMcpCaller.ts";
 

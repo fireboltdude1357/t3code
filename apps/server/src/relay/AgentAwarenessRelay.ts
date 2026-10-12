@@ -6,6 +6,7 @@ import type {
   Project,
   ThreadId,
 } from "@t3tools/contracts";
+import { threadBotName } from "@t3tools/contracts";
 import {
   RelayApi,
   type RelayAgentActivityPublishProofPayload,
@@ -32,10 +33,10 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
@@ -129,8 +130,15 @@ export function shouldPublishAgentAwarenessEvent(
     case "provider-turn.updated":
     case "turn-item.updated":
       return isTurnItemPayload(event.payload) && turnItemUpdateCanEndBackgroundWork(event.payload);
-    case "message.updated":
+    // A bot thread's finished row depends on its proposed plan staying actionable.
     case "plan.updated":
+      return (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        "kind" in event.payload &&
+        event.payload.kind === "proposed_plan"
+      );
+    case "message.updated":
     case "checkpoint-scope.created":
     case "checkpoint.captured":
     case "checkpoint.rollback-requested":
@@ -471,6 +479,8 @@ export const make = Effect.gen(function* () {
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
 
+    // Only the relay interaction (signing the proof and the call) is exported;
+    // the reads that decide what to publish are the user's local work.
     const publishState = (input: {
       readonly projectId: string | null;
       readonly state: RelayAgentActivityState | null;
@@ -516,12 +526,22 @@ export const make = Effect.gen(function* () {
           ok: response.ok,
           deliveries: deliveryStats(response.deliveries),
         });
-      });
+      }).pipe(Effect.withSpan("relay.agent_activity.publish"), withRelayClientTracing);
 
     // Per-thread shell read: this publish runs for every activity-relevant
     // domain event, so materializing the full shell here would make the cost
     // of one thread's activity proportional to how many threads exist.
     const threadShell = yield* threads.getThreadShell(threadId);
+    if (
+      threadShell?.lineage.relationshipToParent === "subagent" &&
+      !(yield* Ref.get(publishedStateByThreadRef)).has(threadId)
+    ) {
+      // Subagents never project activity, so the relay holds no row to clear.
+      // Their events would otherwise publish a tombstone each, and every
+      // publish re-delivers the user's aggregate. Checked before the archive
+      // filter so archiving one stays quiet too.
+      return;
+    }
     const thread =
       threadShell === null || threadShell.archivedAt !== null
         ? Option.none<OrchestrationV2ThreadShell>()
@@ -623,7 +643,10 @@ export const make = Effect.gen(function* () {
     publishConfirmDeadlines.delete(threadId);
     yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
       const nextPublishedStates = new Map(publishedStates);
-      if (snapshot.state === null) {
+      // A finished bot thread keeps its tombstone identity, so later events on
+      // it (PR syncs, title updates) match it instead of each publishing
+      // another tombstone. Lost history still sends one, clearing stale rows.
+      if (snapshot.state === null && threadBotName(threadId) === null) {
         nextPublishedStates.delete(threadId);
       } else {
         nextPublishedStates.set(threadId, publishIdentity);
@@ -649,7 +672,6 @@ export const make = Effect.gen(function* () {
         }).pipe(Effect.andThen(schedulePublishRetry(threadId)));
       }),
       Effect.withSpan("AgentAwarenessRelay.publishThread"),
-      withRelayClientTracing,
     );
   });
 
