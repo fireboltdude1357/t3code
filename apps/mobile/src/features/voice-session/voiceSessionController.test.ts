@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import type { Preferences } from "../../persistence/mobile-preferences";
 import type { VoiceSessionPeer, openVoiceSessionPeer } from "./voiceSessionPeer";
 

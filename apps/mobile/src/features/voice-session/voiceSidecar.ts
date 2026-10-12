@@ -10,10 +10,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { Atom } from "effect/unstable/reactivity";
-import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
-import * as Socket from "effect/unstable/socket/Socket";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { Atom } from "effect/reactivity";
+import { RpcClient, RpcSerialization } from "effect/rpc";
+import * as Socket from "effect/socket/Socket";
 import { AppState } from "react-native";
 
 import { connectionAtomRuntime } from "../../connection/runtime";

@@ -29,8 +29,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { HttpRouter } from "effect/unstable/http";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import { HttpRouter } from "effect/http";
 
 import * as CodexSessions from "./CodexSessions.ts";
 import * as Database from "./Database.ts";
