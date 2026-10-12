@@ -453,6 +453,8 @@ jobs:
           test -f nightly.yml
 
       # Created as a draft so no client sees a release with assets missing.
+      # Uploads sometimes time out (HTTP 408), so each asset gets three tries,
+      # and a draft left by a failed run is replaced.
       - name: Publish release
         run: |
           set -euo pipefail
@@ -461,9 +463,18 @@ jobs:
             echo
             git log -1 --format=%B "$COMMIT" | grep '^Fork-Patch:' | sed 's/^Fork-Patch: /- /'
           } > "$RUNNER_TEMP/notes.md"
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
+            gh release delete "$TAG" --yes
+          fi
           gh release create "$TAG" --draft --prerelease --latest=false --target "$COMMIT" \
-            --title "T3 Code Nightly $VERSION (fork)" --notes-file "$RUNNER_TEMP/notes.md" \
-            release-assets/*
+            --title "T3 Code Nightly $VERSION (fork)" --notes-file "$RUNNER_TEMP/notes.md"
+          for asset in release-assets/*; do
+            for attempt in 1 2 3; do
+              gh release upload "$TAG" "$asset" --clobber && break
+              if [ "$attempt" = 3 ]; then exit 1; fi
+              sleep 15
+            done
+          done
           gh release edit "$TAG" --draft=false
 
       - name: Advance fork-main
