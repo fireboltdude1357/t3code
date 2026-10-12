@@ -1,8 +1,9 @@
-import type {
-  EnvironmentId,
-  OrchestrationV2ThreadShell,
-  Project,
-  ThreadId,
+import {
+  type EnvironmentId,
+  type OrchestrationV2ThreadShell,
+  type Project,
+  threadBotName,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -62,6 +63,14 @@ export function projectThreadAwarenessV2(
   if (thread.lineage.relationshipToParent === "subagent") return null;
   const phase = resolveThreadAwarenessPhaseV2(thread);
   if (phase === null) {
+    return null;
+  }
+  // Bot threads reach the user only when they need an answer.
+  if (
+    threadBotName(thread.id) !== null &&
+    phase !== "waiting_for_approval" &&
+    phase !== "waiting_for_input"
+  ) {
     return null;
   }
   const detail =

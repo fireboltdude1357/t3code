@@ -75,6 +75,35 @@ describe("projectThreadAwarenessV2", () => {
     },
   );
 
+  it("publishes bot threads only while they need the user", () => {
+    const botThread = (overrides: Parameters<typeof v2Thread>[0]) => ({
+      ...v2Thread(overrides),
+      id: "bot:warden:thread-2" as ThreadId,
+    });
+    for (const status of ["running", "completed", "failed"] as const) {
+      expect(
+        projectThreadAwarenessV2({
+          environmentId: "env-1" as EnvironmentId,
+          project,
+          thread: botThread({ status }),
+        }),
+      ).toBeNull();
+    }
+    expect(
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: botThread({
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("request-1"),
+            kind: "command",
+            createdAt: updatedAt,
+          },
+        }),
+      }),
+    ).toMatchObject({ phase: "waiting_for_approval" });
+  });
+
   it("keeps an older activity run visible over a newer cancelled run", () => {
     expect(
       projectThreadAwarenessV2({

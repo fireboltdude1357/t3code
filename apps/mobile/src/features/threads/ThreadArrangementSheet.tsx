@@ -2,7 +2,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
-import { sortInboxThreadsByReturn } from "@t3tools/client-runtime/state/thread-inbox";
+import { botShelfName, sortInboxThreadsByReturn } from "@t3tools/client-runtime/state/thread-inbox";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, FlatList, Modal, Pressable, View } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
@@ -203,7 +203,12 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
         ? sortInboxThreadsByReturn(active, threadListInboxReturns.returnedAt)
         : active,
       snoozed: parked.filter((thread) => effectiveSnoozed(thread, { now })),
-      settled: parked.filter((thread) => !effectiveSnoozed(thread, { now })),
+      // Unsettled bot threads sit on the Bots shelf, which has no arrangement.
+      settled: parked.filter(
+        (thread) =>
+          !effectiveSnoozed(thread, { now }) &&
+          (thread.settledOverride === "settled" || botShelfName(thread) === null),
+      ),
     };
   }, [threads, configs, now, queuedThreadKeys, pendingOrder, workingShelfEnabled]);
   const planners = useMemo(() => {

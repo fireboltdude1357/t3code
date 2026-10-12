@@ -1,7 +1,12 @@
 import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createInboxReturnTracker, sortWorkingThreadsBySend } from "./threadInbox.ts";
+import {
+  botShelfName,
+  createInboxReturnTracker,
+  sortBotThreads,
+  sortWorkingThreadsBySend,
+} from "./threadInbox.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -82,5 +87,32 @@ describe("sortWorkingThreadsBySend", () => {
     expect(
       sortWorkingThreadsBySend([launched, sentFirst, sentLast]).map((thread) => thread.id),
     ).toEqual(["sent-last", "sent-first", "launched"]);
+  });
+});
+
+describe("bot shelf", () => {
+  it("keeps bot threads off the inbox until they need the user", () => {
+    const bot = thread("bot:warden:cmd-1", true);
+    expect(botShelfName(bot)).toBe("warden");
+    expect(botShelfName({ ...bot, hasPendingApprovals: true })).toBeNull();
+    expect(botShelfName({ ...bot, hasPendingUserInput: true })).toBeNull();
+    expect(botShelfName(thread("cmd-1", true))).toBeNull();
+  });
+
+  it("groups threads by bot, newest send first within each bot", () => {
+    const sent = (id: string, at: string) => ({
+      ...thread(id, true),
+      latestUserAuthoredMessageAt: at,
+    });
+    const sorted = sortBotThreads([
+      sent("bot:warden:old", "2026-06-01T01:00:00.000Z"),
+      sent("bot:ledger:only", "2026-06-01T00:30:00.000Z"),
+      sent("bot:warden:new", "2026-06-01T02:00:00.000Z"),
+    ]);
+    expect(sorted.map((row) => row.id)).toEqual([
+      "bot:ledger:only",
+      "bot:warden:new",
+      "bot:warden:old",
+    ]);
   });
 });

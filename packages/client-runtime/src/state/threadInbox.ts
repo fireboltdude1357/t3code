@@ -1,3 +1,5 @@
+import { threadBotName, type BotName } from "@t3tools/contracts";
+
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 
@@ -86,6 +88,40 @@ export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: re
     ]),
   );
   return sortNewestFirst(threads, timestamps);
+}
+
+type BotShelfInput = Pick<
+  EnvironmentThreadShell,
+  "id" | "hasPendingApprovals" | "hasPendingUserInput"
+>;
+
+/** The bot whose shelf an inbox thread folds into, or null for the inbox.
+    Threads a bot launched skip the inbox and the Working section until they
+    need the user: a pending approval or question brings one back to the inbox
+    until it is answered. Pins, snoozes, and settlement still win. */
+export function botShelfName(thread: BotShelfInput): BotName | null {
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return null;
+  return threadBotName(thread.id);
+}
+
+/** The Bots section groups rows by bot, then lists each bot's threads like
+    the Working section: newest send first. */
+export function sortBotThreads<T extends WorkingSortInput>(threads: readonly T[]): T[] {
+  // sortWorkingThreadsBySend returns a fresh array, and sort is stable.
+  return sortWorkingThreadsBySend(threads).sort((left, right) =>
+    (threadBotName(left.id) ?? "").localeCompare(threadBotName(right.id) ?? ""),
+  );
+}
+
+/** A row's project label, led by the bot's name on threads a bot launched,
+    so bot work stays recognizable wherever it lists. */
+export function threadProjectLabel(
+  thread: Pick<EnvironmentThreadShell, "id">,
+  projectName: string | null,
+): string | null {
+  const bot = threadBotName(thread.id);
+  if (bot === null) return projectName;
+  return projectName === null ? bot : `${bot} · ${projectName}`;
 }
 
 function sortNewestFirst<T extends Pick<EnvironmentThreadShell, "id" | "environmentId">>(
