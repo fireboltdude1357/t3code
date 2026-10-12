@@ -337,8 +337,9 @@ it.effect(
     }).pipe(Effect.provide(TestLayer)),
 );
 
-for (const resolution of ["direct", "reconcile"] as const) {
-  it.effect(`preserves identical pending agenda text during ${resolution} resolution`, () =>
+it.effect.each(["direct", "reconcile"] as const)(
+  "preserves identical pending agenda text during %s resolution",
+  (resolution) =>
     Effect.gen(function* () {
       const store = yield* VoiceStore;
       for (const kind of ["input", "approval"] as const) {
@@ -406,8 +407,7 @@ for (const resolution of ["direct", "reconcile"] as const) {
         assert.deepStrictEqual(yield* store.pendingRequestNotices(10), []);
       }
     }).pipe(Effect.provide(TestLayer)),
-  );
-}
+);
 
 it.effect("persists request identity and resolution across store instances", () =>
   Effect.gen(function* () {

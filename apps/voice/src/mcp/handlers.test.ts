@@ -402,11 +402,12 @@ describe("voice toolkit handlers", () => {
     }),
   );
 
-  for (const [label, options, caller] of [
-    ["an ordinary caller", {}, OTHER_THREAD],
-    ["an ended generation", { live: false }, SESSION_THREAD],
-  ] as const) {
-    it.effect(`refuses every tool for ${label} before touching T3 or the store`, () =>
+  it.effect.each([
+    { label: "an ordinary caller", options: {}, caller: OTHER_THREAD },
+    { label: "an ended generation", options: { live: false }, caller: SESSION_THREAD },
+  ] as const)(
+    "refuses every tool for $label before touching T3 or the store",
+    ({ options, caller }) =>
       Effect.gen(function* () {
         const harness = yield* makeHarness(options);
         const pendingId = RuntimeRequestId.make("pending");
@@ -443,8 +444,7 @@ describe("voice toolkit handlers", () => {
         expect(harness.proposals()).toBe(0);
         expect(harness.dispatched).toEqual([]);
       }),
-    );
-  }
+  );
 
   it.effect("lists projects and live threads newest first, without subagents or archives", () =>
     Effect.gen(function* () {
@@ -642,62 +642,65 @@ describe("voice toolkit handlers", () => {
     }),
   );
 
-  for (const [mode, expected] of [
-    [
-      undefined,
-      {
+  it.effect.each([
+    {
+      label: "auto",
+      mode: undefined,
+      expected: {
         delivery: "auto",
         command: {
           dispatchMode: { type: "start_immediately" },
           deliveryIntent: "auto",
         },
       },
-    ],
-    ["queue", { delivery: "queued", command: { dispatchMode: { type: "queue_after_active" } } }],
-  ] as const) {
-    it.effect(`sends once per spoken yes in ${mode ?? "auto"} mode`, () =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness({
-          transcript: [
-            said("user", "Tell the target thread to rebase onto main and rerun the tests."),
-            said(
-              "assistant",
-              sendReadback({
-                title: "Target",
-                draft: DRAFT,
-                ...(mode === undefined ? {} : { mode }),
-              }),
-            ),
-            said("user", "Yes, send it."),
-          ],
-        });
-        const input = {
-          threadId: TARGET_THREAD,
-          text: DRAFT,
-          ...(mode === undefined ? {} : { mode }),
-        };
-        const result = yield* harness.call("voice_send", input);
-        expect(result.result).toEqual({
-          status: "sent",
-          threadId: TARGET_THREAD,
-          delivery: expected.delivery,
-        });
-        expect(harness.dispatched).toHaveLength(1);
-        expect(harness.dispatched[0]).toMatchObject({
-          type: "message.dispatch",
-          threadId: TARGET_THREAD,
-          text: DRAFT,
-          createdBy: "agent",
-          ...expected.command,
-        });
-        if (mode === "queue") expect(harness.dispatched[0]).not.toHaveProperty("deliveryIntent");
-        // The same yes can't approve a second send.
-        const again = yield* harness.call("voice_send", input);
-        expect(again.result).toMatchObject({ status: "needs_spoken_yes" });
-        expect(harness.dispatched).toHaveLength(1);
-      }),
-    );
-  }
+    },
+    {
+      label: "queue",
+      mode: "queue",
+      expected: { delivery: "queued", command: { dispatchMode: { type: "queue_after_active" } } },
+    },
+  ] as const)("sends once per spoken yes in $label mode", ({ mode, expected }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        transcript: [
+          said("user", "Tell the target thread to rebase onto main and rerun the tests."),
+          said(
+            "assistant",
+            sendReadback({
+              title: "Target",
+              draft: DRAFT,
+              ...(mode === undefined ? {} : { mode }),
+            }),
+          ),
+          said("user", "Yes, send it."),
+        ],
+      });
+      const input = {
+        threadId: TARGET_THREAD,
+        text: DRAFT,
+        ...(mode === undefined ? {} : { mode }),
+      };
+      const result = yield* harness.call("voice_send", input);
+      expect(result.result).toEqual({
+        status: "sent",
+        threadId: TARGET_THREAD,
+        delivery: expected.delivery,
+      });
+      expect(harness.dispatched).toHaveLength(1);
+      expect(harness.dispatched[0]).toMatchObject({
+        type: "message.dispatch",
+        threadId: TARGET_THREAD,
+        text: DRAFT,
+        createdBy: "agent",
+        ...expected.command,
+      });
+      if (mode === "queue") expect(harness.dispatched[0]).not.toHaveProperty("deliveryIntent");
+      // The same yes can't approve a second send.
+      const again = yield* harness.call("voice_send", input);
+      expect(again.result).toMatchObject({ status: "needs_spoken_yes" });
+      expect(harness.dispatched).toHaveLength(1);
+    }),
+  );
 
   it.effect("launches nothing when the confirmation is refused", () =>
     Effect.gen(function* () {

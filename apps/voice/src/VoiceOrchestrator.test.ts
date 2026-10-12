@@ -736,8 +736,9 @@ it.effect(
     ),
 );
 
-for (const outcome of ["denied", "expired"] as const) {
-  it.effect(`a ${outcome} approval is not prompted again until the next generation`, () =>
+it.effect.each(["denied", "expired"] as const)(
+  "a %s approval is not prompted again until the next generation",
+  (outcome) =>
     withOrchestrator((harness) =>
       Effect.gen(function* () {
         const orchestrator = yield* VoiceOrchestrator;
@@ -768,8 +769,7 @@ for (const outcome of ["denied", "expired"] as const) {
         assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
       }),
     ),
-  );
-}
+);
 
 it.effect("settlement during setup prevents an approval prompt", () =>
   withOrchestrator((harness) =>
@@ -1387,8 +1387,9 @@ it.effect("a runtime approval that resolved elsewhere cannot be approved by voic
   ),
 );
 
-for (const changedField of ["provider", "prompt"] as const) {
-  it.effect(`a runtime approval refuses a changed ${changedField} after showing the card`, () =>
+it.effect.each(["provider", "prompt"] as const)(
+  "a runtime approval refuses a changed %s after showing the card",
+  (changedField) =>
     withOrchestrator((harness) =>
       Effect.gen(function* () {
         const orchestrator = yield* VoiceOrchestrator;
@@ -1414,8 +1415,7 @@ for (const changedField of ["provider", "prompt"] as const) {
         assert.deepStrictEqual(yield* Ref.get(harness.dispatched), []);
       }),
     ),
-  );
-}
+);
 
 it.effect(
   "spoken actions and sends wait for quiet, reread split replies and fail closed during activity",
