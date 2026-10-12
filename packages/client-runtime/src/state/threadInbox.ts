@@ -23,6 +23,12 @@ export function isThreadWorking(thread: WorkingThreadInput): boolean {
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
   if (!threadRuntimeIsActive(thread.runtime) && thread.runtime?.status !== "idle") return false;
   // A plan prompt outranks lingering background work: the user has to act on it.
+  return !hasReadyPlan(thread);
+}
+
+/** A plan-mode thread whose run settled with a proposed plan is waiting for
+    the user to implement or revise it. */
+function hasReadyPlan(thread: WorkingThreadInput): boolean {
   const run = thread.latestRun;
   const runSettled =
     run !== null &&
@@ -32,7 +38,7 @@ export function isThreadWorking(thread: WorkingThreadInput): boolean {
     run.status !== "running" &&
     run.status !== "waiting" &&
     thread.runtime?.activeRunId !== run.runId;
-  return !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan && runSettled);
+  return thread.interactionMode === "plan" && thread.hasActionableProposedPlan && runSettled;
 }
 
 type InboxThreadInput = Pick<
@@ -90,17 +96,16 @@ export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: re
   return sortNewestFirst(threads, timestamps);
 }
 
-type BotShelfInput = Pick<
-  EnvironmentThreadShell,
-  "id" | "hasPendingApprovals" | "hasPendingUserInput"
->;
-
 /** The bot whose shelf an inbox thread folds into, or null for the inbox.
     Threads a bot launched skip the inbox and the Working section until they
-    need the user: a pending approval or question brings one back to the inbox
-    until it is answered. Pins, snoozes, and settlement still win. */
-export function botShelfName(thread: BotShelfInput): BotName | null {
-  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return null;
+    need the user: a pending approval, question, or ready plan brings one back
+    to the inbox until it is answered. Pins, snoozes, and settlement still win. */
+export function botShelfName(
+  thread: Pick<EnvironmentThreadShell, "id"> & WorkingThreadInput,
+): BotName | null {
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput || hasReadyPlan(thread)) {
+    return null;
+  }
   return threadBotName(thread.id);
 }
 

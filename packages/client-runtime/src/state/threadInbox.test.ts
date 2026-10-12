@@ -97,6 +97,22 @@ describe("bot shelf", () => {
     expect(botShelfName({ ...bot, hasPendingApprovals: true })).toBeNull();
     expect(botShelfName({ ...bot, hasPendingUserInput: true })).toBeNull();
     expect(botShelfName(thread("cmd-1", true))).toBeNull();
+    // A settled run with a proposed plan waits on the user to implement it.
+    const planReady = {
+      ...thread("bot:warden:cmd-2", false),
+      interactionMode: "plan" as const,
+      hasActionableProposedPlan: true,
+      latestRun: {
+        runId: RunId.make("run-1"),
+        status: "completed" as const,
+        requestedAt: "2026-06-01T00:00:00.000Z",
+        startedAt: "2026-06-01T00:00:00.000Z",
+        completedAt: "2026-06-01T00:01:00.000Z",
+        assistantMessageId: null,
+      },
+    };
+    expect(botShelfName(planReady)).toBeNull();
+    expect(botShelfName({ ...planReady, hasActionableProposedPlan: false })).toBe("warden");
   });
 
   it("groups threads by bot, newest send first within each bot", () => {

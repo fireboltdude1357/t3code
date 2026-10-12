@@ -67,8 +67,14 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const context = yield* readCaller();
         const { caller } = context;
         const commandId = yield* newCommandId();
-        // A bot's own threads launch more bot work, so the marker carries over.
-        const bot = input.bot ?? (caller === undefined ? null : threadBotName(caller.id));
+        // A bot's own threads launch more bot work, so the marker carries over
+        // unless the caller passes null for ordinary work.
+        const bot =
+          input.bot === undefined
+            ? caller === undefined
+              ? null
+              : threadBotName(caller.id)
+            : input.bot;
         const threadId = ThreadId.make(bot === null ? commandId : botThreadId(bot, commandId));
         const messageId = MessageId.make(commandId);
         const attachments = input.attachments ?? [];

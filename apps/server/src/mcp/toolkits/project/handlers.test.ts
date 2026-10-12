@@ -195,7 +195,7 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
     const projectId = ProjectId.make("project");
     const providerInstanceId = ProviderInstanceId.make("codex");
     const modelSelection = { instanceId: providerInstanceId, model: "gpt-5" };
-    const launchFrom = (callerId: string, bot?: string) =>
+    const launchFrom = (callerId: string, bot?: string | null) =>
       Effect.gen(function* () {
         const caller = {
           id: ThreadId.make(callerId),
@@ -257,6 +257,10 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
     expect(threadBotName((yield* launchFrom("source-thread", "warden")) ?? "")).toBe("warden");
     expect(threadBotName((yield* launchFrom("bot:warden:parent")) ?? "")).toBe("warden");
     expect(threadBotName((yield* launchFrom("bot:warden:parent", "ledger")) ?? "")).toBe("ledger");
+    // null asks a bot thread for ordinary work, such as a thread for the user.
+    const optedOut = yield* launchFrom("bot:warden:parent", null);
+    expect(optedOut).not.toBeNull();
+    expect(threadBotName(optedOut ?? "")).toBeNull();
     const ordinary = yield* launchFrom("source-thread");
     expect(ordinary).not.toBeNull();
     expect(threadBotName(ordinary ?? "")).toBeNull();

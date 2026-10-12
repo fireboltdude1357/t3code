@@ -6,6 +6,7 @@ import type {
   Project,
   ThreadId,
 } from "@t3tools/contracts";
+import { threadBotName } from "@t3tools/contracts";
 import {
   RelayApi,
   type RelayAgentActivityPublishProofPayload,
@@ -549,6 +550,16 @@ export const make = Effect.gen(function* () {
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
+    if (
+      snapshot.state === null &&
+      threadBotName(threadId) !== null &&
+      !publishedStateByThread.has(threadId)
+    ) {
+      // A finished bot thread projects nothing and the relay holds no row for
+      // it, so later events (PR syncs, title updates) would each publish a
+      // tombstone, like subagents above.
+      return;
+    }
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
       !publishedStateByThread.has(threadId)

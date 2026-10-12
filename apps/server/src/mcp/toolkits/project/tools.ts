@@ -132,9 +132,9 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ),
     attachments: Schema.optional(Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8))),
     bot: Schema.optional(
-      BotName.annotate({
+      Schema.NullOr(BotName).annotate({
         description:
-          "Set only when a bot launches this thread on its own: the bot's short name, such as warden. The thread lists under that bot in the sidebar's Bots section and stays out of the user's inbox until it needs them. A thread launched from a bot's thread is marked for the same bot unless this is set.",
+          "Set only when a bot launches this thread on its own: the bot's short name, such as warden. The thread lists under that bot in the sidebar's Bots section and stays out of the user's inbox until it needs them. A thread launched from a bot's thread is marked for the same bot when this is omitted; pass null to launch ordinary work for the user from one.",
       }),
     ),
   }),

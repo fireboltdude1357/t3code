@@ -4,9 +4,9 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import {
   type EnvironmentId,
   type OrchestrationV2ThreadShell,
-  threadBotName,
   type ThreadId,
 } from "@t3tools/contracts";
+import { botShelfName } from "@t3tools/client-runtime/state/thread-inbox";
 import * as Option from "effect/Option";
 import {
   CircleAlertIcon,
@@ -159,10 +159,8 @@ function EnvironmentNotifications({
             ? "completion"
             : null;
       if (!kind) continue;
-      // Bot threads notify only when they need an answer; the Bots shelf shows the rest.
-      if (threadBotName(thread.id) !== null && status !== "input" && status !== "approval") {
-        continue;
-      }
+      // Bot threads notify only while they need the user; the Bots shelf shows the rest.
+      if (botShelfName(thread) !== null) continue;
       const title =
         kind === "completion"
           ? "Thread completed"

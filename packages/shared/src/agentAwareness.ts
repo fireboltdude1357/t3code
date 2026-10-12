@@ -44,7 +44,9 @@ export interface ProjectThreadAwarenessV2Input {
   readonly thread: Pick<
     OrchestrationV2ThreadShell,
     | "activityRunStatus"
+    | "hasActionableProposedPlan"
     | "id"
+    | "interactionMode"
     | "lineage"
     | "modelSelection"
     | "pendingBackgroundTasks"
@@ -65,11 +67,13 @@ export function projectThreadAwarenessV2(
   if (phase === null) {
     return null;
   }
-  // Bot threads reach the user only when they need an answer.
+  // Bot threads stay silent: their running state is published as a quiet
+  // baseline, but finishing or failing is no news unless a plan waits on the
+  // user. Approvals and questions alert as usual.
   if (
     threadBotName(thread.id) !== null &&
-    phase !== "waiting_for_approval" &&
-    phase !== "waiting_for_input"
+    (phase === "completed" || phase === "failed") &&
+    !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan)
   ) {
     return null;
   }

@@ -24,6 +24,8 @@ describe("projectThreadAwarenessV2", () => {
       Pick<
         OrchestrationV2ThreadShell,
         | "activityRunStatus"
+        | "hasActionableProposedPlan"
+        | "interactionMode"
         | "status"
         | "pendingBackgroundTasks"
         | "pendingRuntimeRequest"
@@ -40,6 +42,8 @@ describe("projectThreadAwarenessV2", () => {
     title: "Integrate orchestration",
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
     status: "running" as const,
+    interactionMode: "default" as const,
+    hasActionableProposedPlan: false,
     pendingRuntimeRequest: null,
     updatedAt,
     ...overrides,
@@ -75,31 +79,27 @@ describe("projectThreadAwarenessV2", () => {
     },
   );
 
-  it("publishes bot threads only while they need the user", () => {
-    const botThread = (overrides: Parameters<typeof v2Thread>[0]) => ({
-      ...v2Thread(overrides),
-      id: "bot:warden:thread-2" as ThreadId,
-    });
-    for (const status of ["running", "completed", "failed"] as const) {
-      expect(
-        projectThreadAwarenessV2({
-          environmentId: "env-1" as EnvironmentId,
-          project,
-          thread: botThread({ status }),
-        }),
-      ).toBeNull();
-    }
-    expect(
+  it("keeps bot threads quiet unless they need the user", () => {
+    const project_ = (overrides: Parameters<typeof v2Thread>[0]) =>
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
         project,
-        thread: botThread({
-          pendingRuntimeRequest: {
-            id: RuntimeRequestId.make("request-1"),
-            kind: "command",
-            createdAt: updatedAt,
-          },
-        }),
+        thread: { ...v2Thread(overrides), id: "bot:warden:thread-2" as ThreadId },
+      });
+    // Running stays published as a silent baseline; finishing is no news.
+    expect(project_({ status: "running" })).toMatchObject({ phase: "running" });
+    expect(project_({ status: "completed" })).toBeNull();
+    expect(project_({ status: "failed" })).toBeNull();
+    expect(
+      project_({ status: "completed", interactionMode: "plan", hasActionableProposedPlan: true }),
+    ).toMatchObject({ phase: "completed" });
+    expect(
+      project_({
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("request-1"),
+          kind: "command",
+          createdAt: updatedAt,
+        },
       }),
     ).toMatchObject({ phase: "waiting_for_approval" });
   });

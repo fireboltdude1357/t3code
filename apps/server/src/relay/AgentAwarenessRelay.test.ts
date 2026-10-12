@@ -697,6 +697,40 @@ describe("AgentAwarenessRelay", () => {
     }),
   );
 
+  it.effect("publishes a bot thread's work quietly and clears it once when it finishes", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const botId = ThreadId.make("bot:warden:relay-thread");
+      yield* Ref.set(currentShell, shell({ id: botId }));
+      yield* relay.publishThread(botId);
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running"],
+      );
+
+      yield* Ref.set(
+        currentShell,
+        shell({
+          id: botId,
+          status: "completed",
+          latestRunCompletedAt: DateTime.add(yield* DateTime.now, { seconds: 1 }),
+        }),
+      );
+      yield* relay.publishThread(botId);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      // Later events on the finished thread publish nothing more.
+      yield* relay.publishThread(botId);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
   it.effect("confirms a first completed state and respects disabling during confirmation", () =>
     Effect.gen(function* () {
       const { relay, secrets, currentShell, publications } = yield* makeTestRelay();
