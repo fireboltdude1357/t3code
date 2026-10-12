@@ -8,6 +8,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
+import { DEFAULT_HOME_SETTINGS, HomeSettings } from "./home.ts";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   ForwardCompatibleNullable,
@@ -551,13 +552,17 @@ export interface ProviderSettingsFormAnnotation {
   readonly placeholder?: string | undefined;
   readonly hidden?: boolean | undefined;
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
-  /**
-   * The value is a credential: the server keeps it in its secret store and clients only learn
-   * whether one is saved. Source control host settings honor it; provider settings do not yet.
-   */
-  readonly secret?: boolean | undefined;
   /** Choices for a `select` control. The first entry is the default. */
   readonly options?: ReadonlyArray<ProviderSettingsFormOption> | undefined;
+}
+
+/** Secret fields declared by a settings schema, shared by persistence and client redaction. */
+export function secretSettingsFields(schema: {
+  readonly fields: Readonly<Record<string, Schema.Top>>;
+}): ReadonlyArray<string> {
+  return Object.entries(schema.fields).flatMap(([field, fieldSchema]) => {
+    return isSecretSetting(fieldSchema) ? [field] : [];
+  });
 }
 
 export interface ProviderSettingsFormSchemaAnnotation {
@@ -567,10 +572,22 @@ export interface ProviderSettingsFormSchemaAnnotation {
 declare module "effect/Schema" {
   namespace Annotations {
     interface Annotations {
+      /** Store this credential separately and expose only whether it is configured to clients. */
+      readonly settingsSecret?: boolean | undefined;
       readonly providerSettingsForm?: ProviderSettingsFormAnnotation | undefined;
       readonly providerSettingsFormSchema?: ProviderSettingsFormSchemaAnnotation | undefined;
     }
   }
+}
+
+/** Mark a string or a record of strings as a credential in its settings schema. */
+export function secretSetting<S extends Schema.Top>(schema: S): S["Rebuild"] {
+  return schema.annotateKey({ settingsSecret: true });
+}
+
+export function isSecretSetting(schema: Schema.Top): boolean {
+  const annotations = Schema.resolveAnnotationsKey(schema) ?? Schema.resolveAnnotations(schema);
+  return annotations?.settingsSecret === true;
 }
 
 export type ProviderSettingsOrder<Fields extends Schema.Struct.Fields> = readonly Extract<
@@ -749,10 +766,11 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       }),
     ),
     apiKey: TrimmedString.pipe(
+      secretSetting,
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "API key",
-        description: "Gemini or Vertex AI express key. Stored in plain text.",
+        description: "Gemini or Vertex AI express key. Stored separately on the host.",
         providerSettingsForm: {
           control: "password",
           placeholder: "Optional",
@@ -804,7 +822,7 @@ export const UsageLimitSourceConfig = Schema.Struct({
   kind: Schema.Literal("cliproxy"),
   label: Schema.optional(TrimmedNonEmptyString),
   url: TrimmedNonEmptyString,
-  managementKey: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  managementKey: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("")), secretSetting),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
@@ -1107,9 +1125,10 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
   ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  // Retain the update-era key; recovery now needs an environment-owned opt-in.
+  // Retain the update-era key. On by default so restarts resume the work they
+  // interrupted; recovery stops after three automatic continuations in a row.
   continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(false)),
+    Schema.withDecodingDefault(Effect.succeed(true)),
   ),
   /**
    * Whether agents may drive the in-app preview browser. Turning this off
@@ -1218,6 +1237,11 @@ export const ServerSettings = Schema.Struct({
   environmentIcon: ForwardCompatibleNullable(EnvironmentMachineKind).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /**
+   * Home, the fleet-wide agent thread. Only desktop-hosted servers turn it on.
+   * Server-managed: the WebSocket settings update drops client patches to it.
+   */
+  home: HomeSettings.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_HOME_SETTINGS))),
   /**
    * Null means inherit: the repository's t3.json, then "local". The old
    * default "local" was never persisted (defaults are stripped on write), so
@@ -1569,6 +1593,8 @@ export const ServerSettingsPatch = Schema.Struct({
   providerHealthRefreshInterval: Schema.optionalKey(Schema.DurationFromMillis),
   backgroundActivityProfile: Schema.optionalKey(BackgroundActivityProfile),
   environmentIcon: Schema.optionalKey(Schema.NullOr(EnvironmentMachineKind)),
+  /** Replaces Home's state whole. Only server code sends this. */
+  home: Schema.optionalKey(HomeSettings),
   defaultThreadEnvMode: Schema.optionalKey(Schema.NullOr(ThreadEnvMode)),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   worktreeSubmodules: Schema.optionalKey(Schema.NullOr(WorktreeSubmodules)),
