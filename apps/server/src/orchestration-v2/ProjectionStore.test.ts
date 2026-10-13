@@ -2917,6 +2917,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         const memory = ProjectionStore.cacheExpiryCompactionCandidateFromProjection(
           yield* store.getThreadProjection(threadId),
           minTokens,
+          options.now ?? now,
         );
         const fromSql = rows.find((row) => row.threadId === threadId) ?? null;
         if (options.now === undefined) assert.deepEqual(fromSql, memory);
@@ -2945,8 +2946,9 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         ["$.archivedAt", DateTime.formatIso(now)],
         ["$.settledOverride", "settled"],
         ["$.snoozedUntil", DateTime.formatIso(DateTime.add(now, { hours: 1 }))],
-        // Switched to another provider while idle: its cache is not the one to compact.
+        // Switched provider or model while idle: that cache is not the one to compact.
         ["$.modelSelection.instanceId", "claudeAgent"],
+        ["$.modelSelection.model", "gpt-5.5"],
       ]) {
         yield* sql`UPDATE orchestration_v2_projection_threads
           SET payload_json = json_set(payload_json, ${field}, ${value})
@@ -2955,6 +2957,13 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         yield* sql`UPDATE orchestration_v2_projection_threads
           SET payload_json = ${threadRow!.payload_json} WHERE thread_id = ${threadId}`;
       }
+      // A snooze that has already ended no longer blocks compaction.
+      yield* sql`UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.snoozedUntil', ${DateTime.formatIso(now)})
+        WHERE thread_id = ${threadId}`;
+      assert.isTrue(yield* selected());
+      yield* sql`UPDATE orchestration_v2_projection_threads
+        SET payload_json = ${threadRow!.payload_json} WHERE thread_id = ${threadId}`;
       assert.isTrue(yield* selected());
 
       const queuedRunId = RunId.make("run:cache-compaction:queued");
