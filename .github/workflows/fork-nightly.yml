@@ -40,15 +40,13 @@ jobs:
     steps:
       # The patch list and this script come from patch/release, so a list
       # change takes effect on the next run without waiting for a build.
+      # No sparse checkout here: it makes a blobless clone, and git then tries
+      # to fetch a content merge's result blob from the fork and fails.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: patch/release
           fetch-depth: 0
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
