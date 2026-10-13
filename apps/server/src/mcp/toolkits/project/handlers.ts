@@ -1,10 +1,12 @@
 import {
+  botThreadId,
   type EnvironmentId,
   HOME_LAUNCHED_THREAD_ID_PREFIX,
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
   ProjectId,
+  threadOwnerBotName,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -107,6 +109,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "Home must pass projectId or scratch:true. Threads never launch in Home's folder.",
           });
+        if (isHome && typeof input.bot === "string")
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Home launches threads for the user; omit bot.",
+          });
         if (remote && !isHome)
           return yield* new OrchestratorMcpFailure({
             code: "capability_denied",
@@ -159,8 +166,22 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           }
         }
         const commandId = yield* newCommandId();
+        // A bot's own threads launch more bot work, so the marker carries over
+        // unless the caller passes null for ordinary work. Home never launches
+        // bot work: its threads carry the Home marker instead.
+        const bot = isHome
+          ? null
+          : input.bot === undefined
+            ? caller === undefined
+              ? null
+              : threadOwnerBotName(caller)
+            : input.bot;
         const threadId = ThreadId.make(
-          isHome ? `${HOME_LAUNCHED_THREAD_ID_PREFIX}${commandId}` : commandId,
+          isHome
+            ? `${HOME_LAUNCHED_THREAD_ID_PREFIX}${commandId}`
+            : bot === null
+              ? commandId
+              : botThreadId(bot, commandId),
         );
         const messageId = MessageId.make(commandId);
         if (homeThreadId !== undefined && attachments.length === 0) {
