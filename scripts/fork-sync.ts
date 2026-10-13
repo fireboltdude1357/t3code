@@ -215,7 +215,7 @@ const sameInputs = (a: ForkManifest, b: Omit<ForkManifest, "version" | "nightly"
   );
 
 /** Runs git and returns trimmed stdout. Stderr goes to the log. */
-const git = Effect.fn("git")(function* (args: ReadonlyArray<string>, cwd?: string) {
+export const git = Effect.fn("git")(function* (args: ReadonlyArray<string>, cwd?: string) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   return yield* Effect.scoped(
     Effect.gen(function* () {
@@ -240,6 +240,52 @@ const gitSucceeds = (args: ReadonlyArray<string>, cwd?: string) =>
     Effect.catchTags({ GitCommandError: () => Effect.succeed(false) }),
   );
 
+/**
+ * Fails when any remote is a promisor, meaning a partial clone. A content merge
+ * there asks the promisor for the merged blob, which doesn't exist yet.
+ */
+export const assertFullClone = Effect.fn("assertFullClone")(function* (cwd?: string) {
+  const promisors = yield* git(
+    ["config", "--type=bool", "--get-regexp", String.raw`^remote\..*\.promisor$`],
+    cwd,
+  ).pipe(
+    // `git config` exits 1 when no key matches, which means a full clone.
+    Effect.catchTags({
+      GitCommandError: (error) => (error.exitCode === 1 ? Effect.succeed("") : Effect.fail(error)),
+    }),
+  );
+  const remote = /^remote\.(.+)\.promisor true$/m.exec(promisors)?.[1];
+  if (remote !== undefined) return yield* new PartialCloneError({ remote });
+});
+
+/**
+ * Merges one patch into the worktree at `cwd`. Only unmerged files make a
+ * conflict, which is aborted and reported. Any other merge failure keeps git's
+ * own error, which the log shows above it.
+ */
+export const mergePatch = Effect.fn("mergePatch")(function* (
+  cwd: string,
+  patch: ForkPatch & { readonly sha: string },
+  base: string,
+) {
+  yield* git(
+    ["merge", "--no-ff", "-m", `fork: merge ${patch.name} (${patch.branch})`, patch.sha],
+    cwd,
+  ).pipe(
+    Effect.catchTags({
+      GitCommandError: (error) =>
+        Effect.gen(function* () {
+          const files = (yield* git(["diff", "--name-only", "--diff-filter=U"], cwd))
+            .split("\n")
+            .filter((file) => file !== "");
+          if (files.length === 0) return yield* error;
+          yield* git(["merge", "--abort"], cwd);
+          return yield* new PatchConflictError({ patch: patch.name, base, files });
+        }),
+    }),
+  );
+});
+
 interface SyncOptions {
   readonly patchList: string;
   readonly remote: string;
@@ -255,17 +301,7 @@ export const syncFork = Effect.fn("syncFork")(function* (options: SyncOptions) {
   const patches = yield* parsePatchList(yield* fs.readFileString(options.patchList));
   const remoteRef = (branch: string) => `refs/remotes/${options.remote}/${branch}`;
 
-  // `git config` exits 1 when no key matches, which means a full clone.
-  const promisors = yield* git([
-    "config",
-    "--type=bool",
-    "--get-regexp",
-    String.raw`^remote\..*\.promisor$`,
-  ]).pipe(Effect.orElseSucceed(() => ""));
-  const promisor = /^remote\.(.+)\.promisor true$/m.exec(promisors)?.[1];
-  if (promisor !== undefined) {
-    return yield* new PartialCloneError({ remote: promisor });
-  }
+  yield* assertFullClone();
 
   yield* git([
     "fetch",
@@ -347,27 +383,7 @@ export const syncFork = Effect.fn("syncFork")(function* (options: SyncOptions) {
         () => git(["worktree", "remove", "--force", options.workdir]).pipe(Effect.ignore),
       );
       for (const patch of resolved) {
-        yield* git(
-          ["merge", "--no-ff", "-m", `fork: merge ${patch.name} (${patch.branch})`, patch.sha],
-          options.workdir,
-        ).pipe(
-          // Only unmerged files make a conflict. Any other merge failure keeps
-          // git's own error, which the log shows above it.
-          Effect.catchTags({
-            GitCommandError: (error) =>
-              Effect.gen(function* () {
-                const files = (yield* git(
-                  ["diff", "--name-only", "--diff-filter=U"],
-                  options.workdir,
-                ))
-                  .split("\n")
-                  .filter((file) => file !== "");
-                if (files.length === 0) return yield* error;
-                yield* git(["merge", "--abort"], options.workdir);
-                return yield* new PatchConflictError({ patch: patch.name, base, files });
-              }),
-          }),
-        );
+        yield* mergePatch(options.workdir, patch, base);
       }
       return yield* git(["rev-parse", "HEAD"], options.workdir);
     }),

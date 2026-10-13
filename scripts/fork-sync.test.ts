@@ -1,11 +1,16 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 
 import {
+  assertFullClone,
   forkVersion,
   formatForkManifest,
+  git,
   latestNightlyTag,
+  mergePatch,
   parseForkManifest,
   parsePatchList,
 } from "./fork-sync.ts";
@@ -97,3 +102,64 @@ it.effect("keeps counting from builds made on a nightly tag", () =>
     );
   }),
 );
+
+/** A repo with one commit on `main` and a `patch` branch that rewrites `a.txt`. */
+const makeRepo = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-sync-test-" });
+  const run = (...args: Array<string>) => git(args, cwd);
+  yield* run("init", "--quiet", "--initial-branch=main");
+  yield* run("config", "user.name", "test");
+  yield* run("config", "user.email", "test@example.com");
+  yield* fs.writeFileString(`${cwd}/a.txt`, "base\n");
+  yield* run("add", "a.txt");
+  yield* run("commit", "--quiet", "-m", "base");
+  yield* run("switch", "--quiet", "-c", "patch");
+  yield* fs.writeFileString(`${cwd}/a.txt`, "patch\n");
+  yield* run("commit", "--quiet", "-am", "patch");
+  yield* run("switch", "--quiet", "main");
+  const patch = {
+    name: "test",
+    branch: "patch",
+    tracks: Option.none(),
+    sha: yield* run("rev-parse", "patch"),
+  };
+  return { cwd, run, patch };
+});
+
+it.layer(NodeServices.layer)("git", (it) => {
+  it.effect("refuses to sync in a partial clone", () =>
+    Effect.gen(function* () {
+      const { cwd, run } = yield* makeRepo;
+      yield* assertFullClone(cwd);
+      yield* run("remote", "add", "origin", "https://example.com/fork.git");
+      yield* run("config", "remote.origin.promisor", "true");
+      const error = yield* assertFullClone(cwd).pipe(Effect.flip);
+      assert.equal(error._tag, "PartialCloneError");
+    }),
+  );
+
+  it.effect("reports a conflict with its files and leaves no merge in progress", () =>
+    Effect.gen(function* () {
+      const { cwd, run, patch } = yield* makeRepo;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(`${cwd}/a.txt`, "upstream\n");
+      yield* run("commit", "--quiet", "-am", "upstream");
+      const error = yield* mergePatch(cwd, patch, "main").pipe(Effect.flip);
+      assert.equal(error._tag, "PatchConflictError");
+      if (error._tag === "PatchConflictError") assert.deepStrictEqual(error.files, ["a.txt"]);
+      assert.equal(yield* run("status", "--porcelain"), "");
+    }),
+  );
+
+  it.effect("keeps git's error when a merge fails without a conflict", () =>
+    Effect.gen(function* () {
+      const { cwd, patch } = yield* makeRepo;
+      const error = yield* mergePatch(cwd, { ...patch, sha: "0".repeat(40) }, "main").pipe(
+        Effect.flip,
+      );
+      assert.equal(error._tag, "GitCommandError");
+      if (error._tag === "GitCommandError") assert.match(error.args, /^merge --no-ff /);
+    }),
+  );
+});
