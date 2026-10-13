@@ -7,6 +7,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
+import { botShelfName } from "@t3tools/client-runtime/state/thread-inbox";
 import * as Option from "effect/Option";
 import {
   CircleAlertIcon,
@@ -168,6 +169,8 @@ function EnvironmentNotifications({
             ? "completion"
             : null;
       if (!kind || (homeOn && isHomeLaunchedThreadId(thread.id))) continue;
+      // Bot threads notify only while they need the user; the Bots shelf shows the rest.
+      if (botShelfName(thread) !== null) continue;
       const title =
         kind === "completion"
           ? "Thread completed"
