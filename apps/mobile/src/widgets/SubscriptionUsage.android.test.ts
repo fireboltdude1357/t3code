@@ -38,8 +38,8 @@ const provider = {
     { kind: "session", label: "5 hours", remaining: 60, reset: "Next reset Sep 5, 5:00 PM" },
     { kind: "weekly", label: "Weekly", remaining: 8, reset: "Next reset Sep 9, 9:00 AM" },
   ],
-  expiresAt: now + 60_000,
   totalWindows: 2,
+  checkedAt: now,
 } satisfies SubscriptionUsageSnapshot["providers"][number];
 const snapshot = {
   checkedAt: now,
@@ -63,25 +63,9 @@ describe("SubscriptionUsage Android layout", () => {
     expect(tree).toContain("As of ");
   });
 
-  it("drops the bars and asks for a refresh once the snapshot expires", () => {
-    const tree = render({
-      ...snapshot,
-      providers: [{ ...provider, expiresAt: now - 1 }],
-    });
-    expect(tree).toContain("Open T3 to refresh");
-    expect(tree).not.toContain("LinearProgressIndicator");
-    expect(tree).not.toContain("more in T3");
-  });
-
   it("counts the quotas that did not fit", () => {
     const tree = render({ ...snapshot, providers: [{ ...provider, totalWindows: 5 }] });
     expect(tree).toContain("3 more in T3");
-  });
-
-  it("keeps quotas without an expiry deadline visible", () => {
-    const tree = render({ ...snapshot, providers: [{ ...provider, expiresAt: 0 }] });
-    expect(tree).toContain("5 hours · 60% left");
-    expect(tree).not.toContain("Open T3 to refresh");
   });
 
   it("invites connecting when nothing has been checked", () => {
