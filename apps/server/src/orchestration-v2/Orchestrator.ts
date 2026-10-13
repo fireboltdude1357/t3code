@@ -4530,7 +4530,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
-      if (projection.thread.snoozedUntil != null) {
+      // Automatic compaction only runs once a snooze has ended; leave the
+      // ended snooze so the thread still shows that it woke.
+      if (
+        projection.thread.snoozedUntil != null &&
+        command.cacheExpiryCompactionOfProviderTurnId === undefined
+      ) {
         const now = yield* DateTime.now;
         const thread: OrchestrationV2AppThread = {
           ...projection.thread,
