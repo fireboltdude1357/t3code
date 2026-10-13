@@ -22,7 +22,7 @@ import {
 } from "./CacheExpiryCompactionWorker.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
@@ -112,7 +112,7 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("Runs here never reach a provider"),
-} as ProviderAdapterV2Shape;
+} as ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
 // No effect worker: the compaction run is created but never reaches a provider.
 const layerOrchestrator = Layer.mergeAll(
