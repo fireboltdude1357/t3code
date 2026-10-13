@@ -98,6 +98,7 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import {
   applyToProjection,
+  cacheExpiryCompactionCandidateFromProjection,
   emptyProjection,
   threadShellFromProjection,
   ProjectionStoreV2,
@@ -4517,6 +4518,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      if (
+        command.cacheExpiryCompactionOfProviderTurnId !== undefined &&
+        cacheExpiryCompactionCandidateFromProjection(projection, 0)?.providerTurnId !==
+          command.cacheExpiryCompactionOfProviderTurnId
+      ) {
+        // The thread was parked, resumed or switched after the sweep read it.
+        // Accept the command without changing anything so it is not retried.
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: yield* DateTime.now,
+          payload: projection.thread,
+        });
+        return;
+      }
       if (command.manualContinuationOfRunId !== undefined) {
         const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
         const limited = latestRootProviderFailure(source ?? null, projection.turnItems);

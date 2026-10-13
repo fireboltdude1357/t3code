@@ -98,15 +98,16 @@ function AutoSettleSettingsRows() {
       snoozeLimitedThreads?: boolean;
       cacheExpiryCompactionMinTokens?: number | null;
     },
+    targets = syncTargets,
   ) => {
     if (
       writeInFlight.current ||
-      !syncTargets.every((target) =>
+      !targets.every((target) =>
         readEnvironmentScope(target.environment.environmentId, AuthSettingsWriteScope),
       )
     )
       return;
-    const writes = planMobileScopedSettingsPatch(syncTargets, projectSelected, patch);
+    const writes = planMobileScopedSettingsPatch(targets, projectSelected, patch);
     if (writes.length === 0) return;
     writeInFlight.current = true;
     setPendingTargets(syncTargets);
@@ -226,7 +227,15 @@ function AutoSettleSettingsRows() {
             }
             disabled={disabled}
             onValueChange={(value) =>
-              writeToAll({ cacheExpiryCompactionMinTokens: value ? 150_000 : null })
+              // Turning it on keeps each environment's custom minimum.
+              value
+                ? writeToAll(
+                    { cacheExpiryCompactionMinTokens: 150_000 },
+                    syncTargets.filter(
+                      (target) => target.settings.cacheExpiryCompactionMinTokens === null,
+                    ),
+                  )
+                : writeToAll({ cacheExpiryCompactionMinTokens: null })
             }
           />
         </SettingsSection>

@@ -191,7 +191,9 @@ const IDLE_BLOCKING_RUN_STATUSES: ReadonlySet<string> = new Set([
 /**
  * The candidate a parked thread offers for compaction before its prompt cache
  * expires: idle, unparked, its last run a normal completed turn (not itself a
- * `/compact`), on Claude or Codex, and at least `minTokens` large.
+ * `/compact`), still on the provider instance it last ran, on Claude or Codex,
+ * and at least `minTokens` large. The orchestrator rechecks this under the
+ * thread lock before it runs the automatic `/compact`.
  */
 export function cacheExpiryCompactionCandidateFromProjection(
   projection: Pick<
@@ -234,6 +236,8 @@ export function cacheExpiryCompactionCandidateFromProjection(
     .toSorted((left, right) => right.ordinal - left.ordinal)[0];
   if (
     providerThread === undefined ||
+    // A provider switched while idle has no warm cache to compact against.
+    providerThread.providerInstanceId !== thread.modelSelection.instanceId ||
     !CACHE_EXPIRY_COMPACTION_DRIVERS.has(providerThread.driver) ||
     turn?.status !== "completed" ||
     turn.tokenUsage === undefined ||
@@ -3712,6 +3716,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND julianday(json_extract(turn.payload_json, '$.tokenUsage.updatedAt'))
               > julianday(${DateTime.formatIso(options.now)}) - 1.0 / 24
             AND json_extract(provider_thread.payload_json, '$.driver') IN ('claudeAgent', 'codex')
+            AND provider_thread.provider_instance_id
+              = json_extract(t.payload_json, '$.modelSelection.instanceId')
             AND lower(trim(json_extract(message.payload_json, '$.text'), ${javascriptTrimWhitespace})) <> '/compact'
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runs active

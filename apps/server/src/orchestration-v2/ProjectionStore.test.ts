@@ -2761,6 +2761,257 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("selects idle threads for cache-expiry compaction in SQL and memory", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:cache-compaction");
+      const providerThreadId = ProviderThreadId.make("provider-thread:cache-compaction");
+      const providerTurnId = ProviderTurnId.make("provider-turn:cache-compaction");
+      const runId = RunId.make("run:cache-compaction");
+      const rootNodeId = NodeId.make("node:cache-compaction");
+      const userMessageId = MessageId.make("message:cache-compaction");
+      yield* store.apply({
+        id: EventId.make("event:cache-compaction:thread"),
+        type: "thread.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:cache-compaction"),
+          title: "Cache compaction",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: providerThreadId,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      yield* store.apply({
+        id: EventId.make("event:cache-compaction:provider-thread"),
+        type: "provider-thread.updated",
+        threadId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: providerThreadId,
+          driver,
+          providerInstanceId,
+          providerSessionId: null,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId,
+        rootNodeId,
+        activeAttemptId: null,
+        status: "completed" as const,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* store.apply({
+        id: EventId.make("event:cache-compaction:run"),
+        type: "run.created",
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: run,
+      });
+      const applyUserMessage = (text: string) =>
+        store.apply({
+          id: EventId.make(`event:cache-compaction:message:${text}`),
+          type: "message.updated",
+          threadId,
+          runId,
+          nodeId: rootNodeId,
+          driver,
+          occurredAt: now,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: userMessageId,
+            threadId,
+            runId,
+            nodeId: rootNodeId,
+            role: "user",
+            text,
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+      yield* applyUserMessage("keep going");
+      const usage = {
+        usedTokens: 180_000,
+        maxTokens: 200_000,
+        updatedAt: DateTime.formatIso(now),
+        promptCacheTtlMs: 3_600_000,
+      };
+      yield* store.apply({
+        id: EventId.make("event:cache-compaction:provider-turn"),
+        type: "provider-turn.updated",
+        threadId,
+        nodeId: rootNodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: providerTurnId,
+          providerThreadId,
+          nodeId: rootNodeId,
+          runAttemptId: null,
+          nativeTurnRef: null,
+          ordinal: 1,
+          status: "completed",
+          startedAt: now,
+          completedAt: now,
+          tokenUsage: usage,
+        },
+      });
+
+      // The SQL sweep and the orchestrator's in-memory recheck must agree.
+      const selected = Effect.fnUntraced(function* (
+        options: { readonly minTokens?: number; readonly now?: DateTime.Utc } = {},
+      ) {
+        const minTokens = options.minTokens ?? 150_000;
+        const rows = yield* store.getCacheExpiryCompactionCandidates({
+          now: options.now ?? now,
+          minTokens,
+        });
+        const memory = ProjectionStore.cacheExpiryCompactionCandidateFromProjection(
+          yield* store.getThreadProjection(threadId),
+          minTokens,
+        );
+        const fromSql = rows.find((row) => row.threadId === threadId) ?? null;
+        if (options.now === undefined) assert.deepEqual(fromSql, memory);
+        return fromSql !== null;
+      });
+      assert.deepEqual(
+        (yield* store.getCacheExpiryCompactionCandidates({ now, minTokens: 150_000 })).find(
+          (row) => row.threadId === threadId,
+        ),
+        {
+          threadId,
+          providerTurnId,
+          driver,
+          usedTokens: usage.usedTokens,
+          usageUpdatedAt: usage.updatedAt,
+          promptCacheTtlMs: usage.promptCacheTtlMs,
+        },
+      );
+      assert.isTrue(yield* selected());
+      assert.isFalse(yield* selected({ minTokens: 180_001 }));
+      assert.isFalse(yield* selected({ now: DateTime.add(now, { hours: 1 }) }));
+
+      const [threadRow] = yield* sql<{ readonly payload_json: string }>`
+        SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;
+      for (const [field, value] of [
+        ["$.archivedAt", DateTime.formatIso(now)],
+        ["$.settledOverride", "settled"],
+        ["$.snoozedUntil", DateTime.formatIso(DateTime.add(now, { hours: 1 }))],
+        // Switched to another provider while idle: its cache is not the one to compact.
+        ["$.modelSelection.instanceId", "claudeAgent"],
+      ]) {
+        yield* sql`UPDATE orchestration_v2_projection_threads
+          SET payload_json = json_set(payload_json, ${field}, ${value})
+          WHERE thread_id = ${threadId}`;
+        assert.isFalse(yield* selected(), field);
+        yield* sql`UPDATE orchestration_v2_projection_threads
+          SET payload_json = ${threadRow!.payload_json} WHERE thread_id = ${threadId}`;
+      }
+      assert.isTrue(yield* selected());
+
+      const queuedRunId = RunId.make("run:cache-compaction:queued");
+      yield* store.apply({
+        id: EventId.make("event:cache-compaction:queued"),
+        type: "run.created",
+        threadId,
+        runId: queuedRunId,
+        nodeId: NodeId.make("node:cache-compaction:queued"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...run,
+          id: queuedRunId,
+          ordinal: 2,
+          rootNodeId: NodeId.make("node:cache-compaction:queued"),
+          userMessageId: MessageId.make("message:cache-compaction:queued"),
+          status: "queued",
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+      assert.isFalse(yield* selected());
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${queuedRunId}`;
+
+      const requestId = RuntimeRequestId.make("request:cache-compaction");
+      yield* store.apply({
+        id: EventId.make("event:cache-compaction:request"),
+        type: "runtime-request.updated",
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: requestId,
+          nodeId: rootNodeId,
+          providerTurnId,
+          nativeRequestRef: null,
+          kind: "command",
+          status: "pending",
+          responseCapability: { type: "live", providerSessionId: ProviderSessionId.make("s") },
+          createdAt: now,
+          resolvedAt: null,
+        },
+      });
+      assert.isFalse(yield* selected());
+      yield* sql`DELETE FROM orchestration_v2_projection_runtime_requests WHERE runtime_request_id = ${requestId}`;
+      assert.isTrue(yield* selected());
+
+      // The latest run already was a compaction.
+      yield* applyUserMessage("/compact");
+      assert.isFalse(yield* selected());
+    }),
+  );
+
   it.effect("projects only the latest failed root turn's limit into SQL and memory shells", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
