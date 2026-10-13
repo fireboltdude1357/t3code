@@ -36,6 +36,8 @@ A third column ties a patch to an upstream PR: `home patch/home pingdotgg/t3code
 
 A conflict fails the run with the patch name and the conflicting files. Fix it on the patch branch: merge the upstream commit the run used (`base` in the sync output) into `patch/<name>`, resolve, and land it with a PR. When two patches conflict with each other, the later one in the list merges the earlier patch branch and resolves there.
 
+Any other merge failure fails with git's own error. The sync refuses to run in a partial clone, because a content merge there asks the fork for the merged blob, which doesn't exist yet. Keep the `sync` job's checkout full, without `sparse-checkout` or `filter`.
+
 Until the fix lands, machines stay on the last fork build that passed.
 
 Run the sync locally to reproduce a failure. It only merges, in a scratch worktree, and prints the commit it would build. It pushes nothing.
