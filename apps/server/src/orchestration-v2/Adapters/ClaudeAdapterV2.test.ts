@@ -3732,7 +3732,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
       assert.lengthOf(usages, 1);
       assert.strictEqual(usages[0]?.promptCacheTtlMs, 60 * 60_000);
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, IdAllocator.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect("titles Claude reads, searches, and skills on tool completion", () =>
