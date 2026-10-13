@@ -2,7 +2,8 @@
 # Format: <name> <fork branch> [<owner>/<repo>#<pr> the branch follows]
 # See docs/operations/fork-nightly.md.
 
-release  patch/release
-voice    patch/voice
-home     patch/home    pingdotgg/t3code#15975
-bots     patch/bots
+release           patch/release
+voice             patch/voice
+home              patch/home                     pingdotgg/t3code#15975
+bots              patch/bots
+cache-compaction  patch/cache-expiry-compaction  pingdotgg/t3code#18713
