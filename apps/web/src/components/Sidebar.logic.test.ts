@@ -2253,7 +2253,7 @@ describe("Working shelf (beta)", () => {
       key,
       section,
     });
-    // Pinned p1 | Active a1 a2 | Working w1 | Settled s1
+    // Pinned p1 | Active a1 a2 | Working w1 | Bots b1 | Settled s1
     const items: readonly SidebarListItem[] = [
       marker("pinned-header"),
       row("p1", "pinned"),
@@ -2262,6 +2262,8 @@ describe("Working shelf (beta)", () => {
       row("a2", "active"),
       marker("working-header"),
       row("w1", "working"),
+      marker("bots-header"),
+      row("b1", "bots"),
       marker("settled-header"),
       row("s1", "settled"),
     ];
@@ -2274,6 +2276,11 @@ describe("Working shelf (beta)", () => {
         activeOrder: ["a1", "a2", "p1"],
       });
       expect(resolveSidebarDropVerb("active", "working")).toBeNull();
+    });
+
+    it("never drops into the Bots shelf", () => {
+      expect(resolveSidebarDropTarget(items, "a1", "b1")).toBeNull();
+      expect(resolveSidebarDropVerb("active", "bots")).toBeNull();
     });
 
     it("arranges the rows it can write when another row's server cannot store an order", () => {
