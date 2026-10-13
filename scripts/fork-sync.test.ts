@@ -111,6 +111,9 @@ const makeRepo = Effect.gen(function* () {
   yield* run("init", "--quiet", "--initial-branch=main");
   yield* run("config", "user.name", "test");
   yield* run("config", "user.email", "test@example.com");
+  // Keep the host's signing and hooks out of fixture commits and merges.
+  yield* run("config", "commit.gpgsign", "false");
+  yield* run("config", "core.hooksPath", "/dev/null");
   yield* fs.writeFileString(`${cwd}/a.txt`, "base\n");
   yield* run("add", "a.txt");
   yield* run("commit", "--quiet", "-m", "base");
