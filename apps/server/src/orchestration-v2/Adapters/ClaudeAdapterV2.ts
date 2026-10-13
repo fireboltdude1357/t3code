@@ -165,28 +165,48 @@ function claudePromptCacheTtlMs(
   return undefined;
 }
 
+interface ClaudeUsageCounters {
+  readonly input_tokens: number;
+  readonly cache_creation_input_tokens?: number | null;
+  readonly cache_read_input_tokens?: number | null;
+  readonly output_tokens: number;
+}
+
+// Mirrors the SDK's BetaIterationsUsage entries. Only "message" entries are
+// the executor's own sampling passes; "advisor_message" and "compaction"
+// entries are side inferences with their own context.
+interface ClaudeUsageIteration extends ClaudeUsageCounters {
+  readonly type: string;
+}
+
+/**
+ * Maps one root assistant message's usage onto the provider turn. Top-level
+ * usage sums every pass of a server-side tool loop, so the context size comes
+ * from the last sampling iteration when Claude reports iterations.
+ * `knownPromptCacheTtlMs` is the TTL learned earlier in the turn, kept when
+ * this response only read the cache.
+ */
 export function claudeProviderTurnTokenUsage(
-  usage: {
-    readonly input_tokens: number;
-    readonly cache_creation_input_tokens?: number | null;
-    readonly cache_read_input_tokens?: number | null;
+  usage: ClaudeUsageCounters & {
     readonly cache_creation?: ClaudeCacheCreation | null;
-    readonly output_tokens: number;
+    readonly iterations?: ReadonlyArray<ClaudeUsageIteration> | null;
   },
   modelSelection: ModelSelection,
   updatedAt: string,
+  knownPromptCacheTtlMs?: number,
 ) {
+  const context = usage.iterations?.findLast((iteration) => iteration.type === "message") ?? usage;
   const inputTokens =
-    usage.input_tokens +
-    (usage.cache_creation_input_tokens ?? 0) +
-    (usage.cache_read_input_tokens ?? 0);
-  const outputTokens = usage.output_tokens;
-  const promptCacheTtlMs = claudePromptCacheTtlMs(usage.cache_creation);
+    context.input_tokens +
+    (context.cache_creation_input_tokens ?? 0) +
+    (context.cache_read_input_tokens ?? 0);
+  const outputTokens = context.output_tokens;
+  const promptCacheTtlMs = claudePromptCacheTtlMs(usage.cache_creation) ?? knownPromptCacheTtlMs;
   return {
     usedTokens: inputTokens + outputTokens,
     maxTokens: claudeContextWindow(modelSelection),
     inputTokens,
-    cachedInputTokens: usage.cache_read_input_tokens ?? 0,
+    cachedInputTokens: context.cache_read_input_tokens ?? 0,
     outputTokens,
     reasoningOutputTokens: 0,
     ...(promptCacheTtlMs === undefined ? {} : { promptCacheTtlMs }),
@@ -2756,6 +2776,9 @@ interface ActiveClaudeTurnContext {
   readonly rejectedRateLimitTypes: Set<string>;
   readonly rateLimitResetTimes: Map<string, string | null>;
   latestAssistantRateLimited: boolean;
+  // Last prompt cache TTL a root response revealed. Responses that only read
+  // the cache carry it forward, since the projection replaces tokenUsage.
+  promptCacheTtlMs: number | undefined;
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly subagentNodesByTaskId: Map<string, OrchestrationV2ExecutionNode["id"]>;
@@ -5938,6 +5961,13 @@ export function makeClaudeAdapterV2(
             const now = yield* DateTime.now;
             yield* completeProviderRetry(context, now);
             if (message.parent_tool_use_id === null && message.message.usage !== undefined) {
+              const tokenUsage = claudeProviderTurnTokenUsage(
+                message.message.usage,
+                context.input.modelSelection,
+                DateTime.formatIso(now),
+                context.promptCacheTtlMs,
+              );
+              context.promptCacheTtlMs = tokenUsage.promptCacheTtlMs;
               yield* emitProviderEvent({
                 type: "provider_turn.updated",
                 driver: CLAUDE_PROVIDER,
@@ -5956,11 +5986,7 @@ export function makeClaudeAdapterV2(
                   status: "running",
                   startedAt: context.startedAt,
                   completedAt: null,
-                  tokenUsage: claudeProviderTurnTokenUsage(
-                    message.message.usage,
-                    context.input.modelSelection,
-                    DateTime.formatIso(now),
-                  ),
+                  tokenUsage,
                 },
               });
             }
@@ -7314,6 +7340,7 @@ export function makeClaudeAdapterV2(
               rejectedRateLimitTypes: new Set(),
               rateLimitResetTimes: new Map(),
               latestAssistantRateLimited: false,
+              promptCacheTtlMs: undefined,
               subagentsByTaskId: new Map(),
               subagentsByToolUseId: new Map(),
               subagentNodesByTaskId: new Map(),

@@ -34,8 +34,10 @@ export function cacheExpiryCompactionCommand(
   const ttlMs = promptCacheTtlMs(candidate);
   const reportedAtMs = Date.parse(candidate.usageUpdatedAt);
   if (ttlMs === undefined || !Number.isFinite(reportedAtMs)) return null;
-  // Leave time for a stopped provider to resume before the cache is gone.
-  const leadMs = Math.max(60_000, ttlMs / 10);
+  // Usage is reported when the response arrives, after the request that
+  // refreshed the cache started, so a long response eats into the window.
+  // The lead also leaves time for a stopped provider to resume.
+  const leadMs = Math.max(2 * 60_000, ttlMs / 10);
   const idleMs = nowMs - reportedAtMs;
   if (idleMs < ttlMs - leadMs || idleMs >= ttlMs) return null;
   const identity = `${candidate.threadId}:${candidate.providerTurnId}`;
@@ -47,8 +49,10 @@ export function cacheExpiryCompactionCommand(
     text: "/compact",
     attachments: [],
     dispatchMode: { type: "start_immediately" },
-    createdBy: "user",
+    // An agent-created message leaves the thread's user-authored timestamp alone.
+    createdBy: "agent",
     creationSource: "server",
+    cacheExpiryCompactionOfProviderTurnId: candidate.providerTurnId,
   };
 }
 
