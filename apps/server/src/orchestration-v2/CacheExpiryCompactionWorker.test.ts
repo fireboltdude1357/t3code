@@ -124,7 +124,7 @@ const layerOrchestrator = Layer.mergeAll(
   ),
 );
 
-it.effect("drops a compaction the thread no longer qualifies for and keeps user activity", () =>
+it.effect("drops a compaction the thread no longer qualifies for and keeps user state", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -220,8 +220,18 @@ it.effect("drops a compaction the thread no longer qualifies for and keeps user 
       threadId,
       reason: "user",
     });
+    // The user pinned the thread active; compaction is not activity that resets it.
+    const unsnoozed = (yield* orchestrator.getThreadProjection(threadId)).thread;
+    yield* projections.apply({
+      id: EventId.make("event:cache-expiry-dispatch:active"),
+      type: "thread.metadata-updated",
+      threadId,
+      occurredAt: now,
+      payload: { ...unsnoozed, settledOverride: "active" },
+    });
     yield* orchestrator.dispatch(command);
     const compacting = yield* orchestrator.getThreadProjection(threadId);
+    assert.equal(compacting.thread.settledOverride, "active");
     assert.deepEqual(
       compacting.runs.map((candidate) => candidate.userMessageId),
       [run.userMessageId, command.messageId],

@@ -4392,8 +4392,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       if (
         command.cacheExpiryCompactionOfProviderTurnId !== undefined &&
-        cacheExpiryCompactionCandidateFromProjection(projection, 0)?.providerTurnId !==
-          command.cacheExpiryCompactionOfProviderTurnId
+        cacheExpiryCompactionCandidateFromProjection(projection, 0, yield* DateTime.now)
+          ?.providerTurnId !== command.cacheExpiryCompactionOfProviderTurnId
       ) {
         // The thread was parked, resumed or switched after the sweep read it.
         // Accept the command without changing anything so it is not retried.
@@ -4502,7 +4502,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
 
-      if (projection.thread.settledOverride !== null) {
+      // Automatic compaction is not user activity, so it keeps an "active" override.
+      if (
+        projection.thread.settledOverride !== null &&
+        command.cacheExpiryCompactionOfProviderTurnId === undefined
+      ) {
         const now = yield* DateTime.now;
         const thread: OrchestrationV2AppThread = {
           ...projection.thread,

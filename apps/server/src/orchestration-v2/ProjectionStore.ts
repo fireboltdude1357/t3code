@@ -177,8 +177,9 @@ const IDLE_BLOCKING_RUN_STATUSES: ReadonlySet<string> = new Set([
 /**
  * The candidate a parked thread offers for compaction before its prompt cache
  * expires: idle, unparked, its last run a normal completed turn (not itself a
- * `/compact`), still on the provider instance it last ran, on Claude or Codex,
- * and at least `minTokens` large. The orchestrator rechecks this under the
+ * `/compact`), still on the provider instance and model it last ran, on Claude
+ * or Codex, and at least `minTokens` large. A snooze blocks it only until
+ * `snoozedUntil` passes `now`. The orchestrator rechecks this under the
  * thread lock before it runs the automatic `/compact`.
  */
 export function cacheExpiryCompactionCandidateFromProjection(
@@ -187,13 +188,14 @@ export function cacheExpiryCompactionCandidateFromProjection(
     "thread" | "runs" | "runtimeRequests" | "messages" | "providerThreads" | "providerTurns"
   >,
   minTokens: number,
+  now: DateTime.Utc,
 ): ProjectionCacheExpiryCompactionCandidate | null {
   const { thread } = projection;
   if (
     thread.deletedAt !== null ||
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
-    thread.snoozedUntil != null ||
+    (thread.snoozedUntil != null && DateTime.isGreaterThan(thread.snoozedUntil, now)) ||
     projection.runs.some((run) => IDLE_BLOCKING_RUN_STATUSES.has(run.status)) ||
     projection.runtimeRequests.some((request) => request.status === "pending")
   )
@@ -210,6 +212,8 @@ export function cacheExpiryCompactionCandidateFromProjection(
   );
   if (
     latestRun?.status !== "completed" ||
+    // A model changed while idle starts a new cache, so there is none to compact against.
+    latestRun.modelSelection.model !== thread.modelSelection.model ||
     message === undefined ||
     message.text.trim().toLowerCase() === "/compact"
   )
@@ -3604,7 +3608,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           WHERE t.deleted_at IS NULL
             AND json_extract(t.payload_json, '$.archivedAt') IS NULL
             AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
-            AND json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+            AND (
+              json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+              OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${DateTime.formatIso(options.now)})
+            )
+            AND json_extract(r.payload_json, '$.modelSelection.model')
+              = json_extract(t.payload_json, '$.modelSelection.model')
             AND turn.status = 'completed'
             AND json_extract(turn.payload_json, '$.tokenUsage.usedTokens') >= ${options.minTokens}
             AND julianday(json_extract(turn.payload_json, '$.tokenUsage.updatedAt'))
@@ -6057,6 +6066,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 const candidate = cacheExpiryCompactionCandidateFromProjection(
                   projection,
                   options.minTokens,
+                  options.now,
                 );
                 return candidate === null ||
                   DateTime.toEpochMillis(options.now) - Date.parse(candidate.usageUpdatedAt) >=
