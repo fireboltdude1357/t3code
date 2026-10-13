@@ -57,6 +57,13 @@ history for that message. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
+To compact before the cache expires instead, turn on **Settings → General →
+Compact before cache expires**. A large idle thread then gets `/compact` shortly
+before its cache runs out, while the summary is still cheap to write, so coming
+back later re-reads the summary instead of the full history. It applies to
+Claude and Codex threads using at least the chosen context size (150k tokens by
+default) and skips snoozed, settled, and archived threads.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which

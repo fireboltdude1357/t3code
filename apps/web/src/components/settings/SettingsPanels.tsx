@@ -591,6 +591,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.snoozeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads
         ? ["Snooze limited threads"]
         : []),
+      ...(settings.cacheExpiryCompactionMinTokens !==
+      DEFAULT_UNIFIED_SETTINGS.cacheExpiryCompactionMinTokens
+        ? ["Compact before cache expires"]
+        : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
       ...(settings.persistComposerContextStrip !==
       DEFAULT_UNIFIED_SETTINGS.persistComposerContextStrip
@@ -711,6 +715,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarAutoSettleOnMerge,
       settings.autoResumeLimitedThreads,
       settings.snoozeLimitedThreads,
+      settings.cacheExpiryCompactionMinTokens,
       settings.sidebarProjectGroupingMode,
       settings.sidebarProjectSortOrder,
       settings.sidebarWorkingShelfEnabled,
@@ -818,6 +823,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
+      cacheExpiryCompactionMinTokens: DEFAULT_UNIFIED_SETTINGS.cacheExpiryCompactionMinTokens,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
@@ -2039,6 +2045,13 @@ function FontFamilySettingsRow({
 
 const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
 
+const CACHE_EXPIRY_COMPACTION_DEFAULT_TOKENS = 150_000;
+const CACHE_EXPIRY_COMPACTION_TOKEN_OPTIONS = [100_000, 150_000, 200_000, 300_000, 500_000];
+
+function formatCompactionTokens(tokens: number): string {
+  return `${tokens / 1000}k+ tokens`;
+}
+
 function AutoSettleDaysInput({
   value,
   onCommit,
@@ -2376,6 +2389,58 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("compact-before-cache-expires")}
+          description="Send /compact to large idle Claude and Codex threads shortly before their prompt cache expires, so returning to them re-reads a short summary instead of the full history."
+          settingKeys={["cacheExpiryCompactionMinTokens"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["cacheExpiryCompactionMinTokens"]}
+              checked={settings.cacheExpiryCompactionMinTokens !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  cacheExpiryCompactionMinTokens: checked
+                    ? CACHE_EXPIRY_COMPACTION_DEFAULT_TOKENS
+                    : null,
+                })
+              }
+              aria-label="Compact before cache expires"
+            />
+          }
+        />
+        {settings.cacheExpiryCompactionMinTokens !== null ? (
+          <SettingsRow
+            serverScoped
+            settingKeys={["cacheExpiryCompactionMinTokens"]}
+            title={searchableSetting("compact-before-cache-expires-min-context").title}
+            description="Only threads using at least this much context are compacted."
+            control={
+              <Select
+                value={String(settings.cacheExpiryCompactionMinTokens)}
+                onValueChange={(value) => {
+                  const tokens = Number(value);
+                  if (CACHE_EXPIRY_COMPACTION_TOKEN_OPTIONS.includes(tokens)) {
+                    updateSettings({ cacheExpiryCompactionMinTokens: tokens });
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" className="w-auto min-w-0" aria-label="Minimum context">
+                  <SelectValue>
+                    {formatCompactionTokens(settings.cacheExpiryCompactionMinTokens)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {CACHE_EXPIRY_COMPACTION_TOKEN_OPTIONS.map((tokens) => (
+                    <SelectItem hideIndicator key={tokens} value={String(tokens)}>
+                      {formatCompactionTokens(tokens)}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+        ) : null}
 
         <SettingsRow
           {...searchableSetting("working-shelf")}

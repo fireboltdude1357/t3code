@@ -929,6 +929,35 @@ describe("ClaudeAdapterV2 context usage", () => {
       undefined,
     );
   });
+
+  it("measures context from the last sampling pass of a server-side tool loop", () => {
+    const pass = (input_tokens: number) => ({
+      type: "message",
+      input_tokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 1_000,
+    });
+    const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+      {
+        input_tokens: 183_000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 3_500,
+        iterations: [
+          pass(60_000),
+          pass(61_000),
+          { ...pass(500), type: "advisor_message", output_tokens: 500 },
+          pass(62_000),
+        ],
+      },
+      CLAUDE_TEST_MODEL_SELECTION,
+      "2026-08-29T00:00:00.000Z",
+    );
+
+    assert.strictEqual(usage.usedTokens, 63_000);
+    assert.strictEqual(usage.inputTokens, 62_000);
+  });
 });
 
 describe("ClaudeAdapterV2 session permissions", () => {
@@ -3636,6 +3665,79 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
         ),
       ),
+  );
+
+  it.effect("keeps the prompt cache TTL when a later response only reads the cache", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const now = yield* DateTime.now;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-cache-ttl"),
+          text: "Keep going",
+          attachments: [],
+        }),
+      );
+      const assistantFrame = (
+        uuid: string,
+        cache: { readonly written1h: number; readonly read: number },
+      ) =>
+        claudeSdkFrame({
+          type: "assistant",
+          uuid,
+          session_id: WAKE_NATIVE_SESSION,
+          parent_tool_use_id: null,
+          message: {
+            id: `msg_${uuid}`,
+            model: "claude-sonnet-4-6",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "Working." }],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_creation_input_tokens: cache.written1h,
+              cache_read_input_tokens: cache.read,
+              cache_creation: {
+                ephemeral_1h_input_tokens: cache.written1h,
+                ephemeral_5m_input_tokens: 0,
+              },
+            },
+          },
+        });
+      yield* Queue.offer(
+        harness.sdkMessages,
+        assistantFrame("00000000-0000-4000-8000-000000000701", { written1h: 4_000, read: 0 }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        assistantFrame("00000000-0000-4000-8000-000000000702", { written1h: 0, read: 4_000 }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000703", result: "Done." }),
+      );
+      yield* Queue.take(harness.terminalReceipts);
+
+      const usages = harness.events.flatMap((event) =>
+        event.type === "provider_turn.updated" &&
+        event.providerTurn.tokenUsage?.cachedInputTokens === 4_000
+          ? [event.providerTurn.tokenUsage]
+          : [],
+      );
+      assert.lengthOf(usages, 1);
+      assert.strictEqual(usages[0]?.promptCacheTtlMs, 60 * 60_000);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect("titles Claude reads, searches, and skills on tool completion", () =>

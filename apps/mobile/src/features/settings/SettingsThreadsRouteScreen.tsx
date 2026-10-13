@@ -96,16 +96,18 @@ function AutoSettleSettingsRows() {
     patch: Partial<AutoSettleSettings> & {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
+      cacheExpiryCompactionMinTokens?: number | null;
     },
+    targets = syncTargets,
   ) => {
     if (
       writeInFlight.current ||
-      !syncTargets.every((target) =>
+      !targets.every((target) =>
         readEnvironmentScope(target.environment.environmentId, AuthSettingsWriteScope),
       )
     )
       return;
-    const writes = planMobileScopedSettingsPatch(syncTargets, projectSelected, patch);
+    const writes = planMobileScopedSettingsPatch(targets, projectSelected, patch);
     if (writes.length === 0) return;
     writeInFlight.current = true;
     setPendingTargets(syncTargets);
@@ -204,6 +206,37 @@ function AutoSettleSettingsRows() {
             value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
             disabled={disabled}
             onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
+          />
+        </SettingsSection>
+      ) : null}
+      {!projectSelected ? (
+        <SettingsSection title="Context">
+          <SettingsSwitchRow
+            icon="clock"
+            label="Compact before cache expires"
+            value={
+              displayTargets.every(
+                (target) => target.settings.cacheExpiryCompactionMinTokens !== null,
+              )
+                ? true
+                : displayTargets.every(
+                      (target) => target.settings.cacheExpiryCompactionMinTokens === null,
+                    )
+                  ? false
+                  : null
+            }
+            disabled={disabled}
+            onValueChange={(value) =>
+              // Turning it on keeps each environment's custom minimum.
+              value
+                ? writeToAll(
+                    { cacheExpiryCompactionMinTokens: 150_000 },
+                    syncTargets.filter(
+                      (target) => target.settings.cacheExpiryCompactionMinTokens === null,
+                    ),
+                  )
+                : writeToAll({ cacheExpiryCompactionMinTokens: null })
+            }
           />
         </SettingsSection>
       ) : null}
