@@ -261,7 +261,7 @@ export const make = Effect.gen(function* () {
   const store = yield* VoiceStore;
   const crypto = yield* Crypto.Crypto;
 
-  const uuid = crypto.randomUUIDv4.pipe(Effect.orDie);
+  const uuid = crypto.randomUUIDv4().pipe(Effect.orDie);
   const scope = yield* Effect.scope;
   const gate = makeVoiceConfirmationGate();
   const state = yield* Ref.make<State>({ live: undefined, warm: undefined });
