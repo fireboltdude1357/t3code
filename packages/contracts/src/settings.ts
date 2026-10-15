@@ -93,6 +93,11 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
   }),
 );
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
+/** Smallest context, in tokens, that is compacted before its prompt cache expires. */
+export const CacheExpiryCompactionMinTokens = Schema.Int.check(
+  Schema.isBetween({ minimum: 10_000, maximum: 1_000_000 }),
+);
+export type CacheExpiryCompactionMinTokens = typeof CacheExpiryCompactionMinTokens.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
@@ -1216,6 +1221,11 @@ export const ServerSettings = Schema.Struct({
   ),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Null keeps compaction manual; a value compacts idle Claude and Codex
+  // threads at least that large just before their prompt cache expires.
+  cacheExpiryCompactionMinTokens: Schema.NullOr(CacheExpiryCompactionMinTokens).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1603,6 +1613,7 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
+  cacheExpiryCompactionMinTokens: Schema.optionalKey(Schema.NullOr(CacheExpiryCompactionMinTokens)),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({

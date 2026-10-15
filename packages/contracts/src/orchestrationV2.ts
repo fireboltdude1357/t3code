@@ -2964,6 +2964,8 @@ export const OrchestrationV2Command = Schema.Union([
     usageLimitContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
+    /** Automatic `/compact` for this provider turn; dropped if the thread is no longer eligible. */
+    cacheExpiryCompactionOfProviderTurnId: Schema.optional(ProviderTurnId),
     /** Resolve untargeted delivery against the server's serialized thread state. */
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
     delegatedCompletion: Schema.optional(
