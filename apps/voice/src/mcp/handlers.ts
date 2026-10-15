@@ -83,7 +83,7 @@ const make = Effect.gen(function* () {
   const t3 = yield* T3Client;
   const crypto = yield* Crypto.Crypto;
 
-  const commandId = crypto.randomUUIDv4.pipe(
+  const commandId = crypto.randomUUIDv4().pipe(
     Effect.orDie,
     Effect.map((id) => CommandId.make(`voice-sidecar:${id}`)),
   );
