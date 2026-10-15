@@ -618,7 +618,7 @@ const make = Effect.gen(function* () {
           .writeFileString(claudePath, "@AGENTS.md\n")
           .pipe(Effect.mapError(folderError));
       }
-      const id = yield* crypto.randomUUIDv4.pipe(
+      const id = yield* crypto.randomUUIDv4().pipe(
         Effect.mapError((cause) => new NamedProjectCreateError({ workspaceRoot, cause })),
       );
       const bootstrapped = yield* projects
