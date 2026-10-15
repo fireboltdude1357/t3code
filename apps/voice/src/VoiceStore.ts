@@ -136,7 +136,7 @@ export const layer = Layer.effect(
     const crypto = yield* Crypto.Crypto;
 
     const newId = (prefix: string) =>
-      crypto.randomUUIDv4.pipe(Effect.map((uuid) => `${prefix}:${uuid}`));
+      crypto.randomUUIDv4().pipe(Effect.map((uuid) => `${prefix}:${uuid}`));
 
     const agendaColumns = sql.literal(`
       item_id AS id, kind, thread_id AS threadId, title, detail, status,
