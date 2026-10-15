@@ -14050,7 +14050,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const calls: Array<string> = [];
           // What happens while the move is still unanswered.
           let beforeAnswer: Effect.Effect<void> = Effect.void;
+          // Each steer scans the Claude config dir for skills with real file
+          // reads. An empty one keeps that scan inside the simulated clock
+          // ticks below, whatever skills the developer has in ~/.claude.
+          const fileSystem = yield* FileSystem.FileSystem;
+          const claudeConfigDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-v2-steer-",
+          });
           const harness = yield* makeWakeHarnessWithOptions({
+            environment: { CLAUDE_CONFIG_DIR: claudeConfigDir },
             backgroundTasks: (toolUseId) =>
               Effect.sync(() => calls.push(toolUseId)).pipe(
                 Effect.andThen(
