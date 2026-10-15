@@ -1351,7 +1351,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.equal(first.threads[0]?.threadId, createdId);
           assert.equal(retry.threads[0]?.threadId, createdId);
         }).pipe(
-          Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(layerDependencies))),
+          Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))),
         );
       }
     }),
