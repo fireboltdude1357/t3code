@@ -169,10 +169,6 @@ function WorkspaceColumns(
   );
 
   useEffect(() => {
-    // In compact size classes UIKit exposes one column. Selecting a thread
-    // changes the visible column without rebuilding either navigation stack.
-    // The initial column is a native prop, so it is applied before the host
-    // attaches. Commands only handle later navigation changes.
     if (layout.usesSplitView || shownCompactColumn.current === compactColumn) return;
     shownCompactColumn.current = compactColumn;
     hostRef.current?.show(compactColumn);
@@ -275,7 +271,6 @@ function WorkspaceColumns(
         </Split.Stack>
       </Split.Column>
       <Split.Inspector>
-        {/* Inspector content supplies its own navigation header. */}
         <Split.HeaderConfig hidden />
         <ColumnContent>
           <View className="flex-1 bg-screen">{inspector.render?.()}</View>
@@ -303,9 +298,13 @@ function WorkspaceStackView(props: ViewProps & { readonly nativeColumns: boolean
   const primaryDescriptor = props.descriptors[primaryRoute.key]!;
   const descriptors = props.descriptors;
   const baseRoute = { key: `${props.state.key}:workspace`, name: "Workspace" };
+  const visibleRoute = projection.detail.at(-1) ?? primaryRoute;
   const baseDescriptor: Descriptor = {
     ...primaryDescriptor,
-    route: baseRoute,
+    navigation: props.descriptors[visibleRoute.key]!.navigation,
+    // The native envelope keeps a stable key, but its NavigationProvider must
+    // identify the real visible route or useIsFocused closes media viewers.
+    route: visibleRoute,
     options: { headerShown: false },
     render: () => (
       <WorkspaceNativeTabs
@@ -359,10 +358,13 @@ function WorkspaceStackView(props: ViewProps & { readonly nativeColumns: boolean
           overlays.map((group) => {
             const route = group[0]!;
             const descriptor = props.descriptors[route.key]!;
+            const visibleRoute = group.at(-1)!;
             return [
               route.key,
               {
                 ...descriptor,
+                navigation: props.descriptors[visibleRoute.key]!.navigation,
+                route: visibleRoute,
                 options: modalEnvelopeOptions(descriptor.options),
                 render: () => (
                   <V5CardStackView

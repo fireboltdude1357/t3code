@@ -21,7 +21,7 @@ import {
 
 type HeaderItem = NonNullable<NonNullable<StackHeaderConfigProps["ios"]>["leadingItems"]>[number];
 type ToolbarItem =
-  | (NativeStackHeaderItem & { readonly height?: number })
+  | NativeStackHeaderItem
   | HeaderBarButtonMailSearchToolbarItem
   | HeaderBarButtonSearchBarPlacementItem;
 type Options = NativeStackNavigationOptions & {
@@ -69,7 +69,6 @@ function convertMenu(menu: MenuInput, id: string): StackHeaderMenuIOS {
         },
       ];
     }
-    // Use actions even for checked entries: the app owns their durable state.
     return [
       {
         id: childId,
@@ -91,10 +90,7 @@ function convertMenu(menu: MenuInput, id: string): StackHeaderMenuIOS {
   return { id, type: "menu", title: menu.title, children };
 }
 
-function convertItems(
-  items: (NativeStackHeaderItem & { readonly height?: number })[],
-  prefix: string,
-): HeaderItem[] {
+function convertItems(items: NativeStackHeaderItem[], prefix: string): HeaderItem[] {
   return items.map((item, index): HeaderItem => {
     const id =
       item.type === "spacing" ? `${prefix}:${index}` : (item.identifier ?? `${prefix}:${index}`);
@@ -121,8 +117,6 @@ function convertItems(
           menu: item.disabled ? undefined : convertMenu(item.menu, `${id}:menu`),
           variant: item.variant,
           tintColor: item.tintColor,
-          width: item.width,
-          height: item.height,
           hidesSharedBackground: item.hidesSharedBackground,
         };
       case "button":
@@ -136,15 +130,12 @@ function convertItems(
           onPress: item.disabled ? undefined : item.onPress,
           variant: item.variant,
           tintColor: item.tintColor,
-          width: item.width,
-          height: item.height,
           hidesSharedBackground: item.hidesSharedBackground,
         };
     }
   });
 }
 
-/** Translate the existing screen options to v5's native header API. */
 export function V5StackHeader(props: {
   readonly options: Options;
   readonly canGoBack: boolean;
