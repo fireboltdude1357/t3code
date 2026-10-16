@@ -54,6 +54,20 @@ export function HomeHeader(props: HomeHeaderProps) {
   }, [primaryColumn, panes.primarySidebarVisible, togglePrimarySidebar]);
   useHardwareKeyboardCommand("focusSearch", focusSearch);
   const filterMenu = buildHomeListFilterMenu(props);
+  const { onOpenVoiceSession } = props;
+  const voiceSessionItems =
+    onOpenVoiceSession === null
+      ? []
+      : [
+          withNativeGlassHeaderItem({
+            accessibilityLabel: "Talk to the orchestrator",
+            icon: { name: "waveform", type: "sfSymbol" } as const,
+            identifier: "home-voice-session",
+            label: "",
+            onPress: onOpenVoiceSession,
+            type: "button",
+          }),
+        ];
 
   if (props.usesWorkspaceToolbar) {
     return null;
@@ -62,7 +76,7 @@ export function HomeHeader(props: HomeHeaderProps) {
   return (
     <>
       <NativeStackScreenOptions
-        optionsVersion={[filterMenu.items, showsCompactCompose]}
+        optionsVersion={[filterMenu.items, showsCompactCompose, onOpenVoiceSession === null]}
         options={{
           headerTintColor: iconColor,
           unstable_headerRightItems: () =>
@@ -75,6 +89,7 @@ export function HomeHeader(props: HomeHeaderProps) {
                     filterMenu,
                     onOpenSettings: props.onOpenSettings,
                   }),
+                  ...voiceSessionItems,
                   ...(showsCompactCompose
                     ? [
                         withNativeGlassHeaderItem({
@@ -98,6 +113,7 @@ export function HomeHeader(props: HomeHeaderProps) {
                     onPress: props.onOpenSettings,
                     type: "button",
                   }),
+                  ...voiceSessionItems,
                 ],
           // The keys below are set per-branch (not `undefined`) so a later
           // reapply cannot clobber options owned by Toolbar.
