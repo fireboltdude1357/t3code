@@ -66,8 +66,29 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
   );
   // Fork: servers install fork releases from GitHub (cliReleaseDownloadBaseUrl)
   // or their desktop app's feed. npm never has fork versions, so nothing waits on it.
-  const servers = behindServers;
-  const skipped: ReadonlyArray<SkippedMachine> = unreachable;
+  // Fleet's fork-build.sh publishes only the linux-x64 CLI archive, so other
+  // boot-service servers are skipped instead of failing on a missing archive.
+  const platformById = new Map(
+    machines.map((machine) => [machine.environmentId, machine.serverConfig?.environment.platform]),
+  );
+  const hasForkArchive = (server: (typeof behindServers)[number]) => {
+    const platform = platformById.get(server.environmentId);
+    return (
+      server.selfUpdate === "desktop-managed" ||
+      (platform?.os === "linux" && platform.arch === "x64")
+    );
+  };
+  const servers = behindServers.filter(hasForkArchive);
+  const skipped: ReadonlyArray<SkippedMachine> = [
+    ...unreachable,
+    ...behindServers
+      .filter((server) => !hasForkArchive(server))
+      .map((server) => ({
+        environmentId: server.environmentId,
+        label: server.serverLabel,
+        reason: "fork builds have no CLI for this platform",
+      })),
+  ];
   const restarts = collectRestartingMachines(machines, servers, localUpdateVersion !== null);
   const providers = useProviderUpdates();
   const updateServer = useServerUpdate();
