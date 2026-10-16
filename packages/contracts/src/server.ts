@@ -611,6 +611,11 @@ export const ServerConfig = Schema.Struct({
   threadFind: Schema.optionalKey(Schema.Boolean),
   threadFindProgressive: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
+  /**
+   * Folder behind Home, the fleet-wide agent thread. Present only on servers a
+   * desktop app hosts, which are the only ones that can run Home.
+   */
+  homeWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
    * Never sent in a config snapshot: the theme stream emits the current set
