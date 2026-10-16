@@ -130,6 +130,7 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useScratchProject } from "../hooks/useScratchProject";
 import { useNewProject } from "../hooks/useNewProject";
 import { isHomeProject, isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { botProjectKeys } from "@t3tools/client-runtime/state/thread-inbox";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
 import { useThreadSearch } from "../state/queries";
@@ -908,13 +909,23 @@ function OpenCommandPaletteDialog(props: {
       }),
     [contextualProjectRef, projectGroups],
   );
+  const botProjects = useMemo(() => botProjectKeys(threads), [threads]);
+  // Projects only bots work in stay out of search and the new-thread picker;
+  // the sidebar's Bots section is where their work lives.
   const pickerProjects = useMemo(
     () =>
-      projectPickerEntries.map(({ group, targetProject }) => ({
-        ...targetProject,
-        displayName: group.displayName,
-      })),
-    [projectPickerEntries],
+      projectPickerEntries
+        .filter(
+          ({ group }) =>
+            !group.memberProjects.every((project) =>
+              botProjects.has(`${project.environmentId}:${project.id}`),
+            ),
+        )
+        .map(({ group, targetProject }) => ({
+          ...targetProject,
+          displayName: group.displayName,
+        })),
+    [botProjects, projectPickerEntries],
   );
   const projectGroupByTargetKey = useMemo(
     () =>
