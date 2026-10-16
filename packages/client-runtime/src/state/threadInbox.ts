@@ -1,4 +1,4 @@
-import { threadBotName, type BotName } from "@t3tools/contracts";
+import { threadBotName, threadOwnerBotName, type BotName } from "@t3tools/contracts";
 
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
@@ -119,6 +119,26 @@ export function sortBotThreads<T extends WorkingSortInput>(threads: readonly T[]
   return sortWorkingThreadsBySend(threads).sort((left, right) =>
     (threadBotName(left.id) ?? "").localeCompare(threadBotName(right.id) ?? ""),
   );
+}
+
+/** Projects only bots work in, as `environmentId:projectId` keys: every
+    unarchived thread is a bot's or a subagent of one. Project pickers leave
+    them out. A project with no threads, or one the user also works in, is not
+    a bot project. */
+export function botProjectKeys(
+  threads: ReadonlyArray<
+    Pick<EnvironmentThreadShell, "archivedAt" | "environmentId" | "id" | "projectId"> &
+      Parameters<typeof threadOwnerBotName>[0]
+  >,
+): ReadonlySet<string> {
+  const botOnly = new Map<string, boolean>();
+  for (const thread of threads) {
+    if (thread.archivedAt !== null) continue;
+    const key = `${thread.environmentId}:${thread.projectId}`;
+    const isBot = threadOwnerBotName(thread) !== null;
+    botOnly.set(key, (botOnly.get(key) ?? true) && isBot);
+  }
+  return new Set([...botOnly].filter(([, isBot]) => isBot).map(([key]) => key));
 }
 
 /** A row's project label, led by the bot's name on threads a bot launched,
