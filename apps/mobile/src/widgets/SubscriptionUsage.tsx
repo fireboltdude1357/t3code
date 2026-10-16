@@ -50,7 +50,6 @@ function SubscriptionUsage(
     const windows = provider.windows.filter(
       (window) => period === "auto" || window.kind === period,
     );
-    // Lock Screen widgets surface the tightest selected limit.
     const tightest = windows.reduce<(typeof windows)[number] | undefined>(
       (result, window) => (!result || window.remaining < result.remaining ? window : result),
       undefined,
