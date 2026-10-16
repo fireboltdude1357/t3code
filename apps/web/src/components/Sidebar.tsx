@@ -202,6 +202,7 @@ import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
+  botShelfName,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -217,6 +218,8 @@ import {
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
   resolveSidebarSweepKeys,
+  sortBotThreads,
+  threadProjectLabel,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
   resolveSidebarThreadSection,
@@ -317,6 +320,7 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
+const BOTS_SHELF_EXPANDED_KEY = "t3code:sidebar:bots-expanded";
 
 const inboxReturns = createInboxReturnTracker();
 
@@ -763,7 +767,7 @@ function SidebarDragBoundary(props: {
 }
 
 function SidebarSectionHeader(props: {
-  marker: "working-header" | "snoozed-header" | "settled-header";
+  marker: "working-header" | "bots-header" | "snoozed-header" | "settled-header";
   label: string;
   className?: string;
   dragging?: boolean;
@@ -773,9 +777,11 @@ function SidebarSectionHeader(props: {
   const shelf =
     props.marker === "working-header"
       ? "working"
-      : props.marker === "snoozed-header"
-        ? "snoozed"
-        : "settled";
+      : props.marker === "bots-header"
+        ? "bots"
+        : props.marker === "snoozed-header"
+          ? "snoozed"
+          : "settled";
   const snoozed = shelf === "snoozed";
   return (
     <SortableSidebarMarker
@@ -2679,6 +2685,7 @@ export default function Sidebar() {
     activeReorderableThreadKeys,
     activeThreads,
     workingThreads,
+    botThreads,
     snoozedThreads,
     settledThreads,
     snoozeNow,
@@ -2696,8 +2703,13 @@ export default function Sidebar() {
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
     const working: EnvironmentThreadShell[] = [];
+    const bots: EnvironmentThreadShell[] = [];
     const inbox = (thread: EnvironmentThreadShell) =>
-      workingShelfEnabled && isSidebarThreadWorking(thread) ? working : active;
+      botShelfName(thread) !== null
+        ? bots
+        : workingShelfEnabled && isSidebarThreadWorking(thread)
+          ? working
+          : active;
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
     const draggable = new Set<string>();
@@ -2771,6 +2783,7 @@ export default function Sidebar() {
               getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
             }),
       workingThreads: sortWorkingThreadsBySend(working),
+      botThreads: sortBotThreads(bots),
       snoozedThreads: snoozed.toSorted(
         (left, right) =>
           firstValidTimestampMs(left.snoozedUntil ?? null) -
@@ -2799,10 +2812,11 @@ export default function Sidebar() {
       ...pinnedThreads,
       ...activeThreads,
       ...workingThreads,
+      ...botThreads,
       ...snoozedThreads,
       ...settledThreads,
     ],
-    [activeThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads],
+    [activeThreads, botThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads],
   );
   const searchEnvironmentIds = useConnectedEnvironmentIds();
   const threadSearch = useThreadSearch(searchEnvironmentIds, threadSearchQuery);
@@ -2932,11 +2946,32 @@ export default function Sidebar() {
     return routeThread === undefined ? EMPTY_THREADS : [routeThread];
   }, [routeThreadKey, workingShelfExpanded, workingThreads]);
 
+  // The Bots shelf collapses the same way, with the same route exception.
+  const [botsShelfExpanded, setBotsShelfExpanded] = useLocalStorage(
+    BOTS_SHELF_EXPANDED_KEY,
+    false,
+    Schema.Boolean,
+  );
+  const toggleBotsShelf = useCallback(
+    () => setBotsShelfExpanded((value) => !value),
+    [setBotsShelfExpanded],
+  );
+  const visibleBotThreads = useMemo(() => {
+    if (botsShelfExpanded) return botThreads;
+    if (routeThreadKey === null) return EMPTY_THREADS;
+    const routeThread = botThreads.find(
+      (thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
+    );
+    return routeThread === undefined ? EMPTY_THREADS : [routeThread];
+  }, [botThreads, botsShelfExpanded, routeThreadKey]);
+
   const orderedThreads = useMemo(
     () => [
       ...pinnedThreads,
       ...activeThreads,
       ...visibleWorkingThreads,
+      ...visibleBotThreads,
       ...visibleSnoozedThreads,
       ...renderedSettledThreads,
     ],
@@ -2944,6 +2979,7 @@ export default function Sidebar() {
       pinnedThreads,
       activeThreads,
       visibleWorkingThreads,
+      visibleBotThreads,
       visibleSnoozedThreads,
       renderedSettledThreads,
     ],
@@ -3393,10 +3429,11 @@ export default function Sidebar() {
     add(pinnedThreads, "pinned");
     add(activeThreads, "active");
     add(workingThreads, "working");
+    add(botThreads, "bots");
     add(snoozedThreads, "snoozed");
     add(settledThreads, "settled");
     return map;
-  }, [activeThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads]);
+  }, [activeThreads, botThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads]);
   const sectionByThreadKeyRef = useRef(sectionByThreadKey);
   sectionByThreadKeyRef.current = sectionByThreadKey;
   const [actionSweep, setActionSweep] = useState<{
@@ -3626,6 +3663,7 @@ export default function Sidebar() {
       pinnedThreads.length +
         activeThreads.length +
         workingThreads.length +
+        botThreads.length +
         snoozedThreads.length +
         settledThreads.length ===
       0
@@ -3643,6 +3681,10 @@ export default function Sidebar() {
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
     }
+    if (botThreads.length > 0) {
+      items.push({ kind: "marker", marker: "bots-header" });
+      items.push(...rowsOf(visibleBotThreads, "bots"));
+    }
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
       items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
@@ -3654,10 +3696,12 @@ export default function Sidebar() {
     return items;
   }, [
     activeThreads,
+    botThreads.length,
     pinnedThreads,
     renderedSettledThreads,
     settledThreads.length,
     snoozedThreads.length,
+    visibleBotThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
     workingThreads.length,
@@ -4901,11 +4945,12 @@ export default function Sidebar() {
                         project={
                           projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
                         }
-                        projectDisplayName={
+                        projectDisplayName={threadProjectLabel(
+                          thread,
                           projectDisplayNameByKey.get(
                             `${thread.environmentId}:${thread.projectId}`,
-                          ) ?? null
-                        }
+                          ) ?? null,
+                        )}
                         environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
                         environmentMachine={
                           environmentMachineById.get(thread.environmentId) ?? "server"
@@ -4988,7 +5033,10 @@ export default function Sidebar() {
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const isCard =
-                          section === "active" || section === "pinned" || section === "working";
+                          section === "active" ||
+                          section === "pinned" ||
+                          section === "working" ||
+                          section === "bots";
                         const rowVariant = isCard ? "card" : "slim";
                         return (
                           <SidebarThreadRow
@@ -5052,11 +5100,12 @@ export default function Sidebar() {
                               projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ??
                               null
                             }
-                            projectDisplayName={
+                            projectDisplayName={threadProjectLabel(
+                              thread,
                               projectDisplayNameByKey.get(
                                 `${thread.environmentId}:${thread.projectId}`,
-                              ) ?? null
-                            }
+                              ) ?? null,
+                            )}
                             providerEntryByInstanceId={
                               providerEntriesByEnvironment.get(thread.environmentId) ??
                               EMPTY_PROVIDER_ENTRIES
@@ -5102,6 +5151,7 @@ export default function Sidebar() {
                             disabled={
                               renamingThreadKey === threadKey ||
                               section === "working" ||
+                              section === "bots" ||
                               !draggableThreadKeys.has(threadKey) ||
                               optimisticDrop !== null
                             }
@@ -5194,12 +5244,28 @@ export default function Sidebar() {
                               />,
                             );
                             break;
+                          case "bots-header":
+                            items.push(
+                              <SidebarSectionHeader
+                                key="bots-shelf-header"
+                                marker="bots-header"
+                                className={cn(workingThreads.length === 0 && "mt-auto")}
+                                label={botsShelfExpanded ? "Bots" : `Bots (${botThreads.length})`}
+                                toggle={{
+                                  expanded: botsShelfExpanded,
+                                  onToggle: toggleBotsShelf,
+                                }}
+                              />,
+                            );
+                            break;
                           case "snoozed-header":
                             items.push(
                               <SidebarSectionHeader
                                 key="snoozed-shelf-header"
                                 marker="snoozed-header"
-                                className={cn(workingThreads.length === 0 && "mt-auto")}
+                                className={cn(
+                                  workingThreads.length + botThreads.length === 0 && "mt-auto",
+                                )}
                                 label={
                                   snoozedShelfExpanded
                                     ? "Snoozed"
@@ -5218,7 +5284,10 @@ export default function Sidebar() {
                                 key="settled-shelf-header"
                                 marker="settled-header"
                                 className={cn(
-                                  workingThreads.length + snoozedThreads.length === 0 && "mt-auto",
+                                  workingThreads.length +
+                                    botThreads.length +
+                                    snoozedThreads.length ===
+                                    0 && "mt-auto",
                                 )}
                                 label={
                                   settledShelfExpanded
@@ -5278,6 +5347,7 @@ export default function Sidebar() {
           pinnedThreads.length +
             activeThreads.length +
             workingThreads.length +
+            botThreads.length +
             snoozedThreads.length +
             settledThreads.length ===
             0 ? (
