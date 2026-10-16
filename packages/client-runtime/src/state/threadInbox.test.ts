@@ -1,7 +1,8 @@
-import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  botProjectKeys,
   botShelfName,
   createInboxReturnTracker,
   sortBotThreads,
@@ -56,7 +57,6 @@ describe("createInboxReturnTracker", () => {
 
     tracker.observe(null);
     expect(tracker.returnedAt(thread("b", false))).toBeUndefined();
-    // After a reset the next call is a fresh baseline again.
     tracker.observe([thread("b", true)]);
     tracker.observe([thread("b", false)]);
     expect(tracker.returnedAt(thread("b", false))).toBeDefined();
@@ -68,7 +68,6 @@ describe("sortWorkingThreadsBySend", () => {
     const sentFirst = {
       ...thread("sent-first", true),
       latestUserAuthoredMessageAt: "2026-06-01T01:00:00.000Z",
-      // A wake run requested after the other thread's send.
       latestRun: {
         runId: RunId.make("run:wake"),
         status: "running" as const,
@@ -82,7 +81,6 @@ describe("sortWorkingThreadsBySend", () => {
       ...thread("sent-last", true),
       latestUserAuthoredMessageAt: "2026-06-01T02:00:00.000Z",
     };
-    // Launched by an agent: no user message, so creation time is the send.
     const launched = { ...thread("launched", true), latestUserAuthoredMessageAt: null };
     expect(
       sortWorkingThreadsBySend([launched, sentFirst, sentLast]).map((thread) => thread.id),
@@ -130,5 +128,30 @@ describe("bot shelf", () => {
       "bot:warden:new",
       "bot:warden:old",
     ]);
+  });
+});
+
+describe("botProjectKeys", () => {
+  const projectThread = (projectId: string, id: string, rootThreadId = id, archived = false) => ({
+    environmentId,
+    projectId: ProjectId.make(projectId),
+    id: ThreadId.make(id),
+    lineage: { rootThreadId: ThreadId.make(rootThreadId) },
+    archivedAt: archived ? "2026-06-01T00:00:00.000Z" : null,
+  });
+
+  it("marks projects where only bots and their subagents work", () => {
+    const keys = botProjectKeys([
+      projectThread("bot-only", "bot:medic:1"),
+      projectThread("bot-only", "subagent-1", "bot:medic:1"),
+      projectThread("mixed", "bot:medic:2"),
+      projectThread("mixed", "user-1"),
+      projectThread("user-only", "user-2"),
+      projectThread("archived-user", "bot:medic:3"),
+      projectThread("archived-user", "user-3", "user-3", true),
+    ]);
+    expect([...keys].toSorted()).toEqual(
+      ["archived-user", "bot-only"].map((projectId) => `${environmentId}:${projectId}`),
+    );
   });
 });
