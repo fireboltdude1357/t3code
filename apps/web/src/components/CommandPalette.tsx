@@ -66,6 +66,7 @@ import {
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  HouseIcon,
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -128,7 +129,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useScratchProject } from "../hooks/useScratchProject";
 import { useNewProject } from "../hooks/useNewProject";
-import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { isHomeProject, isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
 import { useThreadSearch } from "../state/queries";
@@ -221,7 +222,12 @@ import {
   ThreadRowTrailingStatus,
   ThreadSearchPullRequestNumber,
 } from "./ThreadStatusIndicators";
-import { primaryServerKeybindingsAtom, primaryServerProvidersAtom } from "../state/server";
+import {
+  primaryServerConfigAtom,
+  primaryServerKeybindingsAtom,
+  primaryServerProvidersAtom,
+  primaryServerSettingsAtom,
+} from "../state/server";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -386,6 +392,11 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const openNewThreadIn = useCallback(() => dispatch({ _tag: "OpenNewThreadIn" }), []);
   const clearOpenIntent = useCallback(() => dispatch({ _tag: "ClearOpenIntent" }), []);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const homeThreadId = useAtomValue(
+    primaryServerSettingsAtom,
+    (settings) => settings.home.threadId,
+  );
   const { theme, themeHalves, resolvedTheme, appearanceMode, setAppearanceMode } = useTheme();
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
   const routeTarget = useParams({
@@ -469,6 +480,17 @@ export function CommandPalette({ children }: { children: ReactNode }) {
         void navigate({ to: "/usage" });
         return;
       }
+      if (command === "home.open") {
+        if (primaryEnvironmentId === null || homeThreadId === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(scopeThreadRef(primaryEnvironmentId, homeThreadId)),
+        });
+        return;
+      }
       const mode = overlayModeForCommand(command);
       if (mode === null) {
         return;
@@ -481,8 +503,10 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     appearanceMode,
+    homeThreadId,
     keybindings,
     navigate,
+    primaryEnvironmentId,
     previewOpen,
     resolvedTheme,
     setAppearanceMode,
@@ -636,6 +660,14 @@ function OpenCommandPaletteDialog(props: {
   const { environments } = useEnvironments();
   const desktopLocalBootstraps = useDesktopLocalBootstraps();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const homeThreadId = useAtomValue(
+    primaryServerSettingsAtom,
+    (settings) => settings.home.threadId,
+  );
+  const homeWorkspaceRoot = useAtomValue(
+    primaryServerConfigAtom,
+    (config) => config?.homeWorkspaceRoot ?? null,
+  );
   const availableSettingsSearchItems = useAvailableSettingsSearchItems();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
@@ -1171,10 +1203,16 @@ function OpenCommandPaletteDialog(props: {
     ],
   );
 
+  // Home's folder belongs to Home alone: no search result or picker starts a thread there.
+  const isPrimaryHomeProject = useCallback(
+    (project: { readonly environmentId: EnvironmentId; readonly workspaceRoot: string }) =>
+      project.environmentId === primaryEnvironmentId && isHomeProject(project, homeWorkspaceRoot),
+    [homeWorkspaceRoot, primaryEnvironmentId],
+  );
   const projectSearchItems = useMemo(
     () =>
       buildProjectActionItems({
-        projects: pickerProjects,
+        projects: pickerProjects.filter((project) => !isPrimaryHomeProject(project)),
         valuePrefix: "project",
         searchTerms: (project) => {
           const members = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`)
@@ -1209,6 +1247,7 @@ function OpenCommandPaletteDialog(props: {
         runProject: openProjectFromSearch,
       }),
     [
+      isPrimaryHomeProject,
       openProjectFromSearch,
       pickerProjects,
       projectEnvironmentLocationById,
@@ -1221,7 +1260,9 @@ function OpenCommandPaletteDialog(props: {
       isScratchProject(project, scratchWorkspaceRootFor(project.environmentId));
     const projectItems = enumerateCommandPaletteItems(
       buildProjectActionItems({
-        projects: pickerProjects.filter((project) => !isScratch(project)),
+        projects: pickerProjects.filter(
+          (project) => !isScratch(project) && !isPrimaryHomeProject(project),
+        ),
         valuePrefix: "new-thread-in",
         searchTerms: (project) => {
           const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
@@ -1292,6 +1333,7 @@ function OpenCommandPaletteDialog(props: {
   }, [
     contextualProjectRef,
     handleNewThread,
+    isPrimaryHomeProject,
     pickerProjects,
     projectEnvironmentLocationById,
     projectGroupByTargetKey,
@@ -2187,6 +2229,23 @@ function OpenCommandPaletteDialog(props: {
       await navigate({ to: "/usage" });
     },
   });
+
+  if (primaryEnvironmentId !== null && homeThreadId !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:home",
+      searchTerms: ["home", "fleet", "all projects"],
+      title: "Open Home",
+      icon: <HouseIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "home.open",
+      run: async () => {
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(scopeThreadRef(primaryEnvironmentId, homeThreadId)),
+        });
+      },
+    });
+  }
 
   actionItems.push({
     kind: "action",
