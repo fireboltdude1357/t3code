@@ -238,12 +238,14 @@ describe("mobile connection storage", () => {
         threadListSettledShelfExpanded: false,
         threadListSnoozedShelfExpanded: true,
         threadListWorkingShelfExpanded: true,
+        threadListBotShelfExpanded: true,
         workingShelfEnabled: true,
       }),
     ).resolves.toEqual({
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
       threadListWorkingShelfExpanded: true,
+      threadListBotShelfExpanded: true,
       workingShelfEnabled: true,
     });
 
@@ -251,12 +253,14 @@ describe("mobile connection storage", () => {
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
       threadListWorkingShelfExpanded: true,
+      threadListBotShelfExpanded: true,
       workingShelfEnabled: true,
     });
     expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual({
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
       threadListWorkingShelfExpanded: true,
+      threadListBotShelfExpanded: true,
       workingShelfEnabled: true,
     });
   });
