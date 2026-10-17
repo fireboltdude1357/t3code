@@ -495,7 +495,25 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       ),
     [selectedEnvironmentServerConfig?.settings, selectedProject, t3ProjectFile],
   );
-  const canChooseWorkspace = !isScratchDraft;
+  // Live git status of the project root: whether it is a repository at all,
+  // and the ref actually checked out there, which new local threads record.
+  // listRefs' `current` flag comes from a cache that can lag an out-of-band
+  // `git switch` by minutes. Detached HEAD and non-repository projects report
+  // no ref. The status family is deduplicated per (environmentId, cwd) with
+  // the thread rows.
+  const projectGitStatus = useEnvironmentQuery(
+    selectedProject !== null && selectedProject.workspaceRoot !== ""
+      ? vcsEnvironment.status({
+          environmentId: selectedProject.environmentId,
+          input: { cwd: selectedProject.workspaceRoot },
+        })
+      : null,
+  );
+  const currentCheckoutBranchName = projectGitStatus.data?.refName ?? null;
+  // A thread without a project, or in a folder that is not a git repository,
+  // runs in a plain folder. Worktree mode would leave it unsendable, so it is
+  // always local and offers no choice, as on web.
+  const canChooseWorkspace = !isScratchDraft && projectGitStatus.data?.isRepo !== false;
   const selectedProjectHasThreads =
     selectedProject !== null &&
     threads.some(
@@ -721,16 +739,6 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       ),
     [allBranchRefs],
   );
-  const projectGitStatus = useEnvironmentQuery(
-    branchTarget.environmentId !== null && branchTarget.cwd !== null
-      ? vcsEnvironment.status({
-          environmentId: branchTarget.environmentId,
-          input: { cwd: branchTarget.cwd },
-        })
-      : null,
-  );
-  const currentCheckoutBranchName = projectGitStatus.data?.refName ?? null;
-
   const filteredBranches = useMemo(
     () => filterNewTaskBranches(allBranchRefs, branchQuery),
     [allBranchRefs, branchQuery],
