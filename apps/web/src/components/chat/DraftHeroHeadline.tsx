@@ -2,14 +2,14 @@ import type { DraftId } from "~/composerDraftStore";
 import { composerDraftHasUserContent, useComposerDraftStore } from "~/composerDraftStore";
 import { resolveEnvironmentMachineKind, type ScopedProjectRef } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { isHomeProject, isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { FolderPlusIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openCommandPalette } from "~/commandPaletteBus";
 import { shortcutLabelForCommand } from "~/keybindings";
-import { primaryServerKeybindingsAtom } from "~/state/server";
+import { primaryServerConfigAtom, primaryServerKeybindingsAtom } from "~/state/server";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useScratchProject } from "~/hooks/useScratchProject";
 import { useClientSettings } from "~/hooks/useSettings";
@@ -76,6 +76,10 @@ export function DraftHeroHeadline({
   const { scratchEnvironmentId, scratchWorkspaceRootFor, openScratchProject } = useScratchProject();
   const openProjectDraft = useNewThreadHandler();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const homeWorkspaceRoot = useAtomValue(
+    primaryServerConfigAtom,
+    (config) => config?.homeWorkspaceRoot ?? null,
+  );
 
   const environmentLabelById = useMemo(
     () =>
@@ -152,9 +156,13 @@ export function DraftHeroHeadline({
     () =>
       projectPickerEntries.filter(
         ({ targetProject }) =>
-          !isScratchProject(targetProject, scratchWorkspaceRootFor(targetProject.environmentId)),
+          !isScratchProject(targetProject, scratchWorkspaceRootFor(targetProject.environmentId)) &&
+          !(
+            targetProject.environmentId === primaryEnvironmentId &&
+            isHomeProject(targetProject, homeWorkspaceRoot)
+          ),
       ),
-    [projectPickerEntries, scratchWorkspaceRootFor],
+    [homeWorkspaceRoot, primaryEnvironmentId, projectPickerEntries, scratchWorkspaceRootFor],
   );
   const activeProject =
     activeProjectRef === null

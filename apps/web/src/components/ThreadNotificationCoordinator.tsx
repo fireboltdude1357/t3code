@@ -5,7 +5,12 @@ import {
 import { pendingSubagentRequestsByThread } from "@t3tools/client-runtime/state/threads";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  isHomeLaunchedThreadId,
+  type OrchestrationV2ThreadShell,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import {
   CircleAlertIcon,
@@ -17,6 +22,7 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
 import { useEnvironmentIds } from "../state/environments";
+import { primaryServerSettingsAtom } from "../state/server";
 import { environmentShell } from "../state/shell";
 import {
   hasDesktopNotifications,
@@ -30,6 +36,11 @@ import { toastManager } from "./ui/toast";
 
 export function ThreadNotificationCoordinator() {
   const environmentIds = useEnvironmentIds();
+  // Home answers for the threads it launched; it reaches the user through its own thread.
+  const homeOn = useAtomValue(
+    primaryServerSettingsAtom,
+    (settings) => settings.home.threadId !== null,
+  );
   const mode = useClientSettings((settings) => settings.notificationMode);
   const inAppNotificationsEnabled = useClientSettings(
     (settings) => settings.inAppNotificationsEnabled,
@@ -87,6 +98,7 @@ export function ThreadNotificationCoordinator() {
     <EnvironmentNotifications
       key={environmentId}
       environmentId={environmentId}
+      homeOn={homeOn}
       onNotification={onNotification}
     />
   ));
@@ -101,9 +113,11 @@ interface NotificationState {
 
 function EnvironmentNotifications({
   environmentId,
+  homeOn,
   onNotification,
 }: {
   environmentId: EnvironmentId;
+  homeOn: boolean;
   onNotification: (environmentId: EnvironmentId, notification: Notification) => void;
 }) {
   const shell = useAtomValue(environmentShell.stateValueAtom(environmentId));
@@ -156,7 +170,7 @@ function EnvironmentNotifications({
           : completion !== null && (prior.completion === null || completion > prior.completion)
             ? "completion"
             : null;
-      if (!kind) continue;
+      if (!kind || (homeOn && isHomeLaunchedThreadId(thread.id))) continue;
       const title =
         kind === "completion"
           ? "Thread completed"
@@ -239,6 +253,7 @@ function EnvironmentNotifications({
     activeEnvironmentId,
     activeThreadId,
     environmentId,
+    homeOn,
     inAppNotificationsEnabled,
     mode,
     navigate,
