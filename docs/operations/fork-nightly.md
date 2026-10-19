@@ -52,14 +52,14 @@ GitHub disabled Actions on the fork on 2026-10-14, so the build runs on Tanner's
 
 1. stl-wsl runs `scripts/fork-sync.ts` from `patch/release` and pushes the result to `fork-candidate`.
 2. stl-wsl runs the full typecheck and the test files the patches add or change, then builds the linux-x64 CLI archive. Upstream CI tests the rest of `main`.
-3. At the same time, the MacBook Air fetches `fork-candidate` and builds the macOS arm64 app with `mac-build.sh`.
+3. At the same time, the MacBook Air fetches `fork-candidate` and builds the macOS arm64 app with `mac-build.sh`. Once the Linux archive exists, the Windows host builds the x64 installer.
 4. stl-wsl publishes `v<version>` as a prerelease, then fast-forwards `fork-main` to the commit it built.
 
 `fork-build.sh --no-publish` builds without publishing, and `--force` rebuilds unchanged inputs. The bundle build copies `.env.example` to `.env`, so fork builds use upstream's relay and Clerk instance and T3 Connect works as it does on stock builds.
 
 Git merges `pnpm-lock.yaml` as text, so a patch's lockfile entries can keep a version upstream has since bumped in the catalog. The build installs with `--no-frozen-lockfile`, which re-resolves only those entries, and logs how the lockfile changed.
 
-There is no Windows build. The Windows host's fork app stays on the last version it installed.
+After the Linux leg, the Windows host under stl-wsl builds the unsigned Windows x64 NSIS installer (`win-build.sh`), with that run's Linux CLI archive embedded as its WSL runtime. The Windows app updates from the release's `nightly.yml`. Fork Windows builds have no Authenticode signature, so check an installer's SHA-512 against `nightly.yml`.
 
 Mac builds are signed with Architech's Developer ID and notarized, using the `.p12` and App Store Connect key on the Air. macOS only installs an update signed by the running app's identity, so a Mac moves from Theo's build to the fork's by hand once. There is no provisioning profile: `com.t3tools.t3code` belongs to Theo's team, and the passkey domains only trust his. Without one the build skips the passkey entitlements, so the in-app browser can't use passkeys.
 
