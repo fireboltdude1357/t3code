@@ -1972,26 +1972,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
   const reviewCommentColors = useReviewCommentColors();
   const unsettledTurnId = threadFeedRunIsUnsettled(props.latestRun) ? props.latestRun.runId : null;
-  // LegendList does not invalidate visible rows when only the renderItem closure changes.
-  // Include turn completion so unchanged message rows reveal their footer and spacing
-  // even when the final message update arrives before the turn settles.
-  const listAppearanceData = {
-    worktreeSetup: props.worktreeSetup,
-    setupWorkingStartedAt: props.setupWorkingStartedAt,
-    dispatchingMessageId: props.dispatchingMessageId,
-    unsettledTurnId,
-    copiedRowId,
-    expandedWorkGroups,
-    expandedWorkRows,
-    workRowSizing,
-    iconSubtleColor,
-    markdownStyles,
-    reviewCommentColors,
-    themeAppearance,
-    userBubbleColor,
-    viewportWidth,
-    workflowOpening,
-  };
   const reportHeaderMaterialVisibility = (visible: boolean) => {
     if (headerMaterialVisibleRef.current === visible) {
       return;
@@ -2132,6 +2112,29 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }
     return new Set(terminalIdsByTurn.values());
   })();
+  // LegendList does not invalidate visible rows when only the renderItem closure changes.
+  // Keep row-local interaction props in extraData so disclosures, copy feedback, and the
+  // assistant meta row (copy button on turn settle) repaint, even when the final
+  // message update arrives before the turn settles.
+  const listAppearanceData = {
+    worktreeSetup: props.worktreeSetup,
+    setupWorkingStartedAt: props.setupWorkingStartedAt,
+    dispatchingMessageId: props.dispatchingMessageId,
+    copiedRowId,
+    expandedWorkGroups,
+    expandedWorkRows,
+    workRowSizing,
+    iconSubtleColor,
+    markdownStyles,
+    reviewCommentColors,
+    terminalAssistantMessageIds,
+    themeAppearance,
+    unsettledTurnId,
+    userBubbleColor,
+    viewportWidth,
+    workflowOpening,
+  };
+
   useEffect(() => {
     const previous = previousLatestTurnRef.current;
     previousLatestTurnRef.current = props.latestRun;

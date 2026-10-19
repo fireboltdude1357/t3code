@@ -32,6 +32,8 @@ import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
+import { startVoiceSession } from "../voice-session/voiceSessionController";
+import { useVoiceSidecarEnvironmentId } from "../voice-session/voiceSidecar";
 
 export function HomeRouteScreen() {
   const { width: windowWidth } = useWindowDimensions();
@@ -136,6 +138,26 @@ export function HomeRouteScreen() {
       setSelectedProjectKey(resolvedProjectKey);
     }
   }, [projectScopeKey, resolvedProjectKey, setSelectedProjectKey]);
+  // The voice sidecar serves one environment. The button shows while that
+  // environment is connected and matches the filter, if there is one.
+  const voiceSidecarEnvironmentId = useVoiceSidecarEnvironmentId();
+  const voiceEnvironmentId =
+    environments.find(
+      (environment) =>
+        environment.environmentId === voiceSidecarEnvironmentId &&
+        (selectedEnvironmentId === null || environment.environmentId === selectedEnvironmentId) &&
+        environment.connectionState === "connected",
+    )?.environmentId ?? null;
+  const openVoiceSession = useMemo(
+    () =>
+      voiceEnvironmentId === null
+        ? null
+        : () => {
+            startVoiceSession({ environmentId: voiceEnvironmentId, focusThreadId: null });
+            navigation.navigate("VoiceSession");
+          },
+    [navigation, voiceEnvironmentId],
+  );
   const projectFilterOptions = useMemo(
     () =>
       buildHomeProjectScopes({
@@ -211,11 +233,13 @@ export function HomeRouteScreen() {
             shallow-merged. */}
         {workspace !== null && Platform.OS === "ios" ? null : (
           <NativeStackScreenOptions
-            optionsVersion={headerWidth}
+            optionsVersion={[headerWidth, openVoiceSession === null]}
             options={{
               ...getConnectionAwareBrandHeaderOptions({
                 headerWidth,
-                trailingItemCount: nativePrimaryColumn && deviceType === "pad" ? 2 : 1,
+                trailingItemCount:
+                  (nativePrimaryColumn && deviceType === "pad" ? 2 : 1) +
+                  (openVoiceSession === null ? 0 : 1),
                 onOpenEnvironments: () =>
                   navigation.navigate("SettingsSheet", {
                     screen: "SettingsContent",
@@ -249,6 +273,7 @@ export function HomeRouteScreen() {
           }
           onSearchQueryChange={setSearchQuery}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
+          onOpenVoiceSession={openVoiceSession}
         />
 
         <HomeScreen
