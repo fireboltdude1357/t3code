@@ -27,6 +27,8 @@ import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type AssistantCitation,
   type EnvironmentId,
+  isHomeReportMessageId,
+  isHomeThreadId,
   type MessageId,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
@@ -2254,6 +2256,13 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             "Sent by automation"
           )}
         </p>
+      ) : isHomeReportMessageId(row.message.id) ? (
+        <p
+          className="me-1 text-2xs text-muted-foreground/70"
+          data-user-message-attribution="home-report"
+        >
+          Watch report from T3 Code
+        </p>
       ) : userMessage.attribution === "t3code" ? (
         <p
           className="me-1 text-2xs text-muted-foreground/70"
@@ -2269,7 +2278,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
               tone="muted"
               aria-label="Open sending thread"
             >
-              Sent by another agent
+              {isHomeThreadId(senderThreadId) ? "Sent by Home" : "Sent by another agent"}
             </InlineButton>
           ) : (
             "Sent by another agent"
