@@ -3,10 +3,6 @@ import UIKit
 
 /// Reports geometry in the observing view's coordinate space, including system
 /// reservations that safe-area rectangles cannot represent, such as the fold.
-// Fork: the iOS 27.1 hinge and reserved-region APIs exist only in the iOS 27.1
-// SDK, but Xcode 27.0 ships the same Swift 6.4, so the compiler check alone
-// passes on the MacBook Air's Xcode 27.0. UIKit's version tells the SDKs apart:
-// 27.0 is 9127.0.84.
 final class T3LayoutMetricsView: ExpoView {
   let onMetricsChange = EventDispatcher()
   private var lastMetrics: NSDictionary?
@@ -18,7 +14,9 @@ final class T3LayoutMetricsView: ExpoView {
     registerForTraitChanges([UITraitHorizontalSizeClass.self, UITraitVerticalSizeClass.self]) { (view: T3LayoutMetricsView, _: UITraitCollection) in
       view.publishMetrics()
     }
-    #if compiler(>=6.4) && canImport(UIKit, _underlyingVersion: 9127.1)
+    // The hinge and vertical-bar APIs ship in the iOS 27.1 SDK, whose UIKit is 9127.0.85.
+    // Xcode 27.0 has Swift 6.4 but the 27.0 SDK (UIKit 9127.0.84), so gate on the SDK.
+    #if canImport(UIKit, _version: 9127.0.85)
     if #available(iOS 27.1, *) {
       hasHinge = nil
       addInteraction(UIHingeInteraction { [weak self] _, update in
@@ -71,7 +69,7 @@ final class T3LayoutMetricsView: ExpoView {
     }
     var verticalBarEdge = "none"
     var regions: [[String: Any]] = []
-    #if compiler(>=6.4) && canImport(UIKit, _underlyingVersion: 9127.1)
+    #if canImport(UIKit, _version: 9127.0.85)
     if #available(iOS 27.1, *) {
       let rtl = effectiveUserInterfaceLayoutDirection == .rightToLeft
       switch traitCollection.verticalBarEdge {
