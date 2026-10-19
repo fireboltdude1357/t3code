@@ -12,8 +12,10 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
+  botShelfName,
   createInboxReturnTracker,
   isThreadWorking,
+  sortBotThreads,
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
 } from "@t3tools/client-runtime/state/thread-inbox";
@@ -221,7 +223,9 @@ export function getThreadListV2OrderedSection(input: {
     ) {
       return false;
     }
-    return (thread.pinnedAt != null) === (input.section === "pinned");
+    if (thread.pinnedAt != null) return input.section === "pinned";
+    // Bot shelf rows have no slot in the inbox, so moves skip them.
+    return input.section === "active" && botShelfName(thread) === null;
   });
   const ordered =
     input.section === "pinned"
@@ -247,6 +251,10 @@ export interface ThreadListV2Layout {
   readonly hiddenSettledCount: number;
   readonly workingCount: number;
   readonly workingShelfHeaderIndex: number | null;
+  /** Bot-launched threads folded onto the Bots shelf. */
+  readonly botCount: number;
+  /** Index in `items` where the Bots shelf header belongs. */
+  readonly botShelfHeaderIndex: number | null;
   readonly snoozedCount: number;
   readonly snoozedShelfHeaderIndex: number | null;
   readonly settledCount: number;
@@ -292,6 +300,15 @@ export interface ThreadListV2WorkingShelfListItem {
   readonly disabled: boolean;
 }
 
+export interface ThreadListV2BotShelfListItem {
+  readonly type: "v2-bot-shelf";
+  readonly key: "v2-bot-shelf";
+  readonly count: number;
+  readonly expanded: boolean;
+  /** See the snoozed shelf header's field. */
+  readonly disabled: boolean;
+}
+
 export interface ThreadListV2SnoozedShelfListItem {
   readonly type: "v2-snoozed-shelf";
   readonly key: "v2-snoozed-shelf";
@@ -317,6 +334,7 @@ export type ThreadListV2ListItem =
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
   | ThreadListV2WorkingShelfListItem
+  | ThreadListV2BotShelfListItem
   | ThreadListV2SnoozedShelfListItem
   | ThreadListV2SettledShelfListItem;
 
@@ -327,6 +345,7 @@ export function isThreadListV2ListItem(value: {
     value.type === "v2-thread" ||
     value.type === "v2-pending" ||
     value.type === "v2-working-shelf" ||
+    value.type === "v2-bot-shelf" ||
     value.type === "v2-snoozed-shelf" ||
     value.type === "v2-settled-shelf"
   );
@@ -373,6 +392,13 @@ export function threadListV2ListItemsAreEqual(
         previous.expanded === item.expanded &&
         previous.disabled === item.disabled
       );
+    case "v2-bot-shelf":
+      return (
+        previous.type === "v2-bot-shelf" &&
+        previous.count === item.count &&
+        previous.expanded === item.expanded &&
+        previous.disabled === item.disabled
+      );
     case "v2-snoozed-shelf":
       return (
         previous.type === "v2-snoozed-shelf" &&
@@ -414,6 +440,9 @@ export function buildThreadListV2ListItems(input: {
   readonly workingCount?: number;
   readonly workingShelfExpanded?: boolean;
   readonly workingShelfHeaderIndex?: number | null;
+  readonly botCount?: number;
+  readonly botShelfExpanded?: boolean;
+  readonly botShelfHeaderIndex?: number | null;
   readonly snoozedCount?: number;
   readonly snoozedShelfExpanded?: boolean;
   readonly snoozedShelfHeaderIndex?: number | null;
@@ -469,12 +498,15 @@ export function buildThreadListV2ListItems(input: {
   }));
   const workingCount = input.workingCount ?? 0;
   const workingShelfHeaderIndex = input.workingShelfHeaderIndex ?? null;
+  const botCount = input.botCount ?? 0;
+  const botShelfHeaderIndex = input.botShelfHeaderIndex ?? null;
   const snoozedCount = input.snoozedCount ?? 0;
   const snoozedShelfHeaderIndex = input.snoozedShelfHeaderIndex ?? null;
   const settledCount = input.settledCount ?? 0;
   const settledShelfHeaderIndex = input.settledShelfHeaderIndex ?? null;
   const snoozedEnd = settledShelfHeaderIndex ?? threadItems.length;
-  const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
+  const botEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
+  const workingEnd = botShelfHeaderIndex ?? botEnd;
   const activeEnd = workingShelfHeaderIndex ?? workingEnd;
   const result: ThreadListV2ListItem[] = [...threadItems.slice(0, activeEnd), ...pendingItems];
   const shelfDisabled = input.shelfPreferencesLoading === true;
@@ -487,6 +519,16 @@ export function buildThreadListV2ListItems(input: {
       disabled: shelfDisabled,
     });
     result.push(...threadItems.slice(workingShelfHeaderIndex, workingEnd));
+  }
+  if (botShelfHeaderIndex !== null && botCount > 0) {
+    result.push({
+      type: "v2-bot-shelf",
+      key: "v2-bot-shelf",
+      count: botCount,
+      expanded: input.botShelfExpanded === true,
+      disabled: shelfDisabled,
+    });
+    result.push(...threadItems.slice(botShelfHeaderIndex, botEnd));
   }
   if (snoozedShelfHeaderIndex !== null && snoozedCount > 0) {
     result.push({
@@ -558,6 +600,8 @@ export function buildThreadListV2Items(input: {
   readonly now: string;
   readonly workingShelfEnabled?: boolean;
   readonly workingShelfExpanded?: boolean;
+  /** Expands the Bots shelf into rows. Collapsed is the default. */
+  readonly botShelfExpanded?: boolean;
   readonly inboxReturnAt?: (thread: EnvironmentThreadShell) => number | undefined;
   readonly snoozedShelfExpanded?: boolean;
   readonly settledShelfExpanded?: boolean;
@@ -585,6 +629,7 @@ export function buildThreadListV2Items(input: {
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
+  const bots: EnvironmentThreadShell[] = [];
   const settled: EnvironmentThreadShell[] = [];
   const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
@@ -629,6 +674,9 @@ export function buildThreadListV2Items(input: {
       settled.push(thread);
     } else if (thread.pinnedAt != null) {
       pinned.push(thread);
+    } else if (botShelfName(thread) !== null) {
+      // Bot work stays out of the inbox, beta or not, until it needs the user.
+      bots.push(thread);
     } else if (workingShelfEnabled && isThreadWorking(thread)) {
       working.push(thread);
     } else {
@@ -640,6 +688,7 @@ export function buildThreadListV2Items(input: {
     ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
     : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
   const orderedWorking = sortWorkingThreadsBySend(working);
+  const orderedBots = sortBotThreads(bots);
   const orderedSnoozed = [...snoozed].sort(
     (left, right) =>
       parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
@@ -649,6 +698,12 @@ export function buildThreadListV2Items(input: {
     input.workingShelfExpanded === true
       ? orderedWorking
       : orderedWorking.filter(
+          (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+        );
+  const visibleBots =
+    input.botShelfExpanded === true
+      ? orderedBots
+      : orderedBots.filter(
           (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
         );
   const visibleSnoozed =
@@ -709,6 +764,16 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   }
+  const botShelfHeaderIndex = orderedBots.length > 0 ? items.length : null;
+  for (const thread of visibleBots) {
+    items.push({
+      thread,
+      variant: "card",
+      snoozed: false,
+      pinned: false,
+      isLast: false,
+    });
+  }
   const snoozedShelfHeaderIndex = orderedSnoozed.length > 0 ? items.length : null;
   for (const thread of visibleSnoozed) {
     items.push({
@@ -738,6 +803,8 @@ export function buildThreadListV2Items(input: {
     hiddenSettledCount: orderedSettled.length - pagedSettled.length,
     workingCount: orderedWorking.length,
     workingShelfHeaderIndex,
+    botCount: orderedBots.length,
+    botShelfHeaderIndex,
     snoozedCount: orderedSnoozed.length,
     snoozedShelfHeaderIndex,
     settledCount: orderedSettled.length,
