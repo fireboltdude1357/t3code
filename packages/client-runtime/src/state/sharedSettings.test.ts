@@ -124,6 +124,7 @@ describe("pickSharedServerSettings", () => {
       Object.keys(pickSharedServerSettings(DEFAULT_SERVER_SETTINGS, restartCapabilities)).sort(),
     ).toEqual([
       "autoResumeLimitedThreads",
+      "cacheExpiryCompactionMinTokens",
       "continueThreadsAfterServerUpdate",
       "newWorktreesStartFromOrigin",
       "sidebarAutoSettleAfterDays",
