@@ -19,6 +19,10 @@ vi.mock("expo-updates", () => ({
   reloadAsync: vi.fn(),
 }));
 
+vi.mock("react-native", () => ({
+  AppState: { currentState: "active", addEventListener: vi.fn(() => ({ remove: vi.fn() })) },
+}));
+
 function makeUpdateClient(overrides: Partial<AppUpdateClient> = {}): AppUpdateClient {
   return {
     isEnabled: true,
