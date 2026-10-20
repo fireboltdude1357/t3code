@@ -84,6 +84,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { notHomeLayer } from "../home/HomeTestkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -725,6 +726,7 @@ describe("orchestrator MCP toolkit", () => {
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provideMerge(layerOrchestration),
+            Layer.provide(notHomeLayer),
             Layer.provide(layerRegistry),
             Layer.provide(layerProviderRegistry),
             Layer.provide(ServerSettings.layerTest()),
@@ -4399,6 +4401,7 @@ describe("orchestrator MCP toolkit", () => {
         const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(layerOrchestration),
+          Layer.provide(notHomeLayer),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(
               Layer.provide(McpProviderSessions.layer),
