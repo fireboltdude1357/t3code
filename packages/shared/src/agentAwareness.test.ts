@@ -30,6 +30,7 @@ describe("projectThreadAwarenessV2", () => {
         | "pendingBackgroundTasks"
         | "pendingRuntimeRequest"
         | "lineage"
+        | "settledOverride"
       >
     > = {},
   ) => ({
@@ -45,6 +46,7 @@ describe("projectThreadAwarenessV2", () => {
     interactionMode: "default" as const,
     hasActionableProposedPlan: false,
     pendingRuntimeRequest: null,
+    settledOverride: null,
     updatedAt,
     ...overrides,
   });
@@ -148,6 +150,28 @@ describe("projectThreadAwarenessV2", () => {
           },
         }),
       }),
+    ).toMatchObject({ phase: "waiting_for_input", headline: "Waiting for input" });
+  });
+
+  it("reports an async question as input only after the working run completes", () => {
+    const input = {
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: v2Thread({
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("request-async"),
+          kind: "user_input",
+          createdAt: updatedAt,
+          blocking: false,
+        },
+      }),
+    };
+    expect(projectThreadAwarenessV2(input)).toMatchObject({
+      phase: "running",
+      headline: "Agent is working",
+    });
+    expect(
+      projectThreadAwarenessV2({ ...input, thread: { ...input.thread, status: "completed" } }),
     ).toMatchObject({ phase: "waiting_for_input", headline: "Waiting for input" });
   });
 
