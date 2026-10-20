@@ -124,6 +124,15 @@ device keeps its own choice.
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag or move threads within it. Your saved order returns when you turn it off.
 
+### Bots
+
+Threads that a bot launches through T3 Code's agent tools collect in a collapsed **Bots**
+section below the active list, grouped by bot, with each row led by the bot's name. They
+don't notify you when they finish or fail. A bot thread moves to the active list and
+notifies you while it waits for your approval, an answer, or a decision on a proposed plan,
+then goes back to Bots once you reply. You can still
+pin, snooze, or settle bot threads like any other thread.
+
 ## Settle finished work
 
 Choose **Settle thread** from its menu to move finished work out of the active list
