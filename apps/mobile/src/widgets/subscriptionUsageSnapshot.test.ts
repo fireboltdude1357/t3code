@@ -12,8 +12,8 @@ import {
   type SubscriptionUsageSnapshot,
   buildSubscriptionUsageSnapshot,
   createWidgetRefresher,
+  keepLastLimits,
   WIDGET_REFRESH_INTERVAL,
-  subscriptionUsageTimeline,
 } from "./subscriptionUsageSnapshot";
 
 function contrastRatio(first: string, second: string) {
@@ -77,7 +77,6 @@ describe("subscription widget snapshots", () => {
     expect(snapshot.providers[0]).toMatchObject({
       name: "Codex",
       windows: [{ remaining: 60 }],
-      expiresAt: now + 10 * 60_000,
     });
     expect(snapshot.url).toBe(deepLink);
     expect(JSON.stringify(snapshot)).not.toContain("private@example.com");
@@ -126,9 +125,6 @@ describe("subscription widget snapshots", () => {
       totalWindows: 1,
       windows: [{ remaining: 60 }],
     });
-    expect(subscriptionUsageTimeline(snapshot, now + 15 * 60_000)[0]?.props.providers).toEqual([
-      expect.objectContaining({ name, totalWindows: 0, windows: [] }),
-    ]);
   });
   it("keeps an enabled provider visible before its first usage read", () => {
     const snapshot = buildSubscriptionUsageSnapshot(
@@ -137,7 +133,13 @@ describe("subscription widget snapshots", () => {
     );
     expect(snapshot.checkedAt).toBe(0);
     expect(snapshot.providers).toEqual([
-      { name: "Codex", detail: "No limits available", windows: [], expiresAt: 0, totalWindows: 0 },
+      {
+        name: "Codex",
+        detail: "No limits available",
+        windows: [],
+        totalWindows: 0,
+        checkedAt: 0,
+      },
     ]);
   });
   it("uses upstream deduplication for a native account also present in a proxy hub", () => {
@@ -228,17 +230,7 @@ describe("subscription widget snapshots", () => {
       Array.from({ length: 20 }, (_, index) => 5 + index * 5),
     );
   });
-  it("marks unknown or distant reset times stale after fifteen minutes", () => {
-    const snapshot = buildSubscriptionUsageSnapshot(
-      presentations([
-        provider({ usageLimits: { checkedAt, windows: [{ ...window, resetsAt: undefined }] } }),
-      ]),
-      deepLink,
-    );
-    expect(snapshot.providers[0]?.expiresAt).toBe(now + 15 * 60_000);
-    expect(snapshot.providers[0]?.windows[0]?.reset).toBe("Reset time unavailable");
-  });
-  it("preserves the saved appearance through a reset without inventing a zero quota", () => {
+  it("keeps the saved appearance on the snapshot it publishes", () => {
     const light = getMobileThemeRuntimeVariables("t3-chat", "light", "ios");
     const dark = getMobileThemeRuntimeVariables("t3-code", "dark", "ios");
     const snapshot: SubscriptionUsageSnapshot = JSON.parse(
@@ -247,23 +239,19 @@ describe("subscription widget snapshots", () => {
         theme: createWidgetTheme("dark", { light, dark }),
       }),
     );
-    const timeline = subscriptionUsageTimeline(snapshot, now);
-    expect(timeline.map((entry) => entry.date.getTime())).toEqual([now, now + 10 * 60_000]);
-    expect(timeline[1]?.props.providers[0]?.windows).toEqual([]);
-    expect(subscriptionUsageTimeline(snapshot, now + 60 * 60_000)).toHaveLength(1);
-    for (const entry of timeline) {
-      expect(JSON.parse(JSON.stringify(entry.props)).theme).toEqual({
-        mode: "dark",
-        light: expect.objectContaining({
-          background: light["--color-card"],
-          foreground: light["--color-foreground"],
-        }),
-        dark: expect.objectContaining({
-          background: dark["--color-card"],
-          foreground: dark["--color-foreground"],
-        }),
-      });
-    }
+    const published = keepLastLimits(undefined, snapshot);
+    expect(published?.providers[0]?.windows[0]?.remaining).toBe(60);
+    expect(JSON.parse(JSON.stringify(published)).theme).toEqual({
+      mode: "dark",
+      light: expect.objectContaining({
+        background: light["--color-card"],
+        foreground: light["--color-foreground"],
+      }),
+      dark: expect.objectContaining({
+        background: dark["--color-card"],
+        foreground: dark["--color-foreground"],
+      }),
+    });
   });
   it("keeps the default Android unfilled track distinguishable from the card", () => {
     const theme = createWidgetTheme("system", {
@@ -273,7 +261,7 @@ describe("subscription widget snapshots", () => {
     expect(contrastRatio(theme.dark.track, theme.dark.background)).toBeGreaterThanOrEqual(1.3);
     expect(contrastRatio(theme.light.track, theme.light.background)).toBeGreaterThanOrEqual(1.3);
   });
-  it("expires providers independently without inventing a refill", () => {
+  it("keeps readings that are past a reset or older than fifteen minutes", () => {
     const snapshot = buildSubscriptionUsageSnapshot(
       presentations([
         provider(),
@@ -285,27 +273,46 @@ describe("subscription widget snapshots", () => {
       ]),
       deepLink,
     );
-    const timeline = subscriptionUsageTimeline(snapshot, now);
-    expect(timeline.map((entry) => entry.date.getTime())).toEqual([
-      now,
-      now + 10 * 60_000,
-      now + 15 * 60_000,
-    ]);
-    expect(timeline[1]?.props.providers[0]?.windows).toEqual([]);
-    expect(timeline[1]?.props.providers[1]?.windows[0]?.remaining).toBe(60);
-    expect(timeline[2]?.props.providers.every((provider) => provider.windows.length === 0)).toBe(
-      true,
-    );
+    expect(snapshot.providers.map((provider) => provider.windows[0]?.remaining)).toEqual([60, 60]);
+    expect(snapshot.providers[1]?.windows[0]?.reset).toBe("Reset time unavailable");
   });
-  it("marks a malformed check time immediately stale without storing null", () => {
+  it("keeps a malformed check time's limits without storing null", () => {
     const snapshot = buildSubscriptionUsageSnapshot(
       presentations([provider({ usageLimits: { ...limits, checkedAt: "invalid" } })]),
       deepLink,
     );
     expect(snapshot.checkedAt).toBe(0);
-    expect(snapshot.providers[0]).toMatchObject({ expiresAt: 0, windows: [] });
-    expect(subscriptionUsageTimeline(snapshot, now)).toHaveLength(1);
+    expect(snapshot.providers[0]?.windows).toHaveLength(1);
     expect(JSON.stringify(snapshot)).not.toContain("null");
+  });
+  it("keeps the provider-wide weekly ahead of a tighter model-scoped weekly", () => {
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([
+        provider({
+          usageLimits: {
+            checkedAt,
+            windows: [
+              window,
+              { ...window, id: "seven_day", kind: "weekly", label: "Weekly", usedPercent: 30 },
+              {
+                ...window,
+                id: "seven_day_fable",
+                kind: "weekly",
+                label: "Weekly · Fable",
+                usedPercent: 90,
+              },
+            ],
+          },
+        }),
+      ]),
+      deepLink,
+      2,
+    );
+    expect(snapshot.providers[0]?.windows.map((window) => window.label)).toEqual([
+      "5 hours",
+      "Weekly",
+    ]);
+    expect(snapshot.providers[0]?.checkedAt).toBe(now);
   });
   it("uses the freshest copy of an account across environments before pooling", () => {
     const input = presentations();
@@ -325,6 +332,58 @@ describe("subscription widget snapshots", () => {
     const snapshot = buildSubscriptionUsageSnapshot(input, deepLink);
     expect(snapshot.providers[0]?.detail).toBe("Subscription remaining");
     expect(snapshot.providers[0]?.windows[0]?.remaining).toBe(20);
+  });
+});
+
+describe("keeping the last widget limits", () => {
+  const codex = buildSubscriptionUsageSnapshot(presentations(), deepLink);
+  const claude = provider({
+    instanceId: ProviderInstanceId.make("claude"),
+    driver: ProviderDriverKind.make("claudeAgent"),
+  });
+
+  it("skips publishing when no provider has limits", () => {
+    expect(keepLastLimits(codex, buildSubscriptionUsageSnapshot(new Map(), deepLink))).toBe(
+      undefined,
+    );
+    expect(
+      keepLastLimits(
+        undefined,
+        buildSubscriptionUsageSnapshot(
+          presentations([provider({ usageLimits: undefined })]),
+          deepLink,
+        ),
+      ),
+    ).toBe(undefined);
+  });
+
+  it("carries a provider's last limits while its new reading is missing", () => {
+    const later = new Date(now + 60_000).toISOString();
+    const next = buildSubscriptionUsageSnapshot(
+      presentations([
+        provider({ usageLimits: undefined }),
+        { ...claude, usageLimits: { checkedAt: later, windows: [window] } },
+      ]),
+      deepLink,
+    );
+    const published = keepLastLimits(codex, next);
+    expect(
+      published?.providers.map((provider) => [provider.name, provider.windows.length]),
+    ).toEqual([
+      ["Codex", 1],
+      ["Claude", 1],
+    ]);
+    // The footer time reflects the older carried reading.
+    expect(published?.checkedAt).toBe(now);
+  });
+
+  it("drops a provider the user disabled and replaces limits with newer ones", () => {
+    const next = buildSubscriptionUsageSnapshot(
+      presentations([provider({ enabled: false }), claude]),
+      deepLink,
+    );
+    expect(next.providers.map((provider) => provider.name)).toEqual(["Claude"]);
+    expect(keepLastLimits(codex, next)).toEqual(next);
   });
 });
 
