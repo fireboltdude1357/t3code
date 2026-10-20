@@ -1,5 +1,6 @@
 // Fork: builds update from the fork's own releases (docs/operations/fork-nightly.md).
 const CLI_RELEASE_REPOSITORY = "fireboltdude1357/t3code";
+export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
