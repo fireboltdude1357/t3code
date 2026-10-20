@@ -212,6 +212,7 @@ export default defineConfig({
         files: [
           "apps/web/src/components/settings/ConnectionsSettings.tsx",
           "apps/mobile/src/features/updates/app-updates.ts",
+          "apps/mobile/src/features/voice-session/voiceSessionController.ts",
           "apps/web/src/components/device/DevicePhoneViewport.tsx",
           "apps/web/src/components/device/DeviceDuoViewport.tsx",
         ],
@@ -242,6 +243,12 @@ export default defineConfig({
       },
       {
         files: ["apps/server/src/mcp/McpHttpServer.ts"],
+        rules: { "t3code/no-raw-mcp-registration": "off" },
+      },
+      {
+        // The voice sidecar runs its own MCP server, outside T3's McpToolAccess;
+        // its auth middleware resolves each caller to a voice session.
+        files: ["apps/voice/src/Http.ts", "apps/voice/src/mcp/handlers.ts"],
         rules: { "t3code/no-raw-mcp-registration": "off" },
       },
       {
