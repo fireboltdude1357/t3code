@@ -6,12 +6,29 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { getMobileThemeRuntimeVariables } from "../lib/mobileThemeVariables";
+import { createWidgetTheme } from "./widgetTheme";
 import {
+  type SubscriptionUsageSnapshot,
   buildSubscriptionUsageSnapshot,
   createWidgetRefresher,
   keepLastLimits,
   WIDGET_REFRESH_INTERVAL,
 } from "./subscriptionUsageSnapshot";
+
+function contrastRatio(first: string, second: string) {
+  const luminance = (color: string) => {
+    if (!/^#[0-9a-f]{6}(?:ff)?$/i.test(color)) throw new Error(`Expected opaque hex: ${color}`);
+    const linear = [1, 3, 5].map((offset) => {
+      const channel = Number.parseInt(color.slice(offset, offset + 2), 16) / 255;
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * linear[0]! + 0.7152 * linear[1]! + 0.0722 * linear[2]!;
+  };
+  const a = luminance(first);
+  const b = luminance(second);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
 
 const checkedAt = "2026-09-05T12:00:00.000Z";
 const now = Date.parse(checkedAt);
@@ -212,6 +229,37 @@ describe("subscription widget snapshots", () => {
     expect(snapshot.providers[0]?.windows.map((window) => window.remaining)).toEqual(
       Array.from({ length: 20 }, (_, index) => 5 + index * 5),
     );
+  });
+  it("keeps the saved appearance on the snapshot it publishes", () => {
+    const light = getMobileThemeRuntimeVariables("t3-chat", "light", "ios");
+    const dark = getMobileThemeRuntimeVariables("t3-code", "dark", "ios");
+    const snapshot: SubscriptionUsageSnapshot = JSON.parse(
+      JSON.stringify({
+        ...buildSubscriptionUsageSnapshot(presentations(), deepLink),
+        theme: createWidgetTheme("dark", { light, dark }),
+      }),
+    );
+    const published = keepLastLimits(undefined, snapshot);
+    expect(published?.providers[0]?.windows[0]?.remaining).toBe(60);
+    expect(JSON.parse(JSON.stringify(published)).theme).toEqual({
+      mode: "dark",
+      light: expect.objectContaining({
+        background: light["--color-card"],
+        foreground: light["--color-foreground"],
+      }),
+      dark: expect.objectContaining({
+        background: dark["--color-card"],
+        foreground: dark["--color-foreground"],
+      }),
+    });
+  });
+  it("keeps the default Android unfilled track distinguishable from the card", () => {
+    const theme = createWidgetTheme("system", {
+      light: getMobileThemeRuntimeVariables("t3-code", "light", "android"),
+      dark: getMobileThemeRuntimeVariables("t3-code", "dark", "android"),
+    });
+    expect(contrastRatio(theme.dark.track, theme.dark.background)).toBeGreaterThanOrEqual(1.3);
+    expect(contrastRatio(theme.light.track, theme.light.background)).toBeGreaterThanOrEqual(1.3);
   });
   it("keeps readings that are past a reset or older than fifteen minutes", () => {
     const snapshot = buildSubscriptionUsageSnapshot(
