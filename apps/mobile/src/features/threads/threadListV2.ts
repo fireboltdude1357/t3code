@@ -800,6 +800,7 @@ export function buildThreadListV2Items(input: {
       variant: "card",
       snoozed: false,
       pinned: false,
+      wokeAt: resolveThreadListV2WokeAt(thread, { now }),
       isLast: false,
     });
   }

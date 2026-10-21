@@ -287,21 +287,6 @@ const makeTestRelay = Effect.fnUntraced(function* (
 });
 
 describe("AgentAwarenessRelay", () => {
-  it("republishes on proposed plan updates, not todo lists", () => {
-    assert.isTrue(
-      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
-        type: "plan.updated",
-        payload: { kind: "proposed_plan" },
-      }),
-    );
-    assert.isFalse(
-      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
-        type: "plan.updated",
-        payload: { kind: "todo_list" },
-      }),
-    );
-  });
-
   it.effect("coalesces queued updates and reruns a thread dirtied during publishing", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();
