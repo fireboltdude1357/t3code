@@ -57,12 +57,21 @@ history for that message. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
-To compact before the cache expires instead, turn on **Settings → General →
-Compact before cache expires**. A large idle thread then gets `/compact` shortly
-before its cache runs out, while the summary is still cheap to write, so coming
-back later re-reads the summary instead of the full history. It applies to
-Claude and Codex threads using at least the chosen context size (150k tokens by
-default) and skips snoozed, settled, and archived threads.
+**Compact idle threads** in **Settings > General** controls this for threads
+over 200,000 tokens. Each Claude provider's settings can override it:
+
+- **When you return** shows the **Compact** chip described above. This is the default.
+- **Before the cache expires (beta)** compacts an idle thread shortly before its
+  prompt cache expires, so coming back does not reprocess the whole conversation.
+  The compaction appears in the thread as a `/compact` turn sent by T3 Code.
+- **Never** skips idle compaction and Claude's resume prompt. **Auto-compact after**
+  still applies, and you can still compact by hand.
+
+**Compact before cache expires** in **Settings > General** is a separate setting
+that also covers Codex threads. It sends `/compact` to idle threads using at
+least the chosen context size (150k tokens by default) shortly before their
+cache runs out, keeps working across server restarts, and skips snoozed,
+settled, and archived threads.
 
 ## Usage limits
 
