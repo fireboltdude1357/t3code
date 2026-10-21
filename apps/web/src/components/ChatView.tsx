@@ -328,6 +328,7 @@ import {
   useThreadVisibleTurnItems,
   useThreadCheckpointSummaries,
   readThreadShell,
+  readThreadShells,
   waitForThreadShell,
 } from "../state/entities";
 import { environmentShell, useEnvironmentShellHasSnapshot } from "../state/shell";
@@ -3821,9 +3822,16 @@ export default function ChatView(props: ChatViewProps) {
   const openRelatedThreadGenerationRef = useRef(0);
   const onOpenRelatedThread = async (threadId: ThreadId) => {
     const generation = ++openRelatedThreadGenerationRef.current;
-    const threadRef = scopeThreadRef(environmentId, threadId);
+    // Related threads live here, except a message Home sent from another environment.
+    const shells = readThreadShells();
+    const owner = shells.some(
+      (shell) => shell.environmentId === environmentId && shell.id === threadId,
+    )
+      ? environmentId
+      : (shells.find((shell) => shell.id === threadId)?.environmentId ?? environmentId);
+    const threadRef = scopeThreadRef(owner, threadId);
     const isEnvironmentLive = () =>
-      appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live";
+      appAtomRegistry.get(environmentShell.stateValueAtom(owner)).status === "live";
     // A just-launched child can reach this timeline before its shell syncs.
     if (isEnvironmentLive() && readThreadShell(threadRef) === null) {
       const location = router.latestLocation;
