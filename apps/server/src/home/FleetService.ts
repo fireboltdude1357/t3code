@@ -160,15 +160,21 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(threadManagementFailure));
 
   const handlers: Handlers = {
-    capabilities: () =>
+    capabilities: (input) =>
       Effect.gen(function* () {
         const providers = yield* providerRegistry.getProviders;
         const capable = new Set<string>(yield* adapters.list());
-        const modelPreferences = yield* settings.getSettings.pipe(
-          Effect.map((current) => current.providerModelPreferences ?? {}),
-          Effect.mapError(orchestrationError),
-        );
-        return { providers: providerCapabilities(providers, capable, modelPreferences) };
+        const current = yield* settings.getSettings.pipe(Effect.mapError(orchestrationError));
+        return {
+          providers: providerCapabilities({
+            providers,
+            orchestrationCapableInstanceIds: capable,
+            settings: current,
+            // Home's own model lives in another environment, so nothing is pinned for it.
+            inherited: undefined,
+            search: input.search,
+          }),
+        };
       }),
 
     "projects.list": (input) =>
