@@ -57,7 +57,7 @@ GitHub disabled Actions on the fork on 2026-10-14, so the build runs on Tanner's
 
 `fork-build.sh --no-publish` builds without publishing, and `--force` rebuilds unchanged inputs. The bundle build copies `.env.example` to `.env`, so fork builds use upstream's relay and Clerk instance and T3 Connect works as it does on stock builds.
 
-Git merges `pnpm-lock.yaml` as text, so a patch's lockfile entries can keep a version upstream has since bumped in the catalog. The build installs with `--no-frozen-lockfile`, which re-resolves only those entries, and logs how the lockfile changed.
+Git merges `pnpm-lock.yaml` as text, so a patch's lockfile entries can keep a version upstream has since bumped in the catalog, or point at a package entry upstream has replaced. The build installs with `--no-frozen-lockfile --fix-lockfile`, which re-resolves those entries, and logs how the lockfile changed. pnpm 12 fails on a replaced entry without `--fix-lockfile`.
 
 After the Linux leg, the Windows host under stl-wsl builds the unsigned Windows x64 NSIS installer (`win-build.sh`), with that run's Linux CLI archive embedded as its WSL runtime. The Windows app updates from the release's `nightly.yml`. Fork Windows builds have no Authenticode signature, so check an installer's SHA-512 against `nightly.yml`.
 
