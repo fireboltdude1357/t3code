@@ -1,5 +1,11 @@
 import { findRevealRef } from "./markdownFindContext";
-import { type MessageId, type ServerProviderSkill, ThreadId } from "@t3tools/contracts";
+import {
+  isHomeReportMessageId,
+  isHomeThreadId,
+  type MessageId,
+  type ServerProviderSkill,
+  ThreadId,
+} from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
 import { useEnvironmentQuery } from "../../state/query";
@@ -380,7 +386,14 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      {userMessage.attribution === "t3code" ? (
+      {isHomeReportMessageId(row.message.id) ? (
+        <p
+          className="me-1 text-2xs text-muted-foreground/70"
+          data-user-message-attribution="home-report"
+        >
+          Watch report from T3 Code
+        </p>
+      ) : userMessage.attribution === "t3code" ? (
         <p
           className="me-1 text-2xs text-muted-foreground/70"
           data-user-message-attribution="t3code"
@@ -395,7 +408,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
               tone="muted"
               aria-label="Open sending thread"
             >
-              Sent by another agent
+              {isHomeThreadId(senderThreadId) ? "Sent by Home" : "Sent by another agent"}
             </InlineButton>
           ) : (
             "Sent by another agent"
