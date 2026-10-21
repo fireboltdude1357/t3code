@@ -17663,6 +17663,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const NESTED_TOOL_USE_ID = "toolu-steer-nested";
           const FINISHED_TOOL_USE_ID = "toolu-steer-finished";
           const calls: Array<string> = [];
+          const backgroundRequested = yield* Deferred.make<void>();
           let beforeAnswer: Effect.Effect<void> = Effect.void;
           // Each steer scans the Claude config dir for skills with real file
           // reads. An empty one keeps that scan inside the simulated clock
@@ -17671,10 +17672,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const claudeConfigDir = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "t3-claude-v2-steer-",
           });
+          const lateAnswer = yield* Deferred.make<void>();
           const harness = yield* makeWakeHarnessWithOptions({
             environment: { CLAUDE_CONFIG_DIR: claudeConfigDir },
             backgroundTasks: (toolUseId) =>
               Effect.sync(() => calls.push(toolUseId)).pipe(
+                Effect.andThen(Deferred.succeed(backgroundRequested, undefined)),
                 Effect.andThen(
                   backgrounding === "answers after the turn ended" ||
                     backgrounding === "answers after the subagent ran again"
@@ -17689,7 +17692,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                       : backgrounding === "never answers"
                         ? Effect.never
                         : backgrounding === "answers after the steer went out"
-                          ? Effect.sleep("6 seconds").pipe(Effect.as(true))
+                          ? Deferred.await(lateAnswer).pipe(Effect.as(true))
                           : Effect.succeed(true),
                 ),
               ),
@@ -17842,12 +17845,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 ),
               );
           }
-          const steering = yield* Effect.forkScoped(steer);
+          // Started at once so the steer reads its backgrounding deadline before
+          // this test moves the clock. Its message is built with real file I/O,
+          // so a scheduled start could read the clock after the moves below.
+          const steering = yield* Effect.forkScoped(steer, { startImmediately: true });
           if (
             backgrounding === "never answers" ||
             backgrounding === "answers after the steer went out"
           ) {
-            yield* awaitUntil(() => calls.length === 1, "background request");
+            yield* Deferred.await(backgroundRequested);
             assert.equal(harness.offeredMessages.length, offered);
             yield* TestClock.adjust("5 seconds");
           }
@@ -17864,18 +17870,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(harness.offeredMessages.at(-1)?.priority, "now");
           if (backgrounding === "never answers") {
             for (let repeat = 1; repeat <= 2; repeat++) {
-              const again = yield* Effect.forkScoped(steer);
-              for (let tick = 0; tick < 100 && again.pollUnsafe() === undefined; tick++) {
-                yield* TestClock.adjust("1 second");
-                yield* Effect.yieldNow;
-              }
+              const again = yield* Effect.forkScoped(steer, { startImmediately: true });
+              yield* TestClock.adjust("5 seconds");
               assert.isTrue(Exit.isSuccess(yield* Fiber.await(again)));
               assert.equal(harness.offeredMessages.length, offered + 1 + repeat);
             }
             assert.deepEqual(calls, [FOREGROUND_TOOL_USE_ID]);
           }
           if (backgrounding === "answers after the steer went out") {
-            yield* TestClock.adjust("1 second");
+            yield* Deferred.succeed(lateAnswer, undefined);
           } else if (
             backgrounding !== "succeeds" &&
             backgrounding !== "answers after the subagent ran again"
