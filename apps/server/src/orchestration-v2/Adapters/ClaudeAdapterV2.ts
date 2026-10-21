@@ -220,11 +220,21 @@ function claudeAutoCompactThreshold(autoCompactWindow: string, maxTokens: number
     : {};
 }
 
-function claudeMessageInputTokens(usage: {
+interface ClaudeUsageCounters {
   readonly input_tokens: number;
   readonly cache_creation_input_tokens?: number | null;
   readonly cache_read_input_tokens?: number | null;
-}): number {
+  readonly output_tokens: number;
+}
+
+// Mirrors the SDK's BetaIterationsUsage entries. Only "message" entries are
+// the executor's own sampling passes; "advisor_message" and "compaction"
+// entries are side inferences with their own context.
+interface ClaudeUsageIteration extends ClaudeUsageCounters {
+  readonly type: string;
+}
+
+function claudeMessageInputTokens(usage: Omit<ClaudeUsageCounters, "output_tokens">): number {
   return (
     usage.input_tokens +
     (usage.cache_creation_input_tokens ?? 0) +
@@ -232,33 +242,42 @@ function claudeMessageInputTokens(usage: {
   );
 }
 
+/**
+ * Maps one root request's usage onto the provider turn. Top-level usage sums
+ * every pass of a server-side tool loop, so the context size comes from the
+ * last sampling iteration when Claude reports iterations.
+ * `knownPromptCacheTtlMs` is the TTL learned earlier in the turn, kept when
+ * this response only read the cache.
+ */
 export function claudeProviderTurnTokenUsage(
-  usage: {
-    readonly input_tokens: number;
-    readonly cache_creation_input_tokens?: number | null;
-    readonly cache_read_input_tokens?: number | null;
+  usage: ClaudeUsageCounters & {
     readonly cache_creation?: ClaudeCacheCreation | null;
-    readonly output_tokens: number;
+    readonly iterations?: ReadonlyArray<ClaudeUsageIteration> | null;
   },
   modelSelection: ModelSelection,
   updatedAt: string,
   autoCompactWindow = "",
   requestedAt?: DateTime.Utc,
+  knownPromptCacheTtlMs?: number,
 ) {
-  const inputTokens = claudeMessageInputTokens(usage);
-  const outputTokens = usage.output_tokens;
-  const promptCacheTtlMs = claudePromptCacheTtlMs(usage.cache_creation);
+  const context = usage.iterations?.findLast((iteration) => iteration.type === "message") ?? usage;
+  const inputTokens = claudeMessageInputTokens(context);
+  const outputTokens = context.output_tokens;
+  const revealedPromptCacheTtlMs = claudePromptCacheTtlMs(usage.cache_creation);
+  const promptCacheTtlMs = revealedPromptCacheTtlMs ?? knownPromptCacheTtlMs;
   const maxTokens = claudeContextWindow(modelSelection);
   // The cache lifetime starts with the request, not when its response ends.
+  // Only a TTL this response revealed dates the expiry; a cache-only read
+  // leaves it unknown.
   const promptCacheExpiresAt =
-    promptCacheTtlMs === undefined || requestedAt === undefined
+    revealedPromptCacheTtlMs === undefined || requestedAt === undefined
       ? undefined
-      : DateTime.formatIso(DateTime.add(requestedAt, { milliseconds: promptCacheTtlMs }));
+      : DateTime.formatIso(DateTime.add(requestedAt, { milliseconds: revealedPromptCacheTtlMs }));
   return {
     usedTokens: inputTokens + outputTokens,
     maxTokens,
     inputTokens,
-    cachedInputTokens: usage.cache_read_input_tokens ?? 0,
+    cachedInputTokens: context.cache_read_input_tokens ?? 0,
     outputTokens,
     reasoningOutputTokens: 0,
     ...(promptCacheTtlMs === undefined ? {} : { promptCacheTtlMs }),
@@ -279,6 +298,7 @@ function mergeClaudeStreamUsage(
     readonly cache_creation_input_tokens?: number | null;
     readonly cache_read_input_tokens?: number | null;
     readonly output_tokens: number;
+    readonly iterations?: ReadonlyArray<ClaudeUsageIteration> | null;
   },
 ): ClaudeMessageUsage {
   return {
@@ -289,6 +309,7 @@ function mergeClaudeStreamUsage(
     cache_read_input_tokens:
       delta.cache_read_input_tokens ?? current.cache_read_input_tokens ?? null,
     output_tokens: delta.output_tokens,
+    iterations: delta.iterations ?? current.iterations ?? null,
   };
 }
 export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROVIDER);
@@ -3382,6 +3403,9 @@ interface ActiveClaudeTurnContext {
     readonly type: string | null;
     readonly resetAt: string | null;
   } | null;
+  // Last prompt cache TTL a root response revealed. Responses that only read
+  // the cache carry it forward, since the projection replaces tokenUsage.
+  promptCacheTtlMs: number | undefined;
   // Set while this turn's latest compaction status reports a failure, with
   // Claude's error text when it sent one.
   compactionFailure: { readonly message: string | undefined } | null;
@@ -4272,8 +4296,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             DateTime.formatIso(now),
             adapterOptions.settings.autoCompactWindow,
             context.streamUsage?.requestedAt,
+            context.promptCacheTtlMs,
           );
           if (tokenUsage.inputTokens <= 0) return;
+          context.promptCacheTtlMs = tokenUsage.promptCacheTtlMs;
           yield* emitProviderEvent({
             type: "provider_turn.updated",
             driver: CLAUDE_PROVIDER,
@@ -9437,6 +9463,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               rejectedRateLimitTypes: new Set(),
               rateLimitResetTimes: new Map(),
               latestAssistantRateLimit: null,
+              promptCacheTtlMs: undefined,
               compactionFailure: null,
               steeredSegmentUsage: [],
               subagentsByTaskId: new Map(),
