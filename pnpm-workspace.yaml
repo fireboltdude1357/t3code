@@ -12,7 +12,9 @@ allowBuilds:
   browser-tabs-lock: false
   bufferutil: false
   core-js: false
-  electron: true
+  # No install script since Electron 44; ensure:electron runs install.js.
+  # Keep the key: pnpm fails installs that still record a removed `true`.
+  electron: false
   electron-winstaller: false
   esbuild: true
   msgpackr-extract: true
@@ -71,8 +73,8 @@ catalog:
   tldts: 7.4.2
   typescript: 7.0.2
   undici: 8.11.2
-  vite: npm:@voidzero-dev/vite-plus-core@1.0.0
-  vite-plus: 1.0.0
+  vite: npm:@voidzero-dev/vite-plus-core@1.3.0
+  vite-plus: 1.3.0
   ws: 8.22.0
   yaml: ^2.9.0
   # Markdown pipeline: the server counts find matches with the same parser the
