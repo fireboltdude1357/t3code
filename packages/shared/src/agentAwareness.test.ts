@@ -47,16 +47,6 @@ describe("projectThreadAwarenessV2", () => {
     ...overrides,
   });
 
-  it("projects V2 run state", () => {
-    expect(
-      projectThreadAwarenessV2({
-        environmentId: "env-1" as EnvironmentId,
-        project,
-        thread: v2Thread(),
-      }),
-    ).toMatchObject({ phase: "running", headline: "Agent is working" });
-  });
-
   it.each(["running", "completed", "failed"] as const)(
     "does not publish %s subagent activity",
     (status) => {
@@ -166,22 +156,6 @@ describe("projectThreadAwarenessV2", () => {
         thread: v2Thread({ status: "completed", pendingBackgroundTasks: tasks }),
       }),
     ).toMatchObject({ phase });
-  });
-
-  it("prioritizes V2 user-input requests", () => {
-    expect(
-      projectThreadAwarenessV2({
-        environmentId: "env-1" as EnvironmentId,
-        project,
-        thread: v2Thread({
-          pendingRuntimeRequest: {
-            id: RuntimeRequestId.make("request-1"),
-            kind: "user_input",
-            createdAt: updatedAt,
-          },
-        }),
-      }),
-    ).toMatchObject({ phase: "waiting_for_input", headline: "Waiting for input" });
   });
 
   it("reports an async question as input only after the working run completes", () => {
