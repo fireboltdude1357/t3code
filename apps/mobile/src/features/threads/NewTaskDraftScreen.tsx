@@ -67,7 +67,7 @@ import {
 } from "../../state/composer-attachment-uploads";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
-import { ProviderIcon } from "../../components/ProviderIcon";
+import { ComposerModelControl } from "../../components/ComposerModelControl";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { hasProviderUsageLimits, isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
@@ -134,6 +134,7 @@ import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import {
   resolveNewTaskBranchLabel,
   resolveNewTaskWorkspaceLabel,
+  resolveNewTaskWorkspaceSelection,
 } from "./new-task-context-presentation";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { selectIncomingShareAttachmentsForServer } from "../sharing/incoming-share-model";
@@ -1190,11 +1191,17 @@ export function NewTaskDraftScreen(props: {
         draft.modelSelection ?? null,
         selectedProject.id,
       ) ?? flow.selectedModel;
-    // A project without a workspace choice ignores any saved pick, as the
-    // message builder does, so Start never silently waits on a hidden branch.
-    const workspaceSelection = flow.canChooseWorkspace ? draft.workspaceSelection : undefined;
-    const workspaceMode = workspaceSelection?.mode ?? flow.workspaceMode;
-    const selectedBranchName = workspaceSelection?.branch ?? flow.selectedBranchName;
+    const workspaceSelection = resolveNewTaskWorkspaceSelection({
+      selection: draft.workspaceSelection,
+      fallback: {
+        mode: flow.workspaceMode,
+        branch: flow.selectedBranchName,
+        worktreePath: flow.selectedWorktreePath,
+      },
+      isGitRepo: flow.isGitRepo,
+    });
+    const workspaceMode = workspaceSelection.mode;
+    const selectedBranchName = workspaceSelection.branch;
     const initialMessageText = draft.text.trim();
 
     if (
@@ -1369,7 +1376,8 @@ export function NewTaskDraftScreen(props: {
     !flow.submitting &&
     pendingPastedTextAttachmentCount === 0 &&
     !voiceInput.blocksSubmission &&
-    !(flow.workspaceMode === "worktree" && !flow.selectedBranchName);
+    // Until the repository check answers, a saved worktree selection may belong to a non-git folder.
+    !(flow.workspaceMode === "worktree" && (!flow.selectedBranchName || !flow.isGitRepoKnown));
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     // A draft attachment lives only in the draft. Without its key the screen would fall through
     // to a remote lookup for bytes the server has never seen.
@@ -1556,7 +1564,7 @@ export function NewTaskDraftScreen(props: {
       <ComposerInlineControl
         accessibilityHint={`Switches to ${flow.workspaceMode === "local" ? "a new worktree" : "the current checkout"}`}
         accessibilityLabel={workspaceLabel}
-        disabled={isComposerInteractionLocked || voiceInput.isBusy}
+        disabled={isComposerInteractionLocked || voiceInput.isBusy || !flow.isGitRepo}
         renderIcon={(size) => (
           <NewTaskWorkspaceIcon
             workspaceMode={flow.workspaceMode}
@@ -1573,7 +1581,7 @@ export function NewTaskDraftScreen(props: {
       <ComposerInlineControl
         accessibilityLabel={`${flow.workspaceMode === "worktree" ? "Base branch" : "Branch"}: ${selectedBranchLabel}`}
         chevronDirection="right"
-        disabled={isComposerInteractionLocked}
+        disabled={isComposerInteractionLocked || !flow.isGitRepo}
         icon="arrow.triangle.branch"
         label={showBranchLoading ? "Loading branches…" : selectedBranchLabel}
         maxWidth={190}
@@ -1718,19 +1726,13 @@ export function NewTaskDraftScreen(props: {
                   />
                   <View className="min-w-0 flex-1 flex-row items-center justify-end gap-2">
                     <View className="min-w-0 shrink">
-                      <ComposerInlineControl
-                        accessibilityLabel="Model and reasoning settings"
+                      <ComposerModelControl
+                        modelOption={flow.selectedModelOption}
+                        selection={flow.selectedModel}
+                        provider={flow.selectedProviderStatus?.driver}
+                        prompt={flow.prompt}
+                        surfaceColor={theme["--color-composer-panel"]}
                         disabled={isComposerInteractionLocked}
-                        emphasized
-                        renderIcon={(size) => (
-                          <ProviderIcon
-                            iconUrl={flow.selectedModelOption?.providerIconUrl}
-                            provider={flow.selectedModelOption?.providerDriver}
-                            size={size}
-                          />
-                        )}
-                        label={flow.selectedModelOption?.label ?? "Choose model"}
-                        maxWidth="100%"
                         onPress={settingsSheetPresentation.open}
                       />
                     </View>
