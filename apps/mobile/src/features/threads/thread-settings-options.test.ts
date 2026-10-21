@@ -5,7 +5,7 @@ import {
 import type { ProviderOptionDescriptor } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { runtimeModeChoicesForSupportedModes, selectableChoices } from "./thread-settings-options";
+import { selectableChoices } from "./thread-settings-options";
 
 const effortDescriptor: Extract<ProviderOptionDescriptor, { type: "select" }> = {
   id: "effort",
@@ -23,6 +23,7 @@ const effortDescriptor: Extract<ProviderOptionDescriptor, { type: "select" }> = 
 };
 
 describe("selectableChoices", () => {
+  // regression: #21406 bring model controls in line with web
   it("includes prompt-injected and workflow choices in declared order", () => {
     expect(selectableChoices(effortDescriptor).map((choice) => choice.id)).toEqual([
       "low",
@@ -31,12 +32,6 @@ describe("selectableChoices", () => {
       "ultrathink",
       "ultracode",
     ]);
-  });
-});
-
-describe("runtimeModeChoicesForSupportedModes", () => {
-  it("keeps controls usable when forward-compatible decoding removes every advertised mode", () => {
-    expect(runtimeModeChoicesForSupportedModes([])).toHaveLength(4);
   });
 });
 

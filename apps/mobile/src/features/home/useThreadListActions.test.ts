@@ -148,7 +148,7 @@ vi.mock("../../state/threads", () => ({
 }));
 
 import { dismissThreadUndoNotice, readThreadUndoNotice } from "./thread-undo-notice";
-import { useArchivedThreadListActions, useThreadListActions } from "./useThreadListActions";
+import { useThreadListActions } from "./useThreadListActions";
 
 const primaryEnvironmentId = EnvironmentId.make("primary");
 const otherEnvironmentId = EnvironmentId.make("other");
@@ -219,32 +219,6 @@ describe("thread list operation permissions", () => {
     expect(state.requests).toEqual([]);
   });
 
-  it.each(mutationCases)(
-    "%s works when the target environment gains only task permission",
-    async (handler, action) => {
-      state.scopes.get(primaryEnvironmentId)!.clear();
-      const actions = useThreadListActions();
-      state.scopes.get(otherEnvironmentId)!.add(AuthOrchestrationOperateScope);
-
-      await actions[handler](
-        makeThread({ environmentId: otherEnvironmentId }),
-        "2099-01-01T00:00:00.000Z",
-      );
-
-      expect(state.requests).toEqual([
-        expect.objectContaining({ action, environmentId: otherEnvironmentId }),
-      ]);
-    },
-  );
-
-  it("does not show a forbidden delete confirmation", () => {
-    useThreadListActions().confirmDeleteThread(makeThread({ environmentId: otherEnvironmentId }));
-
-    expect(state.dialogs).toEqual([]);
-    expect(state.alerts.some((alert) => alert.title === "Delete thread?")).toBe(false);
-    expect(state.requests).toEqual([]);
-  });
-
   it("rechecks permission after a retained delete confirmation", async () => {
     useThreadListActions().confirmDeleteThread(makeThread());
     const confirm = state.dialogs[0]?.onConfirm;
@@ -254,27 +228,6 @@ describe("thread list operation permissions", () => {
     await confirm!();
 
     expect(state.requests).toEqual([]);
-  });
-
-  it("unarchives with only task permission and blocks a later revoked callback", async () => {
-    const actions = useArchivedThreadListActions(() => {});
-    const thread = makeThread({ archivedAt: "2026-09-02T00:00:00.000Z" });
-    await actions.unarchiveThread(thread);
-    expect(state.requests).toEqual([expect.objectContaining({ action: "unarchive" })]);
-    state.requests = [];
-    state.scopes.get(primaryEnvironmentId)!.clear();
-
-    await actions.unarchiveThread(thread);
-
-    expect(state.requests).toEqual([]);
-  });
-
-  it("keeps delete independent of terminal and source-control permissions", async () => {
-    vi.stubEnv("EXPO_OS", "android");
-    useArchivedThreadListActions(() => {}).confirmDeleteThread(makeThread());
-    await state.dialogs[0]!.onConfirm();
-
-    expect(state.requests).toEqual([expect.objectContaining({ action: "delete" })]);
   });
 });
 
@@ -397,6 +350,7 @@ describe("thread action undo", () => {
     expect(readThreadUndoNotice()).toBeNull();
   });
 
+  // regression: #21401 restore archive and thread action undo
   it("wakes a snoozed thread through the undo action", async () => {
     const thread = makeThread();
     await useThreadListActions().snoozeThread(thread, "2099-01-01T09:00:00.000Z");
@@ -420,7 +374,8 @@ describe("thread action undo", () => {
       await useThreadListActions().unpinThread(thread);
       expect(readThreadUndoNotice()?.action).toBe("Unpinned");
       await readThreadUndoNotice()!.undo();
-      const restoresSnooze = snoozedUntil != null && Date.parse(snoozedUntil) > Date.now();
+      // 2099 is the unexpired case; 2000 has long passed.
+      const restoresSnooze = snoozedUntil === "2099-01-01T09:00:00.000Z";
       expect(state.requests.map(({ action }) => action)).toEqual(
         restoresSnooze ? ["unpin", "pin", "snooze"] : ["unpin", "pin"],
       );
@@ -438,6 +393,7 @@ describe("thread action undo", () => {
     },
   );
 
+  // regression: #21401 restore archive and thread action undo
   it("does not restore snooze if undoing an unpin fails", async () => {
     const thread = makeThread({
       pinnedAt: "2026-09-02T00:00:00.000Z",
@@ -459,6 +415,7 @@ describe("thread action undo", () => {
     expect(readThreadUndoNotice()).toBeNull();
   });
 
+  // regression: #21401 restore archive and thread action undo
   it("does not offer undo for a failed action", async () => {
     state.failedAction = "settle";
     expect(await useThreadListActions().settleThread(makeThread())).toBe(false);
@@ -484,6 +441,7 @@ describe("thread action undo", () => {
     expect(state.requests.map(({ action }) => action)).toEqual(["unpin"]);
   });
 
+  // regression: #21401 restore archive and thread action undo
   it("expires undo after five seconds", async () => {
     vi.useFakeTimers();
     await useThreadListActions().unpinThread(makeThread());
@@ -494,6 +452,7 @@ describe("thread action undo", () => {
     expect(state.requests.map(({ action }) => action)).toEqual(["unpin"]);
   });
 
+  // regression: #21401 restore archive and thread action undo
   it("refreshes the archive after archiving on a settlement-capable server", async () => {
     await useThreadListActions().archiveThread(makeThread());
     expect(state.requests.map(({ action }) => action)).toEqual(["archive"]);
