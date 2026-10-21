@@ -14,6 +14,7 @@ export function useThreadListV2ShelfPreferences() {
   const workingShelfEnabled = loaded && preferencesResult.value.workingShelfEnabled === true;
   const workingShelfExpanded =
     loaded && preferencesResult.value.threadListWorkingShelfExpanded === true;
+  const botShelfExpanded = loaded && preferencesResult.value.threadListBotShelfExpanded === true;
 
   // A transform reads the optimistic value, so two presses before the next
   // render still toggle twice instead of writing the same value.
@@ -41,13 +42,23 @@ export function useThreadListV2ShelfPreferences() {
       }),
     });
   };
+  const toggleBotShelf = () => {
+    if (!loaded) return;
+    savePreferences({
+      transform: (current) => ({
+        threadListBotShelfExpanded: current.threadListBotShelfExpanded !== true,
+      }),
+    });
+  };
 
   return {
     loaded,
+    botShelfExpanded,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
+    toggleBotShelf,
     toggleSettledShelf,
     toggleSnoozedShelf,
     toggleWorkingShelf,
