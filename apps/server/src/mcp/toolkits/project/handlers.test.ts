@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  threadBotName,
   type OrchestrationV2ThreadShell,
   type Project as ProjectRecord,
 } from "@t3tools/contracts";
@@ -34,6 +35,89 @@ import * as FleetService from "../../../home/FleetService.ts";
 import * as HomeService from "../../../home/HomeService.ts";
 import { notHomeLayer } from "../../../home/HomeTestkit.ts";
 import { ProjectToolkit } from "./tools.ts";
+
+it.effect("marks threads a bot launches, and the threads its threads launch", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const modelSelection = { instanceId: providerInstanceId, model: "gpt-5" };
+    const launchFrom = (callerId: string, bot?: string | null) =>
+      Effect.gen(function* () {
+        const caller = {
+          id: ThreadId.make(callerId),
+          projectId,
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          activeRunId: "active-run",
+          archivedAt: null,
+          deletedAt: null,
+          lineage: {
+            rootThreadId: ThreadId.make(callerId),
+            parentThreadId: null,
+            relationshipToParent: null,
+          },
+        } as OrchestrationV2ThreadShell;
+        const layerDependencies = Layer.mergeAll(
+          ServerSettings.layerTest(),
+          NodeCrypto.layer,
+          notHomeLayer,
+          Layer.succeed(McpInvocationContext.McpInvocationContext, {
+            environmentId: EnvironmentId.make("environment"),
+            requestNamespace: "session",
+            thread: { threadId: caller.id, providerSessionId: "session", providerInstanceId },
+            client: undefined,
+            issuedAt: 0,
+            capabilities: new Set(["orchestration" as const]),
+          }),
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: () => Effect.succeed(caller),
+          }),
+          Layer.mock(ThreadLaunch.ThreadLaunchService)({
+            launch: (input) =>
+              Effect.succeed({
+                threadId: input.threadId,
+                projection: { thread: { id: input.threadId, projectId, modelSelection }, runs: [] },
+                resumed: false,
+              } as unknown as ThreadLaunch.ThreadLaunchResult),
+          }),
+          Layer.mock(Project.ProjectService)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+          }),
+          Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          NodeServices.layer,
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-bot-launch-" }).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+        );
+        const toolkit = yield* ProjectToolkit.pipe(
+          Effect.provide(
+            McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+              Layer.provide(layerDependencies),
+            ),
+          ),
+        );
+        const result = yield* toolkit
+          .handle("t3_thread_launch", { title: "Fix", ...(bot === undefined ? {} : { bot }) })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
+        const launched = result.at(-1)?.result;
+        return launched !== undefined && "threadId" in launched ? launched.threadId : null;
+      });
+
+    expect(threadBotName((yield* launchFrom("source-thread", "warden")) ?? "")).toBe("warden");
+    expect(threadBotName((yield* launchFrom("bot:warden:parent")) ?? "")).toBe("warden");
+    expect(threadBotName((yield* launchFrom("bot:warden:parent", "ledger")) ?? "")).toBe("ledger");
+    // null asks a bot thread for ordinary work, such as a thread for the user.
+    const optedOut = yield* launchFrom("bot:warden:parent", null);
+    expect(optedOut).not.toBeNull();
+    expect(threadBotName(optedOut ?? "")).toBeNull();
+    const ordinary = yield* launchFrom("source-thread");
+    expect(ordinary).not.toBeNull();
+    expect(threadBotName(ordinary ?? "")).toBeNull();
+  }),
+);
 
 it.effect("makes Home name a project and watches the thread before launching it", () =>
   Effect.gen(function* () {
@@ -130,6 +214,13 @@ it.effect("makes Home name a project and watches the thread before launching it"
     expect(unnamed.at(-1)?.result).toMatchObject({ code: "invalid_request" });
     const own = yield* handle({ title: "Audit", projectId: caller.projectId });
     expect(own.at(-1)?.result).toMatchObject({ code: "invalid_request" });
+    // Home launches for the user, never as a bot.
+    const asBot = yield* handle({
+      title: "Audit",
+      projectId: ProjectId.make("project:app"),
+      bot: "warden",
+    });
+    expect(asBot.at(-1)?.result).toMatchObject({ code: "invalid_request" });
     expect(steps).toEqual([]);
 
     // The watch is saved before the launch, under the id the launch then uses.
