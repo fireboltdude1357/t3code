@@ -10,6 +10,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
+  ProviderThreadId,
   ProviderTurnId,
   RuntimeRequestId,
   ScheduledTaskId,
@@ -165,6 +166,8 @@ it.effect.each([
   ["idle", "run.interrupt"],
   ["idle", "subagent.stop"],
   ["running", "subagent.stop"],
+  ["bound", "subagent.stop"],
+  ["correlated", "subagent.stop"],
   ["archived", "thread.stop"],
   ["missing", "thread.stop"],
   ["running", "thread.stop"],
@@ -177,7 +180,7 @@ it.effect.each([
   ["question", "thread.stop"],
   ["restart", "thread.stop"],
 ] as const)(
-  "Stop clears an orphaned follow-up only when its child is finished (%s via %s)",
+  "Stop clears an orphaned follow-up when its child is finished; its own Stop does unless a run is bound (%s via %s)",
   ([childState, type]) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -278,7 +281,9 @@ it.effect.each([
       const childRunStatus =
         childState === "running" || childState === "queued" || childState === "waiting"
           ? childState
-          : "completed";
+          : childState === "bound"
+            ? "running"
+            : "completed";
       yield* apply({
         type: "run.updated",
         threadId: childThreadId,
@@ -298,12 +303,14 @@ it.effect.each([
           ...runAtStart,
           status: childRunStatus,
           completedAt: childRunStatus === "completed" ? now : null,
-          ...(childState === "correlated" ? { delegatedTaskId: taskId } : {}),
+          ...(childState === "correlated" || childState === "bound"
+            ? { delegatedTaskId: taskId }
+            : {}),
         },
       });
       assert.equal(
         (yield* orchestrator.getThreadProjection(childThreadId)).runs[0]?.delegatedTaskId,
-        childState === "correlated" ? taskId : undefined,
+        childState === "correlated" || childState === "bound" ? taskId : undefined,
       );
       if (childState === "provider-active" || childState === "roster") {
         yield* apply({
@@ -437,7 +444,13 @@ it.effect.each([
         (after.thread.pullRequests ?? []).filter((link) => link.watch !== undefined),
         type === "subagent.stop" ? 1 : 0,
       );
-      const expected = childState === "idle" || childState === "archived" ? "cancelled" : "running";
+      // A task with a bound run, live or ended, keeps its settlement path.
+      const expected =
+        childState === "bound" || childState === "correlated"
+          ? "running"
+          : type === "subagent.stop" || childState === "idle" || childState === "archived"
+            ? "cancelled"
+            : "running";
       assert.equal(after.subagents.find((task) => task.id === taskId)?.status, expected);
       assert.equal(after.nodes.find((node) => node.id === taskId)?.status, expected);
       assert.equal(after.turnItems.find((item) => item.id === itemId)?.status, expected);
@@ -467,6 +480,28 @@ it.effect.each([
         assert.equal(repeated.subagents.find((task) => task.id === taskId)?.status, "cancelled");
         assert.deepEqual(repeated.messages, after.messages);
         assert.deepEqual(repeated.contextTransfers, after.contextTransfers);
+        if (type === "subagent.stop") {
+          // A client that missed the cancel, such as one resumed from an older cache, still
+          // shows the task as running. Its Stop gets the ended task back.
+          const eventStore = yield* EventStore.EventStoreV2;
+          const afterSequence = yield* eventStore.latestSequence({ threadId: parentThreadId });
+          yield* orchestrator.dispatch({
+            ...stop,
+            commandId: CommandId.make(`stop-orphan-stale-client:${childState}`),
+            type,
+            runId: original.runId!,
+            subagentId: taskId,
+          });
+          const resent = yield* eventStore
+            .read({ threadId: parentThreadId, afterSequence })
+            .pipe(Stream.runCollect);
+          assert.deepEqual(
+            resent.flatMap(({ event }) =>
+              event.type === "subagent.updated" ? [event.payload.status] : [],
+            ),
+            ["cancelled"],
+          );
+        }
       }
     }).pipe(Effect.provide(layerTest)),
 );
@@ -723,6 +758,62 @@ it.effect(
         threadId,
       });
       assert.lengthOf(again.storedEvents, 0);
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each([false, true])(
+  "a completed watch records whether it ended through Stop (%s)",
+  (stopped) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make(`thread:watch-completion:${stopped}`);
+      yield* createWatchingThread(threadId, 7);
+      yield* send(threadId, "watch", "start_immediately");
+      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const completedRun = {
+        ...run,
+        providerThreadId: run.providerThreadId ?? ProviderThreadId.make("provider-thread:watch"),
+        status: "completed" as const,
+        startedAt: now,
+        completedAt: now,
+      };
+      yield* projections.apply({
+        id: EventId.make("event:watch-completed"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: completedRun,
+      });
+      assert.isFalse((yield* projections.getThreadShell(threadId))?.latestRunStopRequested);
+
+      yield* orchestrator.dispatch(
+        stopped
+          ? { type: "thread.stop", commandId: CommandId.make("stop-watch"), threadId }
+          : {
+              type: "thread.pull-request.watch",
+              commandId: CommandId.make("finish-watch"),
+              threadId,
+              ...pullRequest(7),
+              watching: false,
+            },
+      );
+      const shell = yield* projections.getThreadShell(threadId);
+      const snapshot = (yield* projections.getShellSnapshot()).threads.find(
+        (thread) => thread.id === threadId,
+      );
+      const memoryShell = ProjectionStore.threadShellFromProjection(
+        yield* orchestrator.getThreadProjection(threadId),
+      );
+      for (const result of [shell, snapshot, memoryShell]) {
+        assert.equal(result?.status, "completed");
+        assert.isEmpty(result?.pendingBackgroundTasks ?? []);
+        assert.equal(result?.latestRunStopRequested, stopped);
+      }
+
+      yield* send(threadId, "next", "start_immediately");
+      assert.isFalse((yield* projections.getThreadShell(threadId))?.latestRunStopRequested);
     }).pipe(Effect.provide(layerTest)),
 );
 
