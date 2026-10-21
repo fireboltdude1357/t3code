@@ -8,6 +8,7 @@ import {
   ThreadId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as DateTime from "effect/DateTime";
@@ -59,7 +60,7 @@ const shell = (
     ...overrides,
   }) as unknown as OrchestrationV2ThreadShell;
 
-const setup = () => {
+const setup = (providers: ReadonlyArray<ServerProvider> = []) => {
   const dispatched: Array<OrchestrationV2ServerCommand> = [];
   const layer = FleetService.layer.pipe(
     Layer.provide(
@@ -79,8 +80,10 @@ const setup = () => {
             Effect.succeed(candidate === "/home" || candidate.startsWith("/home/")),
         }),
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(providers) }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed(providers.map((provider) => provider.instanceId)),
+        }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) => Effect.succeed(shell(id, "a", 1)),
           getShellSnapshot: () =>
@@ -277,5 +280,26 @@ it.effect("only launches with a Home launch id it was given", () => {
       })
       .pipe(Effect.asVoid, Effect.flip);
     expect(error.code).toBe("invalid_request");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("lists another environment's models matching Home's search", () => {
+  const model = (slug: string) => ({ slug, name: slug, isCustom: false, capabilities: null });
+  const { layer } = setup([
+    {
+      instanceId: "opencode",
+      driver: "opencode",
+      models: [model("oc/sonnet-4.6"), model("oc/gpt-6"), model("oc/sonnet-5")],
+    } as unknown as ServerProvider,
+  ]);
+  return Effect.gen(function* () {
+    const fleet = yield* FleetService.FleetService;
+    const result = yield* fleet.execute({
+      actor,
+      request: { op: "capabilities", input: { search: "sonnet" } },
+    });
+    expect(result).toMatchObject({
+      providers: [{ models: [{ id: "oc/sonnet-4.6" }, { id: "oc/sonnet-5" }] }],
+    });
   }).pipe(Effect.provide(layer));
 });
