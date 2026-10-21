@@ -94,6 +94,9 @@ import {
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   WS_METHODS,
+  HomeUnavailableError,
+  HomeWsRpcGroup,
+  WsCoreRpcGroup,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import {
@@ -178,6 +181,9 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import { terminalOutputStream, withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
+import * as FleetBroker from "./home/FleetBroker.ts";
+import * as FleetService from "./home/FleetService.ts";
+import * as HomeService from "./home/HomeService.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -544,6 +550,9 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+// Home's handlers live in their own layer; see HomeWsRpcGroup.
+const ServerWsCoreRpcGroup = WsCoreRpcGroup.middleware(RpcInstrumentation);
+const ServerHomeWsRpcGroup = HomeWsRpcGroup.middleware(RpcInstrumentation);
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -1187,7 +1196,7 @@ export const layerWsRpc = (
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
 ) =>
-  ServerWsRpcGroup.toLayer(
+  ServerWsCoreRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
@@ -1205,6 +1214,7 @@ export const layerWsRpc = (
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
+      const home = yield* HomeService.HomeService;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
@@ -1723,6 +1733,7 @@ export const layerWsRpc = (
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
           }),
           newProjectsRoot: managedFolders.namedProjectsRoot,
+          ...(home.available ? { homeWorkspaceRoot: yield* managedFolders.homeRoot } : {}),
           ...(lastEventLoopStall === undefined ? {} : { lastEventLoopStall }),
         };
       });
@@ -1803,7 +1814,7 @@ export const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = ServerWsCoreRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -2384,7 +2395,9 @@ export const layerWsRpc = (
           serverSettings.getSettings.pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
         [WS_METHODS.serverUpdateSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
-          Effect.fnUntraced(function* ({ patch, providerInstanceMutation }) {
+          Effect.fnUntraced(function* ({ patch: clientPatch, providerInstanceMutation }) {
+            // Home's state changes only through the Home RPCs and Home's tools.
+            const { home: _home, ...patch } = clientPatch;
             const deviceHosts = patch.deviceHosts
               ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
                   Effect.provide(deviceHostContext),
@@ -3131,10 +3144,41 @@ export const WS_RPC_SERVER_OPTIONS = {
   disableFatalDefects: true,
 } as const;
 
+const layerHomeWsRpc = ServerHomeWsRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const home = yield* HomeService.HomeService;
+    const fleet = yield* FleetService.FleetService;
+    const fleetBroker = yield* FleetBroker.FleetBroker;
+    return ServerHomeWsRpcGroup.of({
+      [WS_METHODS.homeEnable]: (input) => home.enable(input),
+      [WS_METHODS.homeDisable]: (_input) => home.disable,
+      [WS_METHODS.homeStartFresh]: (_input) => home.startFresh,
+      [WS_METHODS.fleetInvoke]: (input) => fleet.execute(input),
+      [WS_METHODS.fleetConnect]: (input) =>
+        Stream.unwrap(
+          home.available
+            ? fleetBroker.connect(input)
+            : Effect.fail(
+                new HomeUnavailableError({
+                  message: "Home runs only on a server the T3 Code desktop app hosts.",
+                }),
+              ),
+        ),
+      [WS_METHODS.fleetRespond]: (input) => fleetBroker.respond(input),
+      [WS_METHODS.fleetReportWatchEvents]: (input) => home.report(input),
+    });
+  }),
+);
+
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
+    const homeLayer = Layer.mergeAll(
+      Layer.succeed(HomeService.HomeService, yield* HomeService.HomeService),
+      Layer.succeed(FleetService.FleetService, yield* FleetService.FleetService),
+      Layer.succeed(FleetBroker.FleetBroker, yield* FleetBroker.FleetBroker),
+    );
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -3204,18 +3248,22 @@ export const layer = Layer.unwrap(
           return httpEffect;
         }).pipe(
           Effect.provide(
-            layerWsRpc(
-              session,
-              clientOrigin,
-              clientAnalyticsProps,
-              previewAutomationBroker,
-              serverBrowser,
+            Layer.merge(
+              layerWsRpc(
+                session,
+                clientOrigin,
+                clientAnalyticsProps,
+                previewAutomationBroker,
+                serverBrowser,
+              ),
+              layerHomeWsRpc,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.
               Layer.provide(DefectReporter.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+              Layer.provide(homeLayer),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
