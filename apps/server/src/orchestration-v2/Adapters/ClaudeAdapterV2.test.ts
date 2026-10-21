@@ -1012,6 +1012,35 @@ describe("ClaudeAdapterV2 context usage", () => {
     );
   });
 
+  it("measures context from the last sampling pass of a server-side tool loop", () => {
+    const pass = (input_tokens: number) => ({
+      type: "message",
+      input_tokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 1_000,
+    });
+    const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+      {
+        input_tokens: 183_000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 3_500,
+        iterations: [
+          pass(60_000),
+          pass(61_000),
+          { ...pass(500), type: "advisor_message", output_tokens: 500 },
+          pass(62_000),
+        ],
+      },
+      CLAUDE_TEST_MODEL_SELECTION,
+      "2026-08-29T00:00:00.000Z",
+    );
+
+    assert.strictEqual(usage.usedTokens, 63_000);
+    assert.strictEqual(usage.inputTokens, 62_000);
+  });
+
   it("dates cache expiry from the request start, not the response end", () => {
     const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
       {
@@ -1025,6 +1054,19 @@ describe("ClaudeAdapterV2 context usage", () => {
       DateTime.makeUnsafe("2026-08-29T00:00:00.000Z"),
     );
     assert.strictEqual(usage.promptCacheExpiresAt, "2026-08-29T00:05:00.000Z");
+  });
+
+  it("carries a known cache TTL forward without dating a cache-only read's expiry", () => {
+    const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+      { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 5_000 },
+      CLAUDE_TEST_MODEL_SELECTION,
+      "2026-08-29T00:03:00.000Z",
+      "",
+      DateTime.makeUnsafe("2026-08-29T00:00:00.000Z"),
+      60 * 60_000,
+    );
+    assert.strictEqual(usage.promptCacheTtlMs, 60 * 60_000);
+    assert.strictEqual(usage.promptCacheExpiresAt, undefined);
   });
 });
 
@@ -5471,6 +5513,55 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("measures streamed context from the delta's last sampling pass", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-stream-iterations-usage"),
+          text: "Continue.",
+          attachments: [],
+        }),
+      );
+      const pass = (input_tokens: number) => ({
+        type: "message",
+        input_tokens,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 1_000,
+      });
+      const frames = [
+        usageStreamFrame({
+          type: "message_start",
+          message: { id: "msg_tool_loop", usage: { ...zeroUsage, input_tokens: 60_000 } },
+        }),
+        // A server-side tool loop sums every pass into the top-level counts.
+        usageStreamFrame({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: {
+            ...zeroUsage,
+            input_tokens: 122_000,
+            output_tokens: 2_000,
+            iterations: [pass(60_000), pass(62_000)],
+          },
+        }),
+        makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000695", result: "Done." }),
+      ];
+      for (const frame of frames) yield* Queue.offer(harness.sdkMessages, frame);
+      const terminal = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(terminal.status, "completed");
+      assert.deepEqual(reportedContextTokens(harness.events), [60_000, 63_000]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect.each([
     { autoCompactWindow: "", model: "claude-sonnet-4-6", threshold: undefined },
     { autoCompactWindow: "150000", model: "claude-sonnet-4-6", threshold: 150_000 },
@@ -5744,6 +5835,79 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
         ),
       ),
+  );
+
+  it.effect("keeps the prompt cache TTL when a later response only reads the cache", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const now = yield* DateTime.now;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-cache-ttl"),
+          text: "Keep going",
+          attachments: [],
+        }),
+      );
+      const assistantFrame = (
+        uuid: string,
+        cache: { readonly written1h: number; readonly read: number },
+      ) =>
+        claudeSdkFrame({
+          type: "assistant",
+          uuid,
+          session_id: WAKE_NATIVE_SESSION,
+          parent_tool_use_id: null,
+          message: {
+            id: `msg_${uuid}`,
+            model: "claude-sonnet-4-6",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "Working." }],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_creation_input_tokens: cache.written1h,
+              cache_read_input_tokens: cache.read,
+              cache_creation: {
+                ephemeral_1h_input_tokens: cache.written1h,
+                ephemeral_5m_input_tokens: 0,
+              },
+            },
+          },
+        });
+      yield* Queue.offer(
+        harness.sdkMessages,
+        assistantFrame("00000000-0000-4000-8000-000000000701", { written1h: 4_000, read: 0 }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        assistantFrame("00000000-0000-4000-8000-000000000702", { written1h: 0, read: 4_000 }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000703", result: "Done." }),
+      );
+      yield* Queue.take(harness.terminalReceipts);
+
+      const usages = harness.events.flatMap((event) =>
+        event.type === "provider_turn.updated" &&
+        event.providerTurn.tokenUsage?.cachedInputTokens === 4_000
+          ? [event.providerTurn.tokenUsage]
+          : [],
+      );
+      assert.lengthOf(usages, 1);
+      assert.strictEqual(usages[0]?.promptCacheTtlMs, 60 * 60_000);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect("shows automatic compaction before its boundary and completes the same item", () =>
@@ -17501,8 +17665,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const calls: Array<string> = [];
           const backgroundRequested = yield* Deferred.make<void>();
           let beforeAnswer: Effect.Effect<void> = Effect.void;
+          // Each steer scans the Claude config dir for skills with real file
+          // reads. An empty one keeps that scan inside the simulated clock
+          // ticks below, whatever skills the developer has in ~/.claude.
+          const fileSystem = yield* FileSystem.FileSystem;
+          const claudeConfigDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-v2-steer-",
+          });
           const lateAnswer = yield* Deferred.make<void>();
           const harness = yield* makeWakeHarnessWithOptions({
+            environment: { CLAUDE_CONFIG_DIR: claudeConfigDir },
             backgroundTasks: (toolUseId) =>
               Effect.sync(() => calls.push(toolUseId)).pipe(
                 Effect.andThen(Deferred.succeed(backgroundRequested, undefined)),
