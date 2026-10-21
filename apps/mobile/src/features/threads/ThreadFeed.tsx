@@ -1,10 +1,11 @@
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
+import { useWorkspaceSettledContentWidth } from "../layout/workspace-content-width";
 import { ThreadMarkdownVideo, ThreadMediaVisibleContext } from "./ThreadMarkdownVideo";
 import { useMarkdownImageSource } from "../../native/useMarkdownImageSource";
+import { enrichedContextLinkCustomization } from "../../native/useEnrichedLinkVariants";
 import {
-  enrichedContextLinkPresentation,
   enrichedSkillDisplayName,
   enrichedSkillInstructionsPath,
   enrichedSkillReference,
@@ -27,6 +28,7 @@ import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-mes
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import type { WorkflowOpening } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  AuthFilesystemReadScope,
   type OrchestrationMessageContext,
   ThreadId,
   type ChatAttachment,
@@ -56,7 +58,11 @@ import {
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  executeAtomQuery,
+  settlePromise,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import {
   classifyMarkdownImageSource,
   markdownImageSourceFragment,
@@ -169,7 +175,6 @@ import {
   resolveNativeMarkdownTypography,
 } from "../../lib/appearancePreferences";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
-import { markdownFileIconSource } from "../../lib/markdownFileIcons";
 import { PierreEntryIcon } from "../../components/PierreEntryIcon";
 import { markdownLinkIconSource } from "../../lib/markdownLinkIcons";
 import {
@@ -218,7 +223,13 @@ import {
   useRefreshAssetUrl,
 } from "../../state/assets";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
-import { usePreparedConnection } from "../../state/session";
+import { readEnvironmentScope, usePreparedConnection } from "../../state/session";
+import { projectEnvironment } from "../../state/projects";
+import {
+  needsWorkspaceBasenameLookup,
+  pickWorkspaceBasenameMatch,
+  WORKSPACE_BASENAME_LOOKUP_LIMIT,
+} from "@t3tools/client-runtime/workspace-basename-lookup";
 import { useLiveThreadLinkLabels } from "../../state/entities";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { composerDocumentAttachmentRecord } from "../../lib/composerContext";
@@ -230,7 +241,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useV2ItemSupport } from "../../state/v2-item-support";
 import {
   fileRoutePathSegments,
-  isAbsolutePath,
+  resolveFileLinkPath,
+  resolveWorkspaceFilePath,
   resolveWorkspaceRelativeFilePath,
 } from "../files/filePath";
 import { waitForThreadShellReady } from "./threadForkNavigation";
@@ -866,8 +878,6 @@ function useMarkdownStyles(): MarkdownStyleSets {
   const markdownUserCodeText = theme["--color-md-user-code-text"];
   const markdownUserInlineCodeText = theme["--color-user-bubble-foreground-muted"];
   const markdownUserFenceBg = theme["--color-md-user-fence-bg"];
-  const inlineSkillForeground = theme["--color-inline-skill-foreground"];
-  const userBubbleSkillForeground = theme["--color-user-bubble-skill-foreground"];
   const regularFontFamily = FONT_FAMILIES.regular;
   const boldFontFamily = FONT_FAMILIES.bold;
 
@@ -884,7 +894,6 @@ function useMarkdownStyles(): MarkdownStyleSets {
           codeBackgroundColor: markdownUserCodeBg,
           codeBlockBackgroundColor: markdownUserFenceBg,
           fileTextColor: markdownUserBodyColor,
-          skillTextColor: userBubbleSkillForeground,
           quoteMarkerColor: markdownUserBodyColor,
           dividerColor: markdownUserBodyColor,
           contextChipBorderColor,
@@ -907,7 +916,6 @@ function useMarkdownStyles(): MarkdownStyleSets {
           codeBackgroundColor: markdownCodeBg,
           codeBlockBackgroundColor: markdownCodeBg,
           fileTextColor: markdownCodeText,
-          skillTextColor: inlineSkillForeground,
           quoteMarkerColor: markdownBlockquoteBorder,
           dividerColor: markdownHrColor,
           contextChipBorderColor,
@@ -923,7 +931,6 @@ function useMarkdownStyles(): MarkdownStyleSets {
   }, [
     boldFontFamily,
     contextChipBorderColor,
-    inlineSkillForeground,
     markdownBlockquoteBorder,
     markdownBodyColor,
     markdownCodeBg,
@@ -939,7 +946,6 @@ function useMarkdownStyles(): MarkdownStyleSets {
     markdownUserInlineCodeText,
     nativeMarkdownTypography,
     regularFontFamily,
-    userBubbleSkillForeground,
   ]);
 }
 
@@ -1451,6 +1457,7 @@ function renderFeedEntry(
       activities={entry.activities}
       continuesWorkLog={entry.continuesWorkLog}
       environmentId={props.environmentId}
+      workspaceRoot={props.workspaceRoot}
       anchorKey={entry.id}
       copiedRowId={props.copiedRowId}
       expandedRows={props.expandedWorkRows}
@@ -1566,12 +1573,9 @@ function UserMessageContent(props: UserMessageContentProps) {
                 });
             }
           },
-          linkCustomization: (href) => {
-            const presentation = enrichedContextLinkPresentation(href, props.context?.records);
-            return presentation
-              ? { color: presentation.color, icon: markdownFileIconSource(presentation.icon) }
-              : props.linkHandlers.linkCustomization?.(href);
-          },
+          linkCustomization: (href) =>
+            enrichedContextLinkCustomization(href, props.context?.records ?? []) ??
+            props.linkHandlers.linkCustomization?.(href),
         }}
       />
       {selected ? (
@@ -1706,9 +1710,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     previousTextSize.current = workRowSizing.textSizeKey;
     listRef.current?.clearCaches({ mode: "sizes" });
   }, [workRowSizing.textSizeKey, listRef]);
-  const [viewportWidth, setViewportWidth] = useState(() =>
+  const settledPaneWidth = useWorkspaceSettledContentWidth();
+  const [measuredViewportWidth, setViewportWidth] = useState(() =>
     props.layoutVariant === "split" ? 0 : windowWidth,
   );
+  const viewportWidth =
+    settledPaneWidth !== null ? Math.round(settledPaneWidth) : measuredViewportWidth;
   const [viewportHeight, setViewportHeight] = useState(0);
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
   // LegendList's maintainScrollAtEnd alone re-pins the feed whenever the
@@ -1745,6 +1752,19 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const { copiedRowId, expandedWorkGroups, expandedWorkRows, expandedTurnIds } = interactionState;
   const [expandedFile, setExpandedFile] = useState<FilePreviewSource | null>(null);
   const [expandedVideo, setExpandedVideo] = useState<VideoPreviewSource | null>(null);
+  const markdownLinkRequest = useRef<AbortController | null>(null);
+  useFocusEffect(useCallback(() => () => markdownLinkRequest.current?.abort(), []));
+  const markdownLinkScope = JSON.stringify([
+    props.environmentId,
+    props.threadId,
+    props.contentPresentation.kind,
+  ]);
+  const previousMarkdownLinkScope = useRef(markdownLinkScope);
+  useLayoutEffect(() => {
+    if (previousMarkdownLinkScope.current === markdownLinkScope) return;
+    previousMarkdownLinkScope.current = markdownLinkScope;
+    markdownLinkRequest.current?.abort();
+  }, [markdownLinkScope]);
   const fileShareSourceIdentifier = useId();
   const shareFileChip = useFileChipShare(
     props.environmentId,
@@ -1811,6 +1831,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     );
   };
   const onMarkdownLinkPress = (href: string, imageEmbed = false) => {
+    markdownLinkRequest.current?.abort();
+    const request = new AbortController();
+    markdownLinkRequest.current = request;
     const skill = enrichedSkillReference(href, props.skills);
     if (skill) {
       const instructionsPath = enrichedSkillInstructionsPath(skill);
@@ -1833,41 +1856,111 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     });
     if (media) {
       void Haptics.selectionAsync();
-      if (media.kind === "video") {
-        setExpandedVideo((current) => current ?? media.source);
-      } else {
-        setExpandedFile((current) => current ?? media.source);
-      }
+      const openPreview = () => {
+        if (request.signal.aborted) return;
+        if (media.kind === "video") {
+          setExpandedVideo((current) => current ?? media.source);
+        } else {
+          setExpandedFile((current) => current ?? media.source);
+        }
+      };
+      const resource = "resource" in media.source ? media.source.resource : null;
+      const mediaPath = resource && "path" in resource ? resource.path : null;
+      if (
+        typeof mediaPath === "string" &&
+        readEnvironmentScope(props.environmentId, AuthFilesystemReadScope)
+      ) {
+        void executeAtomQuery(
+          appAtomRegistry,
+          projectEnvironment.fileMetadata({
+            environmentId: props.environmentId,
+            input: { path: mediaPath },
+          }),
+          { signal: request.signal, reportFailure: false, reportDefect: false },
+        ).then((result) => {
+          if (request.signal.aborted) return;
+          if (result._tag === "Success" && result.value?.kind === "directory") {
+            navigation.navigate("ThreadFile", {
+              environmentId: String(props.environmentId),
+              threadId: String(props.threadId),
+              path: fileRoutePathSegments(mediaPath),
+            });
+          } else openPreview();
+        }, openPreview);
+      } else openPreview();
       return;
     }
 
     const presentation = resolveMarkdownLinkPresentation(href);
     if (presentation.kind === "file") {
-      const relativePath = resolveWorkspaceRelativeFilePath(props.workspaceRoot, presentation.path);
-      if (relativePath) {
+      const path = resolveFileLinkPath(props.workspaceRoot, presentation.path);
+      if (path === null) return;
+      const relativePath = resolveWorkspaceRelativeFilePath(props.workspaceRoot, path);
+      const openAt = (target: string) => {
+        if (request.signal.aborted) return;
         void Haptics.selectionAsync();
         navigation.navigate("ThreadFile", {
           environmentId: String(props.environmentId),
           threadId: String(props.threadId),
-          path: fileRoutePathSegments(relativePath),
+          path: fileRoutePathSegments(target),
           ...(presentation.line ? { line: String(presentation.line) } : {}),
         });
-        return;
-      }
-    }
-
-    if (presentation.kind === "file" && isAbsolutePath(presentation.path)) {
-      void Haptics.selectionAsync();
-      navigation.navigate("ThreadFile", {
-        environmentId: String(props.environmentId),
-        threadId: String(props.threadId),
-        path: fileRoutePathSegments(presentation.path),
-        ...(presentation.line ? { line: String(presentation.line) } : {}),
-      });
+      };
+      if (
+        props.workspaceRoot &&
+        relativePath &&
+        !/[\\/]$/.test(presentation.path) &&
+        needsWorkspaceBasenameLookup(relativePath) &&
+        readEnvironmentScope(props.environmentId, AuthFilesystemReadScope)
+      ) {
+        const originalPath = resolveWorkspaceFilePath(props.workspaceRoot, relativePath);
+        void executeAtomQuery(
+          appAtomRegistry,
+          projectEnvironment.searchEntries({
+            environmentId: props.environmentId,
+            input: {
+              cwd: props.workspaceRoot,
+              query: relativePath,
+              kind: "file",
+              limit: WORKSPACE_BASENAME_LOOKUP_LIMIT,
+            },
+          }),
+          { signal: request.signal, reportFailure: false, reportDefect: false },
+        ).then(
+          (result) => {
+            const match =
+              result._tag === "Success"
+                ? pickWorkspaceBasenameMatch(relativePath, result.value.entries)
+                : null;
+            if (!match || match === relativePath) {
+              openAt(relativePath);
+              return;
+            }
+            if (request.signal.aborted) return;
+            void executeAtomQuery(
+              appAtomRegistry,
+              projectEnvironment.fileMetadata({
+                environmentId: props.environmentId,
+                input: { path: originalPath },
+              }),
+              { signal: request.signal, reportFailure: false, reportDefect: false },
+            ).then(
+              (metadata) =>
+                openAt(
+                  metadata._tag === "Success" && metadata.value?.kind !== "directory"
+                    ? match
+                    : relativePath,
+                ),
+              () => openAt(relativePath),
+            );
+          },
+          () => openAt(relativePath),
+        );
+      } else openAt(relativePath ?? path);
       return;
     }
 
-    if (presentation.kind !== "file" && presentation.href) {
+    if (presentation.href) {
       if (/^https?:\/\//i.test(presentation.href) && isPdfFile({ name: presentation.href })) {
         setExpandedFile(
           (current) => current ?? { kind: "pdf", uri: presentation.href!, name: "Document.pdf" },
@@ -1976,7 +2069,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           unavailable={false}
           alt={image.alt}
           actionsSource={media?.source.actionsSource}
-          onPressPreview={(source) => setExpandedFile((current) => current ?? source)}
+          onPressPreview={onPressPreview}
         />
       );
     }
@@ -1994,7 +2087,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         alt={image.alt}
         srcFragment={markdownImageSourceFragment(image.href)}
         actionsSource={media?.source.actionsSource}
-        onPressPreview={(source) => setExpandedFile((current) => current ?? source)}
+        onPressPreview={onPressPreview}
       />
     );
   };
@@ -2023,7 +2116,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             ? { ...actionsSource, resource: viewedImage.resource }
             : undefined
         }
-        onPressPreview={(source) => setExpandedFile((current) => current ?? source)}
+        onPressPreview={onPressPreview}
       />
     ) : null;
   };
@@ -2358,9 +2451,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   };
 
   const onPressPreview = (source: FilePreviewSource) => {
+    markdownLinkRequest.current?.abort();
     setExpandedFile((current) => current ?? source);
   };
   const onPressVideo = (attachment: ChatFileAttachment, sourceIdentifier: string) => {
+    markdownLinkRequest.current?.abort();
     setExpandedVideo(
       (current) =>
         current ?? attachmentVideoPreviewSource(props.environmentId, attachment, sourceIdentifier),
@@ -2412,6 +2507,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     if (previousContentWidth.current === contentWidth) return;
     previousContentWidth.current = contentWidth;
     if (hasHtmlRenders) listRef.current?.clearCaches({ mode: "sizes" });
+    // A reflow can grow the visible rows past LegendList's near-end threshold in one batch, and
+    // maintainScrollAtEnd then stops following. Pin the end the feed was following once the new
+    // sizes are in.
+    if (!endFollowEnabledRef.current || !listRef.current?.getState().isAtEnd) return;
+    const frame = requestAnimationFrame(() => {
+      if (endFollowEnabledRef.current) void listRef.current?.scrollToEnd({ animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [contentWidth, hasHtmlRenders, listRef]);
 
   const renderItem = (info: { item: PendingThreadFeedEntry; index: number }) => (
