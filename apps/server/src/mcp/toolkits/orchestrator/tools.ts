@@ -1,4 +1,5 @@
 import {
+  OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
   OrchestrationV2StopWorkflowInput,
   OrchestratorMcpCreateThreadsInput,
@@ -9,7 +10,6 @@ import {
   OrchestratorMcpDeleteScheduledTaskResult,
   OrchestratorMcpRequestSecretInput,
   OrchestratorMcpRequestSecretResult,
-  OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   OrchestratorMcpListScheduledTasksInput,
   OrchestratorMcpListScheduledTasksResult,
@@ -59,8 +59,8 @@ const homeRoutedDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List the V2 provider instances and their current models from the same live catalog as the composer, including configured custom models, inherited runtime settings, and app-owned orchestration features available to this caller. For a separate top-level thread in a new or existing worktree, use t3_thread_launch with workspaceStrategy. Home can pass environmentId to list another environment's providers before launching there.",
-  parameters: Schema.Struct({ environmentId: OrchestratorMcpEnvironmentTarget }),
+    "List the V2 provider instances, a short list of their models from the same live catalog as the composer, inherited runtime settings, and app-owned orchestration features available to this caller. The list has the user's favorite and custom models, your own model, every current Codex, Claude, Muse and Grok model, and the first 8 current models of other providers. Other legacy models are left out. omittedModels counts models left out; pass search, such as 'sonnet 4.6', to find them. delegate_task accepts any catalog model, listed or not. For a separate top-level thread in a new or existing worktree, use t3_thread_launch with workspaceStrategy. Home can pass environmentId to list another environment's providers before launching there.",
+  parameters: OrchestratorMcpCapabilitiesInput,
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
