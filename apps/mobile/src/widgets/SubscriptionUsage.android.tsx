@@ -19,7 +19,6 @@ import type { SubscriptionUsageSnapshot as SubscriptionUsageProps } from "./subs
 export function SubscriptionUsage(props: SubscriptionUsageProps, environment: WidgetEnvironment) {
   "widget";
   // The widget runtime evaluates this function without the app's module scope.
-  const now = Date.now();
   const limit = 2;
   const mode = props.theme?.mode;
   const appearance =
@@ -41,8 +40,8 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
     : getMaterialColors({ scheme: appearance });
   const muted = colors.onSurfaceVariant;
   const providers = props.providers ?? [
-    { name: "Codex", detail: "Open T3 to connect", windows: [], expiresAt: 0, totalWindows: 0 },
-    { name: "Claude", detail: "Open T3 to connect", windows: [], expiresAt: 0, totalWindows: 0 },
+    { name: "Codex", detail: "Open T3 to connect", windows: [], checkedAt: 0, totalWindows: 0 },
+    { name: "Claude", detail: "Open T3 to connect", windows: [], checkedAt: 0, totalWindows: 0 },
   ];
   return (
     // The card is one Button so a tap reaches the app's interaction listener,
@@ -54,10 +53,8 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
     >
       <Column modifiers={[fillMaxSize(), paddingAll(16)]}>
         {providers.map((provider, index) => {
-          const stale =
-            provider.windows.length > 0 && provider.expiresAt > 0 && now >= provider.expiresAt;
-          const shown = stale ? [] : provider.windows.slice(0, limit);
-          const hidden = stale ? 0 : (provider.totalWindows ?? provider.windows.length) - limit;
+          const shown = provider.windows.slice(0, limit);
+          const hidden = (provider.totalWindows ?? provider.windows.length) - limit;
           return (
             <Column
               key={provider.name}
@@ -72,7 +69,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
               </Text>
               {shown.length === 0 ? (
                 <Text color={muted} maxLines={1} style={{ fontSize: 11 }}>
-                  {stale ? "Open T3 to refresh" : provider.detail}
+                  {provider.detail}
                 </Text>
               ) : null}
               {shown.map((window) => {
