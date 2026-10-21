@@ -7,6 +7,7 @@ import { AsyncResult } from "effect/reactivity";
 import {
   archiveSelectedThreadEntries,
   deleteSelectedThreadEntries,
+  filterSidebarV2VisibleThreads,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
   resolveSidebarRowThreadId,
@@ -161,6 +162,25 @@ describe("archiveSelectedThreadEntries", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
+  it("hides only the current Home thread, which has its own row", () => {
+    const environmentId = EnvironmentId.make("environment-primary");
+    const otherEnvironmentId = EnvironmentId.make("environment-remote");
+    const homeThreadId = ThreadId.make("home:current");
+    const current = makeThreadFixture({ id: homeThreadId, environmentId });
+    const older = makeThreadFixture({ id: ThreadId.make("home:older"), environmentId });
+    const sameIdElsewhere = makeThreadFixture({
+      id: homeThreadId,
+      environmentId: otherEnvironmentId,
+    });
+
+    expect(
+      filterSidebarV2VisibleThreads([current, older, sameIdElsewhere], null, {
+        environmentId,
+        threadId: homeThreadId,
+      }).map((thread) => `${thread.environmentId}:${thread.id}`),
+    ).toEqual([`${environmentId}:home:older`, `${otherEnvironmentId}:${homeThreadId}`]);
+  });
+
   it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
     const environmentId = EnvironmentId.make("environment-row");
     const otherEnvironmentId = EnvironmentId.make("environment-other");

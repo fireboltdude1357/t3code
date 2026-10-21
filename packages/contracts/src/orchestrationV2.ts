@@ -2879,6 +2879,12 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
   }),
+  /** Holds every queued run, so none starts until the queue is resumed. */
+  Schema.Struct({
+    type: Schema.Literal("queue.hold"),
+    commandId: CommandId,
+    threadId: ThreadId,
+  }),
   Schema.Struct({
     type: Schema.Literal("queued-run.start"),
     commandId: CommandId,
