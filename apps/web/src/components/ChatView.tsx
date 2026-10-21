@@ -5269,9 +5269,15 @@ export default function ChatView(props: ChatViewProps) {
   const openRelatedThreadGenerationRef = useRef(0);
   const onOpenRelatedThread = async (threadId: ThreadId) => {
     const generation = ++openRelatedThreadGenerationRef.current;
-    const threadRef = scopeThreadRef(environmentId, threadId);
+    // Related threads live here, except a message Home sent from another environment.
+    const owner = serverThreadRefs.some(
+      (ref) => ref.environmentId === environmentId && ref.threadId === threadId,
+    )
+      ? environmentId
+      : (serverThreadRefs.find((ref) => ref.threadId === threadId)?.environmentId ?? environmentId);
+    const threadRef = scopeThreadRef(owner, threadId);
     const isEnvironmentLive = () =>
-      appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live";
+      appAtomRegistry.get(environmentShell.stateValueAtom(owner)).status === "live";
     // A just-launched child can reach this timeline before its shell syncs.
     if (isEnvironmentLive() && readThreadShell(threadRef) === null) {
       const location = router.latestLocation;
