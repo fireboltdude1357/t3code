@@ -108,6 +108,7 @@ import {
   ComposerDictationStartAction,
   ComposerDictationStatus,
   ComposerDictationToolbar,
+  ComposerVoiceCallAction,
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
@@ -264,6 +265,8 @@ export interface ThreadComposerProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  /** Present when the voice orchestrator can be opened on this thread. */
+  readonly onStartVoiceCall?: (() => void) | null;
   /** Present while the thread's queue is held. */
   readonly onResumeQueue: (() => Promise<void>) | null;
   /** `stillSendable` reports whether the draft is unchanged after any wait before sending. */
@@ -1019,6 +1022,12 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   onStart={voiceInput.start}
                   onCancel={voiceInput.cancel}
                 />
+                {props.onStartVoiceCall && !isVoiceInputPresented ? (
+                  <ComposerVoiceCallAction
+                    size={hasSidebarTabBar ? "large" : "regular"}
+                    onPress={props.onStartVoiceCall}
+                  />
+                ) : null}
                 {showStopAction ? (
                   <ComposerActionButton
                     size={hasSidebarTabBar ? "large" : "regular"}
@@ -1244,6 +1253,12 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     onConfirm={voiceInput.stop}
                     onCancel={voiceInput.cancel}
                   />
+                  {props.onStartVoiceCall && !isVoiceInputPresented ? (
+                    <ComposerVoiceCallAction
+                      size={hasSidebarTabBar ? "large" : "regular"}
+                      onPress={props.onStartVoiceCall}
+                    />
+                  ) : null}
                   {showStopAction ? (
                     <ComposerActionButton
                       accessibilityLabel="Stop agent"
