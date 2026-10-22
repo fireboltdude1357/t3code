@@ -1,14 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import * as Linking from "expo-linking";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { Platform } from "react-native";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 import { environmentCatalog } from "../connection/catalog";
 import { environmentPresentations } from "../state/presentation";
 import { publishSubscriptionUsage } from "./publishSubscriptionUsage";
 import { useSubscriptionUsage } from "./useSubscriptionUsage";
-import { buildSubscriptionUsageSnapshot, keepLastLimits } from "./subscriptionUsageSnapshot";
+import { buildSubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
 import { createWidgetTheme } from "./widgetTheme";
 
 // Isolate quota changes from the much busier thread/config presentation stream.
@@ -29,18 +29,14 @@ export function SubscriptionUsageCoordinator() {
   } = useAppearancePreferences();
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const snapshot = useAtomValue(snapshotAtom);
-  const published = useRef<ReturnType<typeof keepLastLimits>>(undefined);
   useSubscriptionUsage(catalog.isReady);
   const androidAppearance = Platform.OS === "android" ? themeAppearance : null;
   useEffect(() => {
     if (!catalog.isReady || !appearanceReady) return;
-    const next = keepLastLimits(published.current, snapshot);
-    if (!next) return;
-    published.current = next;
     void Promise.resolve()
       .then(() =>
         publishSubscriptionUsage({
-          ...next,
+          ...snapshot,
           theme: createWidgetTheme(themeMode, themeVariablesByAppearance),
         }),
       )

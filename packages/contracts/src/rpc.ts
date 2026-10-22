@@ -294,17 +294,6 @@ import {
 } from "./device.ts";
 import {} from "./previewAutomation.ts";
 import {
-  FleetHostRegistration,
-  FleetHostRequest,
-  FleetHostResponse,
-  FleetInvokeInput,
-  HomeEnableInput,
-  HomeThreadResult,
-  HomeUnavailableError,
-  HomeWatchReport,
-} from "./home.ts";
-import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
-import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
   OtlpEndpointCheckInput,
@@ -470,14 +459,6 @@ export const WS_METHODS = {
   previewClearProfile: "preview.clearProfile",
   previewReportProfiles: "preview.reportProfiles",
   previewReportStatus: "preview.reportStatus",
-
-  homeEnable: "home.enable",
-  homeDisable: "home.disable",
-  homeStartFresh: "home.startFresh",
-  fleetInvoke: "fleet.invoke",
-  fleetConnect: "fleet.connect",
-  fleetRespond: "fleet.respond",
-  fleetReportWatchEvents: "fleet.reportWatchEvents",
 
   deviceConfigure: "device.configure",
   deviceList: "device.list",
@@ -1564,47 +1545,6 @@ const WsPreviewReportStatusRpc = Rpc.make(WS_METHODS.previewReportStatus, {
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
 });
 
-const WsHomeEnableRpc = Rpc.make(WS_METHODS.homeEnable, {
-  payload: HomeEnableInput,
-  success: HomeThreadResult,
-  error: Schema.Union([HomeUnavailableError, EnvironmentAuthorizationError]),
-});
-
-const WsHomeDisableRpc = Rpc.make(WS_METHODS.homeDisable, {
-  payload: Schema.Struct({}),
-  error: Schema.Union([HomeUnavailableError, EnvironmentAuthorizationError]),
-});
-
-const WsHomeStartFreshRpc = Rpc.make(WS_METHODS.homeStartFresh, {
-  payload: Schema.Struct({}),
-  success: HomeThreadResult,
-  error: Schema.Union([HomeUnavailableError, EnvironmentAuthorizationError]),
-});
-
-/** Runs one Home operation here. Results are decoded by the caller per operation. */
-const WsFleetInvokeRpc = Rpc.make(WS_METHODS.fleetInvoke, {
-  payload: FleetInvokeInput,
-  success: Schema.Unknown,
-  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
-});
-
-const WsFleetConnectRpc = Rpc.make(WS_METHODS.fleetConnect, {
-  payload: FleetHostRegistration,
-  success: FleetHostRequest,
-  error: Schema.Union([HomeUnavailableError, EnvironmentAuthorizationError]),
-  stream: true,
-});
-
-const WsFleetRespondRpc = Rpc.make(WS_METHODS.fleetRespond, {
-  payload: FleetHostResponse,
-  error: EnvironmentAuthorizationError,
-});
-
-const WsFleetReportWatchEventsRpc = Rpc.make(WS_METHODS.fleetReportWatchEvents, {
-  payload: HomeWatchReport,
-  error: Schema.Union([HomeUnavailableError, EnvironmentAuthorizationError]),
-});
-
 const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -1939,23 +1879,7 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
-/**
- * Home's RPCs, in their own group so the server can build their handlers in a
- * separate layer. One handler layer for every WebSocket RPC exceeds
- * TypeScript's instantiation limit.
- */
-export const HomeWsRpcGroup = RpcGroup.make(
-  WsHomeEnableRpc,
-  WsHomeDisableRpc,
-  WsHomeStartFreshRpc,
-  WsFleetInvokeRpc,
-  WsFleetConnectRpc,
-  WsFleetRespondRpc,
-  WsFleetReportWatchEventsRpc,
-).middleware(RpcScopeAuthorization);
-
-/** Every WebSocket RPC except Home's. */
-export const WsCoreRpcGroup = RpcGroup.make(
+export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2155,5 +2079,3 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
 ).middleware(RpcScopeAuthorization);
-
-export const WsRpcGroup = WsCoreRpcGroup.merge(HomeWsRpcGroup);

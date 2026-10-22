@@ -1,8 +1,11 @@
 import { requireOptionalNativeModule } from "expo";
-import type { SubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
+import {
+  subscriptionUsageTimeline,
+  type SubscriptionUsageSnapshot,
+} from "./subscriptionUsageSnapshot";
 
 export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapshot) {
   if (!requireOptionalNativeModule("ExpoWidgets")) return;
   const { default: widget } = await import("./SubscriptionUsage");
-  widget.updateSnapshot(snapshot);
+  widget.updateTimeline(subscriptionUsageTimeline(snapshot, Date.now()));
 }

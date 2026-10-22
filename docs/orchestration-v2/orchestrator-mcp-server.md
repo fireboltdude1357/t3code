@@ -373,16 +373,14 @@ through `t3_thread_launch`, `create_threads`, or `t3_thread_fork` keep the
 marker; `bot: null` launches ordinary work from one instead. Clients list
 marked threads in the sidebar's Bots section instead of the inbox, and they
 notify only when the thread needs an approval, an answer, or a decision on a
-proposed plan. The id carries the marker so it needs no new thread state, the
-same way Home marks the threads it launches.
+proposed plan. The id carries the marker so it needs no new thread state.
 
 ### `t3_thread_list`
 
 Lists durable thread shells in one project, newest first: `projectId` when
 given, else the calling thread's project. Callers can filter by title, run
 status, and whether app-owned sub-agent threads are included. Results are
-bounded and offset-paginated. Deleted threads are never listed. Home can name any project and environment
-([Home](../internals/home.md)).
+bounded and offset-paginated. Deleted threads are never listed.
 
 ### `t3_thread_read`
 

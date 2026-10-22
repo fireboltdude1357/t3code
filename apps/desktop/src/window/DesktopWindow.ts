@@ -689,17 +689,8 @@ export const make = Effect.gen(function* () {
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", (event) => {
+    window.on("close", () => {
       runFork(flushBoundsPersist);
-      // Hiding keeps the renderer, and with it Home's relay, alive until quit.
-      if (
-        environment.platform === "darwin" &&
-        Ref.getUnsafe(desktopState.keepAliveOnClose) &&
-        !Ref.getUnsafe(desktopState.quitting)
-      ) {
-        event.preventDefault();
-        window.hide();
-      }
     });
 
     if (environment.platform === "darwin") {

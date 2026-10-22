@@ -18,6 +18,4 @@ export interface HomeHeaderProps {
   readonly onOpenEnvironments: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
-  /** Opens the voice orchestrator. Null when no environment is connected. */
-  readonly onOpenVoiceSession: (() => void) | null;
 }

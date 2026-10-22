@@ -108,7 +108,7 @@ function metadataCommand(input: {
   }
 }
 
-export function resultFromThread(input: {
+function resultFromThread(input: {
   readonly action: ThreadMetadataMcpAction;
   readonly commandId: CommandId;
   readonly sequence: number;

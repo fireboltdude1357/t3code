@@ -15,14 +15,14 @@ export interface SubscriptionUsageSnapshot {
     name: string;
     detail: string;
     windows: Array<{ kind?: string; label: string; remaining: number; reset: string }>;
+    expiresAt: number;
     totalWindows: number;
-    /** When these limits were read, or 0 when unknown. */
-    checkedAt: number;
   }>;
 }
 
-// The app only refreshes limits while it runs. Widgets keep showing the last
-// read with its "As of" time rather than blanking once it ages.
+// Snapshots expire after 15 minutes; background refresh needs a
+// separate authenticated transport while the mobile app is suspended.
+const SNAPSHOT_MAX_AGE = 15 * 60_000;
 export const WIDGET_REFRESH_INTERVAL = 5 * 60_000;
 
 export function createWidgetRefresher<Id>(refresh: (id: Id) => Promise<unknown>) {
@@ -47,10 +47,11 @@ export function createWidgetRefresher<Id>(refresh: (id: Id) => Promise<unknown>)
 
 function subscriptionUsageProps(
   accounts: readonly LimitAccount[],
+  now: number,
   configuredDrivers: ReadonlySet<string>,
   maxWindowsPerProvider: number,
 ): SubscriptionUsageSnapshot {
-  const pools = collectLimitPools(accounts, 0);
+  const pools = collectLimitPools(accounts, now);
   const checked = accounts
     .filter((account) => account.driver === "codex" || account.driver === "claudeAgent")
     .map((account) => Date.parse(account.limits.checkedAt));
@@ -69,19 +70,22 @@ function subscriptionUsageProps(
             name,
             detail: "No limits available",
             windows: [],
+            expiresAt: 0,
             totalWindows: 0,
-            checkedAt: 0,
           };
         const checkedAt = Math.min(...pool.accounts.map((a) => Date.parse(a.limits.checkedAt)));
+        const expiresAt = Math.min(
+          checkedAt + SNAPSHOT_MAX_AGE,
+          ...pool.windows.flatMap((window) => window.resets.map((reset) => reset.at)),
+        );
+        const fresh = Number.isFinite(expiresAt) && expiresAt > now;
         const sortedWindows = [...pool.windows].sort(
           (a, b) => a.remainingPercent - b.remainingPercent,
         );
         const selectedWindows = [
           ...new Set([
             sortedWindows.find((window) => window.kind === "session"),
-            sortedWindows.find(
-              (window) => window.kind === "weekly" && !window.label.includes(" · "),
-            ) ?? sortedWindows.find((window) => window.kind === "weekly"),
+            sortedWindows.find((window) => window.kind === "weekly"),
             ...sortedWindows,
           ]),
         ]
@@ -90,25 +94,28 @@ function subscriptionUsageProps(
           .sort((a, b) => a.remainingPercent - b.remainingPercent);
         return {
           name,
-          detail:
-            pool.accounts.length > 1
+          detail: !fresh
+            ? "Open T3 to refresh"
+            : pool.accounts.length > 1
               ? `${pool.accounts.length} accounts · pooled`
               : "Subscription remaining",
-          totalWindows: pool.windows.length,
-          checkedAt: Number.isFinite(checkedAt) ? checkedAt : 0,
-          windows: selectedWindows.map((window) => ({
-            kind: window.kind,
-            label: window.label,
-            remaining: Math.round(window.remainingPercent),
-            reset: window.resets[0]
-              ? `Next reset ${new Date(window.resets[0].at).toLocaleString(undefined, {
-                  month: "short",
-                  day: "numeric",
-                  hour: "numeric",
-                  minute: "2-digit",
-                })}`
-              : "Reset time unavailable",
-          })),
+          expiresAt: fresh ? expiresAt : 0,
+          totalWindows: fresh ? pool.windows.length : 0,
+          windows: fresh
+            ? selectedWindows.map((window) => ({
+                kind: window.kind,
+                label: window.label,
+                remaining: Math.round(window.remainingPercent),
+                reset: window.resets[0]
+                  ? `Next reset ${new Date(window.resets[0].at).toLocaleString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}`
+                  : "Reset time unavailable",
+              }))
+            : [],
         };
       }),
   };
@@ -135,6 +142,7 @@ export function buildSubscriptionUsageSnapshot(
   return {
     ...subscriptionUsageProps(
       collectLimitAccounts(presentations),
+      0,
       configuredDrivers,
       maxWindowsPerProvider,
     ),
@@ -142,25 +150,19 @@ export function buildSubscriptionUsageSnapshot(
   };
 }
 
-/**
- * Choose what the widget should show next. A provider whose limits are missing
- * from `next` (still loading, disconnected, cold start) keeps the limits it last
- * showed, and a snapshot with no limits at all is skipped so the widget never
- * blanks. Returns undefined when nothing should be published.
- */
-export function keepLastLimits(
-  previous: SubscriptionUsageSnapshot | undefined,
-  next: SubscriptionUsageSnapshot,
-): SubscriptionUsageSnapshot | undefined {
-  const providers = next.providers.map((provider) =>
-    provider.windows.length > 0
-      ? provider
-      : (previous?.providers.find(
-          (candidate) => candidate.name === provider.name && candidate.windows.length > 0,
-        ) ?? provider),
-  );
-  if (providers.every((provider) => provider.windows.length === 0)) return undefined;
-  // "As of" reflects the oldest limits on screen.
-  const checked = providers.map((provider) => provider.checkedAt).filter((at) => at > 0);
-  return { ...next, checkedAt: checked.length > 0 ? Math.min(...checked) : 0, providers };
+export function subscriptionUsageTimeline(snapshot: SubscriptionUsageSnapshot, now: number) {
+  const deadlines = [...new Set(snapshot.providers.map((p) => p.expiresAt))]
+    .filter((deadline) => deadline > now)
+    .sort((a, b) => a - b);
+  return [now, ...deadlines].map((date) => ({
+    date: new Date(date),
+    props: {
+      ...snapshot,
+      providers: snapshot.providers.map((provider) =>
+        provider.windows.length > 0 && provider.expiresAt <= date
+          ? { ...provider, detail: "Open T3 to refresh", windows: [], totalWindows: 0 }
+          : provider,
+      ),
+    },
+  }));
 }

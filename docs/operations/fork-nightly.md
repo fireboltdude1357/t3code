@@ -30,7 +30,7 @@ When a patch merges upstream, delete its line. Upstream `main` carries it from t
 
 ## Following an upstream PR
 
-A third column ties a patch to an upstream PR: `home patch/home pingdotgg/t3code#15975`. The run warns when the PR has commits the branch doesn't, which means Theo pushed. Merge the PR head into `patch/home` and resolve there.
+A third column ties a patch to an upstream PR: `cache-compaction patch/cache-expiry-compaction pingdotgg/t3code#18713`. The run warns when the PR has commits the branch doesn't, which means Theo pushed. Merge the PR head into `patch/cache-expiry-compaction` and resolve there.
 
 ## When a run fails
 
