@@ -843,7 +843,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
         ...(Platform.OS === "android"
           ? { presentation: "fullScreenModal" as const }
           : {
-              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              ...HORIZONTAL_FORM_SHEET_OPTIONS,
               sheetAllowedDetents: [0.65, 0.95],
               sheetInitialDetentIndex: 1,
               sheetGrabberVisible: true,
