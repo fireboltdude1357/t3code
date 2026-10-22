@@ -45,7 +45,6 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
-import { notHomeLayer } from "../home/HomeTestkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
@@ -213,7 +212,6 @@ describe("orchestrator MCP toolkit", () => {
         const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(layerOrchestration),
-          Layer.provide(notHomeLayer),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(
               Layer.provide(McpProviderSessions.layer),

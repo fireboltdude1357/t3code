@@ -4,7 +4,6 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import {
   ContextTransferId,
-  EnvironmentId,
   IsoDateTime,
   MessageId,
   NodeId,
@@ -47,7 +46,7 @@ const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512)).annotate({
   description: "Optional concise display title.",
 });
-export const OrchestratorMcpClientRequestId = TrimmedNonEmptyString.check(
+const OrchestratorMcpClientRequestId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(256),
 ).annotate({ description: "Stable idempotency key to reuse when retrying this mutation." });
 
@@ -306,25 +305,8 @@ const OrchestratorMcpProjectTarget = Schema.optional(
   }),
 );
 
-/**
- * Optional on tools Home can aim at another environment. Other threads may
- * only name their own environment.
- */
-export const OrchestratorMcpEnvironmentTarget = Schema.optional(
-  EnvironmentId.annotate({
-    description:
-      "Home only: the environment to act in. Omit for this environment. t3_environment_list lists them.",
-  }),
-);
-
 export const OrchestratorMcpThreadListInput = Schema.Struct({
-  environmentId: OrchestratorMcpEnvironmentTarget,
-  projectId: Schema.optional(
-    ProjectId.annotate({
-      description:
-        "Project to list. Omit for the calling thread's project; Home lists every project when omitted. Required when the caller is not a T3 thread.",
-    }),
-  ),
+  projectId: OrchestratorMcpProjectTarget,
   statuses: Schema.optional(
     Schema.Array(OrchestratorMcpThreadStatus).check(Schema.isMaxLength(10)),
   ),
@@ -348,7 +330,6 @@ export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullR
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
   threadId: ThreadId,
-  projectId: ProjectId,
   title: Schema.String,
   createdBy: OrchestrationV2Actor,
   creationSource: OrchestrationV2CreationSource,
@@ -374,8 +355,7 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
 export type OrchestratorMcpThreadListItem = typeof OrchestratorMcpThreadListItem.Type;
 
 export const OrchestratorMcpThreadListResult = Schema.Struct({
-  /** The listed project; null when Home lists every project. */
-  projectId: Schema.NullOr(ProjectId),
+  projectId: ProjectId,
   currentThreadId: Schema.NullOr(ThreadId),
   threads: Schema.Array(OrchestratorMcpThreadListItem),
   nextCursor: Schema.NullOr(NonNegativeInt),
@@ -398,7 +378,6 @@ const clampedPositiveInt = (maximum: number) =>
   );
 
 export const OrchestratorMcpThreadReadInput = Schema.Struct({
-  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   itemId: Schema.optional(TurnItemId),
   textOffset: Schema.optional(NonNegativeInt),
@@ -493,7 +472,6 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
-  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
@@ -527,7 +505,6 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 
 export const OrchestratorMcpThreadInterruptInput = Schema.Struct({
-  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   runId: Schema.optional(RunId),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
@@ -547,7 +524,6 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
 export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
-  environmentId: OrchestratorMcpEnvironmentTarget,
   search: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
       description:
@@ -748,7 +724,6 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "orchestration_error",
       "thread_credential_required",
       "target_required",
-      "environment_unavailable",
     ]),
     message: Schema.String,
   },
