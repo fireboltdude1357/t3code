@@ -45,12 +45,7 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "../../compos
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
 import { vcsEnvironment } from "../../state/vcs";
-import {
-  useChildThreadInputs,
-  readThreadShell,
-  readThreadShells,
-  waitForThreadShell,
-} from "../../state/entities";
+import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
 import { environmentShell } from "../../state/shell";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel, formatRelativeTimeUntilLabel } from "../../timestampFormat";
@@ -420,16 +415,9 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const openRelatedThreadGenerationRef = useRef(0);
   const onOpenRelatedThread = async (threadId: ThreadId) => {
     const generation = ++openRelatedThreadGenerationRef.current;
-    // Related threads live here, except a message Home sent from another environment.
-    const shells = readThreadShells();
-    const owner = shells.some(
-      (shell) => shell.environmentId === environmentId && shell.id === threadId,
-    )
-      ? environmentId
-      : (shells.find((shell) => shell.id === threadId)?.environmentId ?? environmentId);
-    const threadRef = scopeThreadRef(owner, threadId);
+    const threadRef = scopeThreadRef(environmentId, threadId);
     const isEnvironmentLive = () =>
-      appAtomRegistry.get(environmentShell.stateValueAtom(owner)).status === "live";
+      appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live";
     // A just-launched child can reach this timeline before its shell syncs.
     if (isEnvironmentLive() && readThreadShell(threadRef) === null) {
       const location = router.latestLocation;

@@ -12,7 +12,7 @@ describe("bot thread ids", () => {
   it("does not mark ordinary or malformed ids", () => {
     for (const id of [
       "cmd-1",
-      "home-launched:cmd-1",
+      "mcp:cmd-1",
       "bot:",
       "bot:warden",
       "bot:warden:",

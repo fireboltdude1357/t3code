@@ -21,9 +21,6 @@ import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/http
 import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
 import * as ServerConfig from "../config.ts";
-import * as FleetBroker from "../home/FleetBroker.ts";
-import * as FleetService from "../home/FleetService.ts";
-import * as HomeService from "../home/HomeService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -165,10 +162,6 @@ const layerRecordingTools = (calls: Array<unknown>) => {
         McpToolAccessTestkit.liveThreadsLayer,
         Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
-        // t3_thread_read declares the Home routing services; these handlers never use them.
-        Layer.mock(HomeService.HomeService)({ available: false }),
-        Layer.mock(FleetService.FleetService)({}),
-        Layer.mock(FleetBroker.FleetBroker)({}),
         NodeServices.layer,
       ),
     ),

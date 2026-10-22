@@ -1,11 +1,5 @@
 import { findRevealRef } from "./markdownFindContext";
-import {
-  isHomeReportMessageId,
-  isHomeThreadId,
-  type MessageId,
-  type ServerProviderSkill,
-  ThreadId,
-} from "@t3tools/contracts";
+import { type MessageId, type ServerProviderSkill, ThreadId } from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
 import { useQuietThreadShell } from "../../state/entities";
@@ -425,14 +419,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       className="group flex flex-col items-end gap-1"
       data-user-message-attribution={folded ? "agent" : undefined}
     >
-      {isHomeReportMessageId(row.message.id) ? (
-        <p
-          className="me-1 text-2xs text-muted-foreground/70"
-          data-user-message-attribution="home-report"
-        >
-          Watch report from T3 Code
-        </p>
-      ) : userMessage.attribution === "t3code" ? (
+      {userMessage.attribution === "t3code" ? (
         <p
           className="me-1 text-2xs text-muted-foreground/70"
           data-user-message-attribution="t3code"
@@ -454,10 +441,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         {folded ? (
           <FoldedMessageHeader
             icon={MessagesSquareIcon}
-            label={
-              senderShell?.title.trim() ||
-              (senderThreadId && isHomeThreadId(senderThreadId) ? "Home" : "Agent")
-            }
+            label={senderShell?.title.trim() || "Agent"}
             summary={foldSummary}
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
