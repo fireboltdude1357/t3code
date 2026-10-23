@@ -1098,6 +1098,8 @@ describe("Working shelf (beta)", () => {
       row("a2", "active"),
       marker("working-header"),
       row("w1", "working"),
+      marker("bots-header"),
+      row("b1", "bots"),
       marker("settled-header"),
       row("s1", "settled"),
     ];
@@ -1110,6 +1112,11 @@ describe("Working shelf (beta)", () => {
         activeOrder: ["a1", "a2", "p1"],
       });
       expect(resolveSidebarDropVerb("active", "working")).toBeNull();
+    });
+
+    it("never drops into the Bots shelf", () => {
+      expect(resolveSidebarDropTarget(items, "a1", "b1")).toBeNull();
+      expect(resolveSidebarDropVerb("active", "bots")).toBeNull();
     });
 
     it.each([
