@@ -756,6 +756,8 @@ export function buildThreadListV2Items(input: {
       hiddenSettledCount: 0,
       workingCount: 0,
       workingShelfHeaderIndex: null,
+      botCount: 0,
+      botShelfHeaderIndex: null,
       snoozedCount: 0,
       snoozedShelfHeaderIndex: null,
       settledCount: 0,
