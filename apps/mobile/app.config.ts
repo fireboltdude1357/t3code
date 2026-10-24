@@ -16,6 +16,9 @@ const runtimeVersionPolicy =
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+// The fork app ID prefix is also the Android package, which allows no hyphens
+// and needs every segment to start with a letter.
+const APP_ID_PREFIX_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
 
 const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
 const androidAdaptiveForeground = "./assets/android-icon-foreground.png";
@@ -42,9 +45,9 @@ const appleTeamId = repoEnv.T3CODE_IOS_APPLE_TEAM_ID?.trim() || "ARK85ZXQ4Z";
 // and from the store app.
 const appIdPrefix = repoEnv.T3CODE_APP_ID_PREFIX?.trim() || undefined;
 
-if (appIdPrefix && !IOS_BUNDLE_IDENTIFIER_PATTERN.test(appIdPrefix)) {
+if (appIdPrefix && !APP_ID_PREFIX_PATTERN.test(appIdPrefix)) {
   throw new Error(
-    "T3CODE_APP_ID_PREFIX must be a reverse-DNS identifier such as com.example.t3code.",
+    "T3CODE_APP_ID_PREFIX must be a reverse-DNS identifier such as com.example.t3code, with no hyphens and each segment starting with a letter.",
   );
 }
 
@@ -280,7 +283,11 @@ const config: ExpoConfig = {
       `webcredentials:${variant.relyingParty}`,
     ],
     entitlements: {
-      "keychain-access-groups": [`$(AppIdentifierPrefix)${iosBundleIdentifier}`],
+      // Only a fork app ID moves the group. Personal-team builds keep upstream's
+      // group so an update doesn't lose their saved connections.
+      "keychain-access-groups": [
+        `$(AppIdentifierPrefix)${appIdPrefix ? iosBundleIdentifier : variant.iosBundleIdentifier}`,
+      ],
     },
     infoPlist: {
       UISupportedInterfaceOrientations: [
