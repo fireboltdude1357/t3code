@@ -3180,11 +3180,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 key="working-shelf-header"
                                 marker="working-header"
                                 className="mt-auto"
-                                label={
-                                  workingShelfExpanded
-                                    ? "Working"
-                                    : `Working (${workingThreads.length})`
-                                }
+                                label="Working"
+                                count={workingThreads.length}
                                 toggle={{
                                   expanded: workingShelfExpanded,
                                   onToggle: toggleWorkingShelf,
@@ -3198,7 +3195,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 key="bots-shelf-header"
                                 marker="bots-header"
                                 className={cn(workingThreads.length === 0 && "mt-auto")}
-                                label={botsShelfExpanded ? "Bots" : `Bots (${botThreads.length})`}
+                                label="Bots"
+                                count={botThreads.length}
                                 toggle={{
                                   expanded: botsShelfExpanded,
                                   onToggle: toggleBotsShelf,
@@ -3214,11 +3212,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 className={cn(
                                   workingThreads.length + botThreads.length === 0 && "mt-auto",
                                 )}
-                                label={
-                                  snoozedShelfExpanded
-                                    ? "Snoozed"
-                                    : `Snoozed (${snoozedThreads.length})`
-                                }
+                                label="Snoozed"
+                                count={snoozedThreads.length}
                                 toggle={{
                                   expanded: snoozedShelfExpanded,
                                   onToggle: toggleSnoozedShelf,
@@ -3237,9 +3232,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                     snoozedThreads.length ===
                                     0 && "mt-auto",
                                 )}
-                                label={
-                                  settledShelfExpanded ? "Settled" : `Settled (${settledCount})`
-                                }
+                                label="Settled"
+                                count={settledCount}
                                 dragging={from !== null}
                                 isDropTarget={dragTargetSection === "settled"}
                                 toggle={{

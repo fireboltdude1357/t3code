@@ -118,6 +118,7 @@ import {
   type GuestShareCommand,
 } from "./GuestShareDecider.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -599,6 +600,17 @@ function cancelledAppOwnedTask(
     updatedAt: now,
     completionDelivery: { state: "disposed", observedByRunId: null },
   };
+}
+
+// Provider wakes can start follow-up work; monitor updates only report progress.
+// Dispatch takes the parent's lock for follow-ups because intake writes the parent.
+function mayStartSubagentFollowup(
+  command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+): boolean {
+  if (command.scheduledTaskId !== undefined || command.restartContinuationOfRunId !== undefined)
+    return false;
+  if (command.notification !== undefined) return command.notification.source.kind !== "monitor";
+  return command.createdBy === "user" || command.creationSource === "mcp";
 }
 
 function isBlockingRun(run: OrchestrationV2Run): boolean {
@@ -7339,13 +7351,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) {
-    if (
-      command.scheduledTaskId !== undefined ||
-      command.notification !== undefined ||
-      command.restartContinuationOfRunId !== undefined ||
-      (command.createdBy !== "user" && command.creationSource !== "mcp")
-    )
-      return;
+    if (!mayStartSubagentFollowup(command)) return;
     const pending = yield* Ref.get(events);
     const message = pending
       .flatMap((event) =>
@@ -7367,7 +7373,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       child.lineage.relationshipToParent !== "subagent" ||
       parentThreadId === null ||
-      (command.createdBy !== "user" && command.senderThreadId !== parentThreadId)
+      (command.notification === undefined &&
+        command.createdBy !== "user" &&
+        command.senderThreadId !== parentThreadId)
     )
       return;
     const run =
@@ -9130,7 +9138,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         childThreadIds.add(childThreadId);
         const child = yield* projectionStore
-          .getThreadRecords(childThreadId, ["nodes", "subagents", "turnItems"], {
+          .getThreadRecords(childThreadId, ["nodes", "providerTurns", "subagents", "turnItems"], {
             // Runless items are the subagent's; any run there is the user's own.
             turnItemRunIds: [null],
             turnItemStatuses: ["pending", "running", "waiting"],
@@ -9689,7 +9697,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* Ref.update(events, (current) => [...current, ...ended]);
         if (subagent.childThreadId !== null) {
           const child = yield* projectionStore
-            .getThreadRecords(subagent.childThreadId, ["nodes", "turnItems"], {
+            .getThreadRecords(subagent.childThreadId, ["nodes", "providerTurns", "turnItems"], {
               turnItemRunIds: [null],
               turnItemStatuses: ["pending", "running", "waiting"],
             })
@@ -12135,7 +12143,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       storedEvents: committed.storedEvents,
       ...(committed.committed ? {} : { replayed: true as const }),
     } satisfies OrchestratorV2DispatchResult;
-  });
+  }, withCommandMetrics);
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
@@ -12143,10 +12151,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
-    if (
-      command.type !== "message.dispatch" ||
-      (command.createdBy !== "user" && command.creationSource !== "mcp")
-    )
+    if (command.type !== "message.dispatch" || !mayStartSubagentFollowup(command))
       return yield* dispatch;
     const parentThreadId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
       Effect.mapError(
