@@ -31,6 +31,13 @@ import { useUiRuntimeMemoryWarningGc } from "./lib/useUiRuntimeMemoryWarningGc";
 import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
 import { VoiceInputProvider } from "./features/voice-input/VoiceInputProvider";
 import { GlobalVoiceInputControl } from "./features/voice-input/GlobalVoiceInputControl";
+import { restoreSettingsLinkState } from "./features/settings/settings-navigation";
+import {
+  hydrateWorkspaceSelections,
+  launchWorkspaceURL,
+  recordWorkspaceSelections,
+  settingsLinkPage,
+} from "./features/workspace/workspace-selection-store";
 import { NativeLayoutMetricsProvider } from "./native/native-layout-metrics";
 
 import "../global.css";
@@ -40,13 +47,18 @@ if (process.env.EXPO_PUBLIC_SHOWCASE === "1") {
 }
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
+void hydrateWorkspaceSelections();
 
 const appLinking = {
   prefixes: [Linking.createURL("/"), "t3code://", "t3code-dev://", "t3code-preview://"],
   config: { initialRouteName: "Home" },
   filter: shouldHandleAppLink,
+  getInitialURL: async () => (await Linking.getInitialURL()) ?? (await launchWorkspaceURL()),
   getStateFromPath: (path: string, options: Parameters<typeof getStateFromPath>[1]) =>
-    restoreDraftLinkState(getStateFromPath(path, options), path),
+    restoreSettingsLinkState(
+      restoreDraftLinkState(getStateFromPath(path, options), path),
+      settingsLinkPage(),
+    ),
 };
 
 const Navigation = createStaticNavigation(RootStack);
@@ -99,23 +111,21 @@ function AppContent() {
           <SafeAreaProvider>
             <VoiceInputProvider>
               <StatusBar barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"} />
-              {/* The navigation theme drives the NATIVE header appearance: native-stack
-                forwards `dark` as the nav bar's overrideUserInterfaceStyle. Without
-                this, React Navigation defaults to its light theme and every native
-                header (glass buttons, title, materials) is forced light even when
-                the system is in dark mode. */}
+              {/* native-stack needs the theme's dark flag to select dark native headers. */}
               <GlobalVoiceInputControl>
                 <NativeLayoutMetricsProvider>
                   <IncomingShareProvider>
-                    <Navigation linking={appLinking} theme={navigationTheme} />
+                    <Navigation
+                      linking={appLinking}
+                      theme={navigationTheme}
+                      onStateChange={recordWorkspaceSelections}
+                    />
                   </IncomingShareProvider>
                   <Dialog.Host />
                   <ThreadArrangementHost />
                   <ProjectChipIconRasterizer />
                 </NativeLayoutMetricsProvider>
               </GlobalVoiceInputControl>
-              {/* Anchored-menu overlays render here — in-window, so the
-                keyboard stays up while a dropdown is open. */}
               <OverlayPortalHost />
             </VoiceInputProvider>
           </SafeAreaProvider>
