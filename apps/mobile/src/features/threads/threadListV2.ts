@@ -621,6 +621,7 @@ export function buildThreadListV2Items(input: {
   readonly workingShelfExpanded?: boolean;
   /** Expands the Bots shelf into rows. Collapsed is the default. */
   readonly botShelfExpanded?: boolean;
+  readonly isWorking?: (thread: EnvironmentThreadShell) => boolean;
   readonly inboxReturnAt?: (thread: EnvironmentThreadShell) => number | undefined;
   readonly snoozedShelfExpanded?: boolean;
   readonly settledShelfExpanded?: boolean;
@@ -707,7 +708,7 @@ export function buildThreadListV2Items(input: {
     } else if (botShelfName(thread) !== null) {
       // Bot work stays out of the inbox, beta or not, until it needs the user.
       bots.push(thread);
-    } else if (workingShelfEnabled && isThreadWorking(thread)) {
+    } else if (workingShelfEnabled && (input.isWorking ?? isThreadWorking)(thread)) {
       working.push(thread);
     } else {
       active.push(thread);
