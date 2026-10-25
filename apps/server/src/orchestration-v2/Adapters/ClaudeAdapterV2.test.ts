@@ -668,9 +668,8 @@ describe("ClaudeAdapterV2 context usage", () => {
 });
 
 describe("ClaudeAdapterV2 approval presentation", () => {
-  it("marks asks that full access could not auto-allow and keeps the CLI's reason", () => {
+  it("keeps the CLI's reason and offers no standing grant when Claude forbids one", () => {
     const presentation = ClaudeAdapterV2.claudeApprovalPresentation({
-      permissionMode: "bypassPermissions",
       prompt: 'Claude wants to run rm -r -- "$rr/$h"',
       callbackOptions: {
         decisionReason: "\u001b[33mDangerous rm on a path built from a variable\u001b[39m",
@@ -679,7 +678,6 @@ describe("ClaudeAdapterV2 approval presentation", () => {
     });
     assert.deepEqual(presentation, {
       reason: "Dangerous rm on a path built from a variable",
-      fullAccessOverride: "provider_check",
       options: [
         { decision: "decline", label: "Decline" },
         { decision: "accept", label: "Approve" },
@@ -687,20 +685,8 @@ describe("ClaudeAdapterV2 approval presentation", () => {
     });
   });
 
-  it("attributes a bypass ask to the user's ask rule when one matched", () => {
+  it("adds nothing when the reason repeats the prompt", () => {
     const presentation = ClaudeAdapterV2.claudeApprovalPresentation({
-      permissionMode: "bypassPermissions",
-      prompt: "Claude wants to run git push",
-      callbackOptions: {
-        matchedAskRule: { source: "userSettings", toolName: "Bash", ruleContent: "git push:*" },
-      },
-    });
-    assert.deepEqual(presentation, { fullAccessOverride: "ask_rule" });
-  });
-
-  it("adds nothing to ordinary approvals outside full access", () => {
-    const presentation = ClaudeAdapterV2.claudeApprovalPresentation({
-      permissionMode: "default",
       prompt: "Run make?",
       callbackOptions: { decisionReason: "Run make?" },
     });
@@ -3381,7 +3367,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
     );
 
-    it.effect("asks before restricted Full access tools and follows policy across turns", () =>
+    it.effect("allows Full access tools until Claude settings disable bypass", () =>
       Effect.gen(function* () {
         const resolveSettings = vi
           .mocked(ClaudeSdk.resolveSettings)
@@ -3445,6 +3431,40 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             (event) =>
               event.type === "turn_item.updated" && event.turnItem.type === "system_notice",
           );
+        const forwardBash = (toolUseID: string) =>
+          Effect.gen(function* () {
+            const decision = yield* Effect.promise(() =>
+              harness.getOpenedOptions()!.canUseTool!(
+                "Bash",
+                { command: "sh -c 'rm -f x'" },
+                {
+                  signal: new AbortController().signal,
+                  toolUseID,
+                  requestId: `request-${toolUseID}`,
+                },
+              ),
+            ).pipe(Effect.forkScoped);
+            return yield* Effect.raceFirst(
+              Queue.take(harness.runtimeRequestReceipts).pipe(
+                Effect.map((event) => ({ type: "request", event, decision }) as const),
+              ),
+              Fiber.join(decision).pipe(
+                Effect.map((result) => ({ type: "decision", result }) as const),
+              ),
+            );
+          });
+        const assertAsksThenDecline = (toolUseID: string, message: string) =>
+          Effect.gen(function* () {
+            const first = yield* forwardBash(toolUseID);
+            assert.equal(first.type, "request", message);
+            if (first.type !== "request") return;
+            assert.equal(first.event.runtimeRequest.kind, "command");
+            yield* harness.runtime.respondToRuntimeRequest({
+              requestId: first.event.runtimeRequest.id,
+              decision: "decline",
+            });
+            assert.equal((yield* Fiber.join(first.decision))?.behavior, "deny");
+          });
 
         yield* start("/restricted-worktree", "auto");
         assert.equal(harness.getOpenedOptions()?.permissionMode, "auto");
@@ -3454,37 +3474,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
         yield* start("/restricted");
         const openedOptions = harness.getOpenedOptions()!;
-        const decision = yield* Effect.promise(() =>
-          openedOptions.canUseTool!(
-            "Bash",
-            { command: "git status" },
-            {
-              signal: new AbortController().signal,
-              toolUseID: "policy-command",
-              requestId: "request-policy-command",
-            },
-          ),
-        ).pipe(Effect.forkScoped);
-        const first = yield* Effect.raceFirst(
-          Queue.take(harness.runtimeRequestReceipts).pipe(
-            Effect.map((event) => ({ type: "request", event }) as const),
-          ),
-          Fiber.join(decision).pipe(
-            Effect.map((result) => ({ type: "decision", result }) as const),
-          ),
-        );
-        assert.equal(
-          first.type,
-          "request",
+        yield* assertAsksThenDecline(
+          "policy-command",
           "Full access must not auto-allow a policy-restricted command",
         );
-        if (first.type !== "request") return;
-        assert.equal(first.event.runtimeRequest.kind, "command");
-        yield* harness.runtime.respondToRuntimeRequest({
-          requestId: first.event.runtimeRequest.id,
-          decision: "decline",
-        });
-        assert.equal((yield* Fiber.join(decision))?.behavior, "deny");
         assert.equal(openedOptions.permissionMode, "auto");
         assert.isUndefined(openedOptions.allowDangerouslySkipPermissions);
 
@@ -3515,64 +3508,38 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* start("/unrestricted");
         assert.equal(harness.getOpenedOptions()?.permissionMode, "bypassPermissions");
         assert.equal(harness.getOpenedOptions()?.allowDangerouslySkipPermissions, true);
-        // Forwarded asks (including ask rules and settings fallback) still need a decision
-        // before queued init/status frames arrive.
-        for (const { phase, frame } of [
-          {
-            phase: "init",
-            frame: claudeSdkFrame({
-              type: "system",
-              subtype: "init",
-              permissionMode: "bypassPermissions",
-              uuid: "policy-cli-init",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          },
-          {
-            phase: "status",
-            frame: claudeSdkFrame({
-              type: "system",
-              subtype: "status",
-              status: null,
-              permissionMode: "default",
-              uuid: "policy-cli-downgrade",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          },
-        ]) {
-          const forwardedDecision = yield* Effect.promise(() =>
-            harness.getOpenedOptions()!.canUseTool!(
-              "Bash",
-              { command: "git status" },
-              {
-                signal: new AbortController().signal,
-                toolUseID: `forwarded-before-${phase}`,
-                requestId: `request-forwarded-before-${phase}`,
-              },
-            ),
-          ).pipe(Effect.forkScoped);
-          const forwardedFirst = yield* Effect.raceFirst(
-            Queue.take(harness.runtimeRequestReceipts).pipe(
-              Effect.map((event) => ({ type: "request", event }) as const),
-            ),
-            Fiber.join(forwardedDecision).pipe(
-              Effect.map((result) => ({ type: "decision", result }) as const),
-            ),
-          );
-          assert.equal(
-            forwardedFirst.type,
-            "request",
-            `CLI-forwarded Bash must ask before the queued ${phase} frame reaches the adapter`,
-          );
-          if (forwardedFirst.type !== "request") return;
-          assert.equal(forwardedFirst.event.runtimeRequest.kind, "command");
-          yield* harness.runtime.respondToRuntimeRequest({
-            requestId: forwardedFirst.event.runtimeRequest.id,
-            decision: "decline",
-          });
-          assert.equal((yield* Fiber.join(forwardedDecision))?.behavior, "deny");
-          yield* harness.offerAndWait(frame);
-        }
+        // Claude forwards safety checks even under bypass. Full access answers them.
+        const forwarded = yield* forwardBash("forwarded-under-bypass");
+        assert.equal(
+          forwarded.type,
+          "decision",
+          "Full access must allow a forwarded Bash request without asking",
+        );
+        if (forwarded.type !== "decision") return;
+        assert.equal(forwarded.result?.behavior, "allow");
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "init",
+            permissionMode: "bypassPermissions",
+            uuid: "policy-cli-init",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: null,
+            permissionMode: "default",
+            uuid: "policy-cli-downgrade",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* assertAsksThenDecline(
+          "forwarded-after-cli-downgrade",
+          "Full access must ask once Claude reports its settings disabled bypass",
+        );
         yield* finish;
         const unrestrictedOptions = harness.getOpenedOptions();
         yield* start("/unrestricted");
@@ -3605,33 +3572,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.strictEqual(harness.getOpenedOptions(), unrestrictedOptions);
           assert.deepEqual(harness.permissionModeChanges, ["auto", "bypassPermissions", "default"]);
           assert.equal(harness.offeredMessages.length, ordinal);
-          const restoredDecision = yield* Effect.promise(() =>
-            harness.getOpenedOptions()!.canUseTool!(
-              "Bash",
-              { command: "git status" },
-              {
-                signal: new AbortController().signal,
-                toolUseID: `forwarded-after-plan-${phase}`,
-                requestId: `request-after-plan-${phase}`,
-              },
-            ),
-          ).pipe(Effect.forkScoped);
-          const restoredFirst = yield* Effect.raceFirst(
-            Queue.take(harness.runtimeRequestReceipts).pipe(
-              Effect.map((event) => ({ type: "request", event }) as const),
-            ),
-            Fiber.join(restoredDecision).pipe(
-              Effect.map((result) => ({ type: "decision", result }) as const),
-            ),
+          yield* assertAsksThenDecline(
+            `forwarded-after-plan-${phase}`,
+            `Full access must keep asking after a rejected bypass restore (${phase})`,
           );
-          assert.equal(restoredFirst.type, "request");
-          if (restoredFirst.type !== "request") return;
-          assert.equal(restoredFirst.event.runtimeRequest.kind, "command");
-          yield* harness.runtime.respondToRuntimeRequest({
-            requestId: restoredFirst.event.runtimeRequest.id,
-            decision: "decline",
-          });
-          assert.equal((yield* Fiber.join(restoredDecision))?.behavior, "deny");
           yield* finish;
           assert.equal(harness.terminalEvents().at(-1)?.status, "completed");
         }
@@ -4178,13 +4122,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             requestId: "weather-request",
           },
         ),
-      ).pipe(Effect.forkScoped);
-      const request = yield* Queue.take(harness.runtimeRequestReceipts);
-      yield* harness.runtime.respondToRuntimeRequest({
-        requestId: request.runtimeRequest.id,
-        decision: "accept",
-      });
-      yield* Fiber.join(permission);
+      );
+      assert.equal(permission?.behavior, "allow");
       yield* harness.offerAndWait(
         claudeSdkFrame({
           type: "assistant",
