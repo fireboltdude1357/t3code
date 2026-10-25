@@ -16,8 +16,7 @@ export function useThreadListV2ShelfPreferences() {
     loaded && preferencesResult.value.threadListWorkingShelfExpanded === true;
   const botShelfExpanded = loaded && preferencesResult.value.threadListBotShelfExpanded === true;
 
-  // A transform reads the optimistic value, so two presses before the next
-  // render still toggle twice instead of writing the same value.
+  // Transforms read optimistic state so same-frame presses toggle twice.
   const toggleSnoozedShelf = () => {
     if (!loaded) return;
     savePreferences({

@@ -66,9 +66,7 @@ export const layer = HttpApiBuilder.group(
         Effect.forEach(
           projects,
           (project) =>
-            // Use immediately available enrichment only. Awaiting git-backed
-            // identity resolution can exceed the client shell-snapshot budget
-            // (ProcessRunner allows probes up to one minute).
+            // Use available enrichment only; git probes can take a minute and exceed shell-snapshot budgets.
             projectEnrichment.getAvailable(project.workspaceRoot).pipe(
               Effect.map((enrichment) => ({
                 ...project,
@@ -229,6 +227,8 @@ export const layer = HttpApiBuilder.group(
             ...boundedSnapshotResponseFields({
               bounded,
               compactTurnItems: args.query.compactTurnItems === "1",
+              dedupeBodies: args.query.dedupeBodies === "1",
+              compactIds: args.query.compactIds === "1",
             }),
           };
         }),
@@ -253,6 +253,9 @@ export const layer = HttpApiBuilder.group(
               args.query.view === "conversation",
             )
             .pipe(
+              Effect.map((page) =>
+                args.query.compactIds === "1" ? { ...page, idTable: true as const } : page,
+              ),
               traceLocalHandlerWork,
               Effect.catch(
                 Effect.fnUntraced(function* (cause) {
