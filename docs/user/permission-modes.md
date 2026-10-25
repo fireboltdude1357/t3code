@@ -36,7 +36,8 @@ ACP Registry agents run their own tools in their own mode; T3 Code answers their
 by the permission mode. See [ACP Registry permissions](./providers-acp.md#permissions-and-terminals).
 
 Claude asks in **Full access** only when it is not running in bypass permissions, such as when its
-settings disable bypass.
+settings disable bypass. In Full access, T3 Code approves the requests Claude still forwards,
+including ask rules from your Claude settings.
 While a Claude approval is pending, type a text reply to decline that request and give feedback
 directly to the agent that asked, including a subagent. Other pending requests stay unanswered.
 
