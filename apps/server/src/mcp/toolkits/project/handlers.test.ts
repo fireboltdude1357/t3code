@@ -73,7 +73,10 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
             launch: (input) =>
               Effect.succeed({
                 threadId: input.threadId,
-                projection: { thread: { id: input.threadId, projectId, modelSelection }, runs: [] },
+                projection: {
+                  thread: { id: input.threadId, title: "Fix", projectId, modelSelection },
+                  runs: [],
+                },
                 resumed: false,
               } as unknown as ThreadLaunch.ThreadLaunchResult),
           }),
