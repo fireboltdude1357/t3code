@@ -859,7 +859,6 @@ describe("PullRequestSyncReactor", () => {
         yield* Effect.gen(function* () {
           const reactor = yield* startAndSweep(fixture);
           const firstSweep = yield* Ref.get(fixture.syncCommands);
-          // The held merged summary is dropped so the read reaches the host.
           assert.deepStrictEqual(yield* Ref.get(invalidated), [1]);
           assert.strictEqual(firstSweep.at(-1)?.snapshot.mergedAt, "2026-08-27T00:00:00.000Z");
           yield* Ref.update(fixture.snapshots, (snapshot) => applySync(snapshot, firstSweep));
@@ -911,6 +910,43 @@ describe("PullRequestSyncReactor", () => {
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
+  );
+
+  it.effect.each([true, false])(
+    "syncs linked draft status %s as soon as a reader reports a change",
+    (isDraft) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const draft = yield* Ref.make(!isDraft);
+        const invalidated = yield* Ref.make<ReadonlyArray<number>>([]);
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([
+            makeThread("agent", { pullRequests: [makeLink(7, { isDraft: !isDraft })] }),
+          ]),
+          summary: (input) =>
+            Ref.get(draft).pipe(Effect.map((isDraft) => makeSummary(input, { isDraft }))),
+          invalidate: ({ reference }) =>
+            Ref.update(invalidated, (numbers) => [...numbers, reference?.number ?? -1]),
+        });
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* startAndSweep(fixture);
+          yield* Ref.set(draft, isDraft);
+          yield* Queue.offer(fixture.stateChanges, {
+            host: "github.com",
+            repository: "owner/repository",
+            number: 7,
+          });
+          yield* Queue.take(fixture.snapshotReads);
+          yield* reactor.drain;
+
+          assert.deepStrictEqual(yield* Ref.get(invalidated), [7]);
+          assert.deepStrictEqual(
+            (yield* Ref.get(fixture.syncCommands)).map((command) => command.snapshot.isDraft),
+            [isDraft],
+          );
+        }).pipe(Effect.provide(fixture.layer));
+      }),
   );
 
   it.effect("preserves a refresh requested while an older host read is in flight", () =>
@@ -1300,7 +1336,11 @@ describe("PullRequestSyncReactor", () => {
     ),
   );
 
-  it.effect("reads open links fresh only when a run that ran a merge command ends", () =>
+  it.effect.each([
+    "gh pr merge 7 --squash 2>&1 | tail -3",
+    "cafe pr merge 7 --squash",
+    "az repos pr update --id 7 --status completed",
+  ])("reads open links fresh only when a run that ran `%s` ends", (mergeCommand) =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse(NOW));
@@ -1329,7 +1369,7 @@ describe("PullRequestSyncReactor", () => {
           yield* Queue.offerAll(fixture.domainEvents, [
             commandRan(ThreadId.make("other"), "gh pr view 9"),
             runUpdated(ThreadId.make("other"), "completed"),
-            commandRan(ThreadId.make("agent"), "gh pr merge 7 --squash 2>&1 | tail -3"),
+            commandRan(ThreadId.make("agent"), mergeCommand),
             runUpdated(ThreadId.make("agent"), "completed"),
           ]);
           yield* Queue.take(fixture.snapshotReads);

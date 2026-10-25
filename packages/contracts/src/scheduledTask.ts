@@ -18,7 +18,6 @@ import {
 } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 
-/** 24-hour "HH:MM" wall-clock time. Mirrors `parseTimeOfDay` on the server. */
 const TimeOfDay = TrimmedNonEmptyString.check(
   Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/),
 ).annotate({ description: "Local wall-clock time in 24-hour HH:MM form, such as 09:30." });
@@ -109,7 +108,7 @@ const WebhookFilterPath = TrimmedNonEmptyString.check(
   Schema.isPattern(/^(body|headers|query)(\.|$)/),
 ).annotate({
   description:
-    "Request value to test, in placeholder syntax without braces: headers.x-github-event, body.action, query.source.",
+    "Request value to test, in placeholder syntax without braces: headers.x-github-event, body.action, query.source. A segment ending in [] fans out over an array, so body.issue.labels[].name tests every label's name.",
 });
 
 /**
@@ -134,7 +133,7 @@ export const ScheduledTaskWebhookFilter = Schema.Union([
   Schema.Struct({ path: WebhookFilterPath, op: Schema.Literal("exists") }),
 ]).annotate({
   description:
-    "Scalars compare as strings; objects and arrays only satisfy 'exists'. Every op but 'exists' fails when the path is missing.",
+    "Scalars compare as strings; objects and arrays only satisfy 'exists'. Every op but 'exists' fails when the path is missing. A [] wildcard path yields a list: equals, in and startsWith match when any element does, notEquals when no element equals the value, exists when the list is not empty.",
 });
 export type ScheduledTaskWebhookFilter = typeof ScheduledTaskWebhookFilter.Type;
 export type ScheduledTaskWebhookFilterOp = ScheduledTaskWebhookFilter["op"];
@@ -187,10 +186,7 @@ const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
     "Run on each request to the task's webhook URL. The prompt may use {{body.path}}, {{headers.name}}, {{query.name}}, {{body}} and {{request}} placeholders.",
 });
 
-/**
- * Read model for persisted schedules. Keep accepting legacy sub-minute rows so
- * users can list, disable, edit, or delete them after the write minimum changes.
- */
+/** Accept legacy sub-minute schedules so users can still manage them. */
 export const ScheduledTaskSchedule = Schema.Union([
   ScheduledTaskIntervalSchedule,
   ScheduledTaskFixedTimeSchedule,
@@ -260,8 +256,6 @@ export const ScheduledTaskListInput = Schema.Struct({});
 export type ScheduledTaskListInput = typeof ScheduledTaskListInput.Type;
 
 export const ScheduledTaskListResult = Schema.Struct({
-  // Trigger types grow over time; a client must not lose the whole list over
-  // one task it cannot decode.
   tasks: ForwardCompatibleArray(ScheduledTask),
 });
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;

@@ -5,22 +5,22 @@ export type AdaptiveNavigationAction = "push" | "replace" | "set-params";
 const BASE_THREAD_ROUTE_PATTERN = /^\/threads\/[^/]+\/[^/]+\/?$/;
 
 export function isBaseThreadRoute(pathname: string): boolean {
-  return BASE_THREAD_ROUTE_PATTERN.test(pathname);
+  return BASE_THREAD_ROUTE_PATTERN.test(pathname) || /^\/new\/draft\/?$/.test(pathname);
 }
 
-/**
- * From Home the selection pushes (never replaces) so Home stays beneath the
- * thread — collapsing back to a compact width keeps a sane back stack.
- */
+/** Push from Home so it stays beneath Thread when split view collapses. */
 export function resolveThreadSelectionNavigationAction(input: {
   readonly usesSplitView: boolean;
   readonly pathname: string;
+  readonly workspaceRouteName?: string;
 }): AdaptiveNavigationAction {
   if (!input.usesSplitView || input.pathname === "/") {
     return "push";
   }
 
-  return isBaseThreadRoute(input.pathname) ? "set-params" : "replace";
+  return input.workspaceRouteName === "Thread" || isBaseThreadRoute(input.pathname)
+    ? "set-params"
+    : "replace";
 }
 
 export function resolveThreadSelectionOverlayState(input: {
@@ -43,7 +43,7 @@ export function resolveThreadSelectionOverlayState(input: {
     routes: [
       ...routes,
       input.action === "set-params" && workspaceRoute?.name === "Thread"
-        ? { ...workspaceRoute, params: { ...workspaceRoute.params, ...input.params } }
+        ? { ...workspaceRoute, params: input.params }
         : { name: "Thread", params: input.params },
     ],
   };

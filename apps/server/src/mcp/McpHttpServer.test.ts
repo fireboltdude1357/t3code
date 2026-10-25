@@ -132,7 +132,6 @@ const callTool = (name: string, args: Record<string, unknown>) =>
 
 const callSnapshot = (args: Record<string, unknown>) => callTool("preview_snapshot", args);
 
-// Real tool definitions with handlers that record what they decoded.
 const layerRecordingTools = (calls: Array<unknown>) => {
   const RecordingToolkit = Toolkit.make(
     OrchestratorToolkit.tools.delegate_task,
@@ -365,7 +364,6 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     yield* callTool("t3_thread_read", { ...thread, afterPosition: null, view: null });
     yield* callTool("delegate_task", { task: "Inspect", target: {} });
     yield* callTool("delegate_task", { task: "Inspect", title: null, target: { model: null } });
-    // A null the schema declares keeps its meaning: here it clears the project icon.
     yield* callTool("t3_project_update", { projectId: "project-1", projectIcon: null });
 
     expect(calls).toHaveLength(5);
@@ -373,6 +371,64 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     expect(calls[3]).toEqual(calls[2]);
     expect(calls[4]).toStrictEqual({ projectId: "project-1", projectIcon: null });
   }).pipe(Effect.provide(layerRecordingTools(calls)));
+});
+
+it.effect(
+  "clamps t3_thread_read page sizes above their maximum instead of rejecting the call",
+  () => {
+    const calls: Array<unknown> = [];
+    return Effect.gen(function* () {
+      const thread = { threadId: "thread-clamped-arguments" };
+      // Codex never shows the model these bounds, so an over-large page must still read.
+      yield* callTool("t3_thread_read", {
+        ...thread,
+        limit: 150,
+        runLimit: 80,
+        maxCharsPerItem: 60_000,
+      });
+      yield* callTool("t3_thread_read", {
+        ...thread,
+        limit: 100,
+        runLimit: 50,
+        maxCharsPerItem: 50_000,
+      });
+      yield* callTool("t3_thread_read", { ...thread, limit: 7, runLimit: 1, maxCharsPerItem: 1 });
+
+      expect(calls).toEqual([
+        { ...thread, limit: 100, runLimit: 50, maxCharsPerItem: 50_000 },
+        { ...thread, limit: 100, runLimit: 50, maxCharsPerItem: 50_000 },
+        { ...thread, limit: 7, runLimit: 1, maxCharsPerItem: 1 },
+      ]);
+    }).pipe(Effect.provide(layerRecordingTools(calls)));
+  },
+);
+
+it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
+  "still rejects a t3_thread_read %s below its minimum",
+  (field) => {
+    const calls: Array<unknown> = [];
+    return Effect.gen(function* () {
+      // Zero is a different request than one item, so it fails rather than answering another question.
+      const rejected = yield* callTool("t3_thread_read", {
+        threadId: "thread-below-minimum",
+        [field]: 0,
+      }).pipe(Effect.flip);
+
+      expect(String(rejected)).toContain("greater than or equal to 1");
+      expect(calls).toEqual([]);
+    }).pipe(Effect.provide(layerRecordingTools(calls)));
+  },
+);
+
+it("routes same-child follow-ups to t3_thread_send and independent reviews to delegate_task", () => {
+  const description = OrchestratorToolkit.tools.delegate_task.description ?? "";
+  expect(description).toContain(
+    "For independent T3 delegated review rounds, call delegate_task again",
+  );
+  expect(description).toContain(
+    "For a follow-up that needs the same child's conversation, use t3_thread_send on its childThreadId.",
+  );
+  expect(description).not.toContain("not the target for starting another");
 });
 
 it.effect(
@@ -486,7 +542,6 @@ it.effect("keeps the snapshot text under the agent's output ceiling", () =>
       expect(parsed.consoleEntries[0]?.text).toBe("entry 60");
       expect(notice?.type === "text" ? notice.text : "").toContain("accessibilityTree");
       expect(notice?.type === "text" ? notice.text : "").toContain("60 older console entries");
-      // Claude Code shows the model structuredContent instead of the text, so it is bounded too.
       expect(snapshot.structuredContent).toEqual({
         ...parsed,
         omitted: expect.arrayContaining(["60 older console entries"]),
