@@ -1,8 +1,9 @@
-import type {
-  EnvironmentId,
-  OrchestrationV2ThreadShell,
-  Project,
-  ThreadId,
+import {
+  type EnvironmentId,
+  type OrchestrationV2ThreadShell,
+  type Project,
+  threadBotName,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -43,7 +44,9 @@ export interface ProjectThreadAwarenessV2Input {
   readonly thread: Pick<
     OrchestrationV2ThreadShell,
     | "activityRunStatus"
+    | "hasActionableProposedPlan"
     | "id"
+    | "interactionMode"
     | "lineage"
     | "latestRunStopRequested"
     | "latestRunSilent"
@@ -77,6 +80,16 @@ export function projectThreadAwarenessV2(
     thread.settledOverride === "settled" &&
     (phase === "completed" || phase === "failed") &&
     !backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+  ) {
+    return null;
+  }
+  // Bot threads stay silent: their running state is published as a quiet
+  // baseline, but finishing or failing is no news unless a plan waits on the
+  // user. Approvals and questions alert as usual.
+  if (
+    threadBotName(thread.id) !== null &&
+    (phase === "completed" || phase === "failed") &&
+    !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan)
   ) {
     return null;
   }
