@@ -73,7 +73,10 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
             launch: (input) =>
               Effect.succeed({
                 threadId: input.threadId,
-                projection: { thread: { id: input.threadId, projectId, modelSelection }, runs: [] },
+                projection: {
+                  thread: { id: input.threadId, title: "Fix", projectId, modelSelection },
+                  runs: [],
+                },
                 resumed: false,
               } as unknown as ThreadLaunch.ThreadLaunchResult),
           }),
@@ -166,6 +169,7 @@ const clientLaunchHarness = (input: {
             thread: {
               id: launch.threadId,
               projectId: launch.projectId,
+              title: launch.title,
               modelSelection: launch.modelSelection,
             },
             runs: [],
@@ -244,6 +248,7 @@ it.effect(
       expect(belowCeiling.result).toMatchObject({
         projectId: belowCeiling.projectId,
         modelSelection: belowCeiling.modelSelection,
+        link: `[Fix](t3-thread://v1/${belowCeiling.launched[0]?.threadId})`,
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
