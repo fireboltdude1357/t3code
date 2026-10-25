@@ -80,6 +80,7 @@ import {
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ListItem,
 } from "./threadListV2";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 type SidebarListItem =
   | ThreadListV2ListItem
@@ -160,7 +161,10 @@ function ThreadNavigationSidebarPane(
   const pendingTasks = usePendingNewTasks();
   const activeNewTask = useActiveNewTask();
   const queuedThreadKeys = useQueuedThreadKeys();
-  const { confirmDeletePendingTask } = usePendingTaskListActions();
+  const selectDetail = useSelectWorkspaceDetail();
+  const { confirmDeletePendingTask } = usePendingTaskListActions((params) =>
+    selectDetail({ name: "Thread", params }),
+  );
   const environments = Object.values(savedConnectionsById)
     .map((connection) => ({
       environmentId: connection.environmentId,
