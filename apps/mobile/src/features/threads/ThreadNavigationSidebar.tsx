@@ -80,6 +80,8 @@ import {
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ListItem,
 } from "./threadListV2";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 
 type SidebarListItem =
   | ThreadListV2ListItem
@@ -160,7 +162,10 @@ function ThreadNavigationSidebarPane(
   const pendingTasks = usePendingNewTasks();
   const activeNewTask = useActiveNewTask();
   const queuedThreadKeys = useQueuedThreadKeys();
-  const { confirmDeletePendingTask } = usePendingTaskListActions();
+  const selectDetail = useSelectWorkspaceDetail();
+  const { confirmDeletePendingTask } = usePendingTaskListActions((params) =>
+    selectDetail({ name: "Thread", params }),
+  );
   const environments = Object.values(savedConnectionsById)
     .map((connection) => ({
       environmentId: connection.environmentId,
@@ -738,6 +743,7 @@ function ThreadNavigationSidebarPane(
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
               <AnimatedLegendList
+                renderScrollComponent={Platform.OS === "ios" ? NativeScrollView : undefined}
                 itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
                 data={listItems}
                 drawDistance={500}
@@ -806,6 +812,7 @@ function ThreadNavigationSidebarPane(
         ) : (
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
+              {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- Only the non-native workspace layout (Android and the fallback) renders this sidebar, which has no native header to register with. */}
               <AnimatedLegendList
                 itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
                 data={listItems}
