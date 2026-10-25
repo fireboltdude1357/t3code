@@ -33,6 +33,8 @@ import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
 import {
+  BrowserRecordingFrameRate,
+  DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   DEFAULT_PREVIEW_APPEARANCE,
   DEFAULT_PREVIEW_ZOOM_FACTOR,
   FILL_PREVIEW_VIEWPORT,
@@ -262,10 +264,11 @@ export type DefaultThemePreference = typeof DefaultThemePreference.Type;
 
 export const DEFAULT_BROWSER_VIEWPORT: PreviewViewportSetting = FILL_PREVIEW_VIEWPORT;
 export const DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW = true;
-export const BROWSER_RECORDING_FRAME_RATES = [30, 60] as const;
-export const BrowserRecordingFrameRate = Schema.Literals(BROWSER_RECORDING_FRAME_RATES);
-export type BrowserRecordingFrameRate = typeof BrowserRecordingFrameRate.Type;
-export const DEFAULT_BROWSER_RECORDING_FRAME_RATE: BrowserRecordingFrameRate = 30;
+export {
+  BROWSER_RECORDING_FRAME_RATES,
+  BrowserRecordingFrameRate,
+  DEFAULT_BROWSER_RECORDING_FRAME_RATE,
+} from "./preview.ts";
 export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
@@ -829,10 +832,6 @@ export const UsageLimitSourceConfig = Schema.Struct({
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
 
-export const GitHubHost = TrimmedNonEmptyString.pipe(
-  Schema.decodeTo(Schema.String, SchemaTransformation.toLowerCase()),
-);
-
 export const SourceControlHostSettings = Schema.Record(Schema.String, Schema.Unknown);
 export type SourceControlHostSettings = typeof SourceControlHostSettings.Type;
 
@@ -1215,6 +1214,8 @@ export const ServerSettings = Schema.Struct({
   cacheExpiryCompactionMinTokens: Schema.NullOr(CacheExpiryCompactionMinTokens).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Beta: guest links for this machine's threads. Off refuses new links and pauses existing ones. */
+  guestSharingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1584,6 +1585,7 @@ export const ServerSettingsPatch = Schema.Struct({
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   cacheExpiryCompactionMinTokens: Schema.optionalKey(Schema.NullOr(CacheExpiryCompactionMinTokens)),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
+  guestSharingEnabled: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

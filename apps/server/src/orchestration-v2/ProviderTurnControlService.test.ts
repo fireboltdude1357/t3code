@@ -213,8 +213,10 @@ it.effect(
           getCacheExpiryCompactionCandidates: () =>
             Effect.die("unused getCacheExpiryCompactionCandidates"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
+          listActiveSubagentThreadIds: () => Effect.die("unused listActiveSubagentThreadIds"),
           readShellSnapshot: () => Effect.die("unused readShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
+          findGuestShareThreadId: () => Effect.die("unused findGuestShareThreadId"),
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
           getSettlementCandidates: () => Effect.die("unused getSettlementCandidates"),
           getThreadsWithPullRequests: () => Effect.die("unused getThreadsWithPullRequests"),
