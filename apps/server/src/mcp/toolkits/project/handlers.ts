@@ -1,4 +1,11 @@
-import { MessageId, ThreadId, OrchestratorMcpFailure, ProjectId } from "@t3tools/contracts";
+import {
+  botThreadId,
+  MessageId,
+  ThreadId,
+  OrchestratorMcpFailure,
+  ProjectId,
+  threadOwnerBotName,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -60,7 +67,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const context = yield* readCaller();
         const { caller } = context;
         const commandId = yield* newCommandId();
-        const threadId = ThreadId.make(commandId);
+        // A bot's own threads launch more bot work, so the marker carries over
+        // unless the caller passes null for ordinary work.
+        const bot =
+          input.bot === undefined
+            ? caller === undefined
+              ? null
+              : threadOwnerBotName(caller)
+            : input.bot;
+        const threadId = ThreadId.make(bot === null ? commandId : botThreadId(bot, commandId));
         const messageId = MessageId.make(commandId);
         const attachments = input.attachments ?? [];
         if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
