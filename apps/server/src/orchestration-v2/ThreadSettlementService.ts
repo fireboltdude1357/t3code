@@ -152,6 +152,8 @@ export function isAutoSettlementCandidate(
   if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
   if (thread.pinnedAt != null || thread.autoSettleDisabledAt != null) return false;
   if (thread.pendingRuntimeRequest !== null) return false;
+  // A guest is waiting on the owner; settling would hide the Request.
+  if ((thread.pendingGuestMessageCount ?? 0) > 0) return false;
   if (thread.activityRunStatus != null) return false;
   if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) return false;
   if (threadHasQueuedTurnStart(thread, nowMs)) return false;
@@ -166,13 +168,20 @@ export function isAutoSettlementCandidate(
 export function isSnoozed(
   thread: Pick<
     ProjectionStore.ProjectionSettlementCandidate,
-    "snoozedUntil" | "snoozedAt" | "latestRunCompletedAt" | "status" | "pendingRuntimeRequest"
+    | "snoozedUntil"
+    | "snoozedAt"
+    | "latestRunCompletedAt"
+    | "status"
+    | "pendingRuntimeRequest"
+    | "pendingGuestMessageCount"
   >,
   nowMs: number,
 ): boolean {
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
   if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return false;
   if (thread.pendingRuntimeRequest !== null) return false;
+  // Same as the client: a waiting guest message wakes the thread, and the snooze stays stored.
+  if ((thread.pendingGuestMessageCount ?? 0) > 0) return false;
   const snoozedAtMs = toMillis(thread.snoozedAt);
   const completedAtMs = toMillis(thread.latestRunCompletedAt);
   const wokeOnError =
@@ -192,8 +201,13 @@ export function resolveAutoSettlementAt(input: {
   const { thread } = input;
   let pullRequest = input.pullRequest;
   const links = settlementPullRequestLinks(thread.pullRequests ?? []);
-  if (links.some((link) => link.snapshot === null || link.snapshot.state === "open")) return null;
-  if (links.length > 0) {
+  if (links.some((link) => link.snapshot === null)) return null;
+  // An open link means the pull request has not finished, so only inactivity
+  // can settle the thread, never a merged or closed lookup.
+  const hasOpenLink = links.some((link) => link.snapshot?.state === "open");
+  if (hasOpenLink) {
+    pullRequest = null;
+  } else if (links.length > 0) {
     const latest = links.reduce((current, candidate) =>
       linkTerminalAtMs(candidate) > linkTerminalAtMs(current) ? candidate : current,
     );
@@ -218,7 +232,10 @@ export function resolveAutoSettlementAt(input: {
     return DateTime.makeUnsafe(activityAtMs);
   }
   const hasPullRequest =
-    pullRequest !== null || thread.linkedPullRequest != null || thread.branchPullRequest != null;
+    hasOpenLink ||
+    pullRequest !== null ||
+    thread.linkedPullRequest != null ||
+    thread.branchPullRequest != null;
   if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
   if (input.autoSettleAfterDays === null) return null;
   const snoozedUntilMs = toMillis(thread.snoozedUntil);

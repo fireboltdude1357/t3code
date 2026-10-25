@@ -1214,6 +1214,8 @@ export const ServerSettings = Schema.Struct({
   cacheExpiryCompactionMinTokens: Schema.NullOr(CacheExpiryCompactionMinTokens).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Beta: guest links for this machine's threads. Off refuses new links and pauses existing ones. */
+  guestSharingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1583,6 +1585,7 @@ export const ServerSettingsPatch = Schema.Struct({
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   cacheExpiryCompactionMinTokens: Schema.optionalKey(Schema.NullOr(CacheExpiryCompactionMinTokens)),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
+  guestSharingEnabled: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),
