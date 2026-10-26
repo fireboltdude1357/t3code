@@ -238,6 +238,32 @@ it.effect("lets the writer commit while a read-only transaction is open", () =>
   ),
 );
 
+// regression: #24660 one read-only transaction must not hold every other read behind it
+it.effect("runs an unrelated read while a read-only transaction holds a reader", () =>
+  withReaderClient((sql) =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const holder = yield* sql
+        .withTransaction(
+          countEntries(sql).pipe(
+            Effect.andThen(Deferred.succeed(held, undefined)),
+            Effect.andThen(Deferred.await(release)),
+          ),
+        )
+        .pipe(SqliteClient.readOnly, Effect.forkChild);
+      yield* Deferred.await(held);
+
+      // The holder ends only after this read, so a single reader permit deadlocks here.
+      const count = yield* countEntries(sql).pipe(SqliteClient.readOnly);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holder);
+
+      assert.equal(count, 1);
+    }),
+  ),
+);
+
 // regression: #19226 read-only transactions run on the separate reader connection
 it.effect("rejects a write in a read-only transaction", () =>
   withReaderClient((sql) =>
