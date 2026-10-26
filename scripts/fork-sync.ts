@@ -273,15 +273,14 @@ export const mergePatch = Effect.fn("mergePatch")(function* (
     cwd,
   ).pipe(
     Effect.catchTags({
-      GitCommandError: (error) =>
-        Effect.gen(function* () {
-          const files = (yield* git(["diff", "--name-only", "--diff-filter=U"], cwd))
-            .split("\n")
-            .filter((file) => file !== "");
-          if (files.length === 0) return yield* error;
-          yield* git(["merge", "--abort"], cwd);
-          return yield* new PatchConflictError({ patch: patch.name, base, files });
-        }),
+      GitCommandError: Effect.fn("GitCommandError")(function* (error) {
+        const files = (yield* git(["diff", "--name-only", "--diff-filter=U"], cwd))
+          .split("\n")
+          .filter((file) => file !== "");
+        if (files.length === 0) return yield* error;
+        yield* git(["merge", "--abort"], cwd);
+        return yield* new PatchConflictError({ patch: patch.name, base, files });
+      }),
     }),
   );
 });
