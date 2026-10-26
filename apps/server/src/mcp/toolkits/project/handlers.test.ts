@@ -87,6 +87,7 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
           }),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
           NodeServices.layer,
+          DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-bot-launch-" }).pipe(
             Layer.provide(NodeServices.layer),
           ),
