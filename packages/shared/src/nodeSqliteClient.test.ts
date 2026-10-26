@@ -264,6 +264,53 @@ it.effect("runs an unrelated read while a read-only transaction holds a reader",
   ),
 );
 
+it.effect("serves a waiting read before a read requested after it", () =>
+  withReaderClient((sql) =>
+    Effect.gen(function* () {
+      const startedBefore = startedWorkers.length;
+      const finished: Array<string> = [];
+      const read = (name: string) =>
+        countEntries(sql).pipe(
+          SqliteClient.readOnly,
+          Effect.andThen(Effect.sync(() => finished.push(name))),
+        );
+      const releases = yield* Effect.forEach([0, 1, 2, 3], () => Deferred.make<void>());
+      const holders = yield* Effect.forEach(releases, (release, index) =>
+        Effect.gen(function* () {
+          const held = yield* Deferred.make<void>();
+          const holder = yield* sql
+            .withTransaction(
+              countEntries(sql).pipe(
+                Effect.andThen(Deferred.succeed(held, undefined)),
+                Effect.andThen(Deferred.await(release)),
+              ),
+            )
+            .pipe(
+              SqliteClient.readOnly,
+              // The later read asks for a reader in the same turn this transaction returns one.
+              Effect.andThen(index === 0 ? read("later") : Effect.void),
+              Effect.forkChild,
+            );
+          yield* Deferred.await(held);
+          return holder;
+        }),
+      );
+      const earlier = yield* Effect.forkChild(read("earlier"), { startImmediately: true });
+
+      yield* Deferred.succeed(releases[0]!, undefined);
+      yield* Fiber.join(holders[0]!);
+      const order = [...finished];
+      yield* Effect.forEach(releases, (release) => Deferred.succeed(release, undefined));
+      yield* Fiber.join(earlier);
+      yield* Effect.forEach(holders, Fiber.join);
+
+      assert.deepEqual(order, ["earlier", "later"]);
+      // A fifth worker would mean the holders never filled the pool.
+      assert.equal(startedWorkers.length, startedBefore + 4);
+    }),
+  ),
+);
+
 // regression: #19226 read-only transactions run on the separate reader connection
 it.effect("rejects a write in a read-only transaction", () =>
   withReaderClient((sql) =>
