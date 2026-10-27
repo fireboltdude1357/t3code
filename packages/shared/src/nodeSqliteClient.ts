@@ -503,6 +503,14 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
 
   const release = (slot: number) =>
     Effect.sync(() => {
+      // A woken read runs inline and, with the readers off, releases straight away. Waking each from
+      // here instead of from the previous one's release keeps the stack flat and the order intact.
+      if (unavailable) {
+        const queued = [...waiters];
+        waiters.clear();
+        for (const waiter of queued) waiter(slot);
+        return;
+      }
       const next = waiters.values().next();
       if (next.done) {
         free.push(slot);
