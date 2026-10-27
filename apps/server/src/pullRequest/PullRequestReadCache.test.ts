@@ -178,6 +178,31 @@ it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   );
 
+  it.effect("invalidates without waiting for a read still in flight", () =>
+    Effect.gen(function* () {
+      const cache = yield* PullRequestReadCache.make;
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const read = yield* cache
+        .get(
+          "summary",
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as("old"),
+          ),
+          ["pr"],
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+
+      // The read's lookup only finishes after the invalidation, so waiting for it would deadlock.
+      yield* cache.invalidate("pr");
+      yield* Deferred.succeed(release, undefined);
+      assert.strictEqual(yield* Fiber.join(read), "old");
+      assert.strictEqual(yield* cache.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  );
+
   it.effect("cancels abandoned reads without blocking invalidation", () =>
     Effect.gen(function* () {
       const cache = yield* PullRequestReadCache.make;
