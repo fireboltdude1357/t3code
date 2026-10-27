@@ -112,6 +112,11 @@ export function useAllEnvironmentProjectSnapshotsReady(): boolean {
   return useAtomValue(allEnvironmentProjectSnapshotsReadyAtom);
 }
 
+/** Tasks linked environments run for a listed thread, by thread key; lists show them under it. */
+export function useDelegatedUnderParent(): ReadonlySet<string> {
+  return useAtomValue(environmentThreadShells.delegatedUnderParentAtom);
+}
+
 export function useThreadShellsForProjectRefs(
   refs: ReadonlyArray<ScopedProjectRef>,
 ): ReadonlyArray<EnvironmentThreadShell> {
@@ -230,6 +235,13 @@ export function useThreadCheckpointSummaries(
 
 export function readProject(ref: ScopedProjectRef): EnvironmentProject | null {
   return appAtomRegistry.get(environmentProjects.projectAtom(ref));
+}
+
+export function subscribeProject(
+  ref: ScopedProjectRef,
+  listener: (project: EnvironmentProject | null) => void,
+): () => void {
+  return appAtomRegistry.subscribe(environmentProjects.projectAtom(ref), listener);
 }
 
 export function readProjects(): ReadonlyArray<EnvironmentProject> {
