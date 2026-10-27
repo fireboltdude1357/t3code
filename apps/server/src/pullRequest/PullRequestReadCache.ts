@@ -41,7 +41,13 @@ const revisionCodec = Schema.fromJsonString(
   ),
 );
 class Read extends Persistable.Class<{
-  payload: { key: string; revision: string; lookup: Effect.Effect<string, ReadError> };
+  payload: {
+    key: string;
+    revision: string;
+    lookup: Effect.Effect<string, ReadError>;
+    /** Invalidations seen when the read started; equality and hashing ignore it. */
+    generation: number;
+  };
 }>()("PullRequestRead", {
   primaryKey: ({ key }) => key,
   success: Schema.Struct({
@@ -84,9 +90,10 @@ export const make = Effect.gen(function* () {
   const clock = yield* Clock.Clock;
   let enabled = true;
   const lock = yield* Semaphore.make(CONCURRENT_READS);
-  // Entries carry the scope revision they were read under, so an invalidation never has to wait for
-  // reads in flight; it only has to keep other invalidations off the revisions map.
+  // Invalidations don't wait for reads in flight; they only exclude each other. A lookup that an
+  // invalidation overtook still answers its caller but is never cached, in memory or on disk.
   const invalidations = yield* Semaphore.make(1);
+  let generation = 0;
   const digest = (key: string) =>
     crypto.digest("SHA-256", new TextEncoder().encode(key)).pipe(Effect.map(Hex.encode));
   const revisions = yield* Cache.makeWith(
@@ -106,11 +113,15 @@ export const make = Effect.gen(function* () {
   const cache = yield* PersistedCache.make(
     (request: Read) =>
       request.lookup.pipe(
-        Effect.map((payload) => ({
-          payload,
-          expiresAt: clock.currentTimeMillisUnsafe() + 60_000,
-          revision: request.revision,
-        })),
+        Effect.map((payload) => {
+          const now = clock.currentTimeMillisUnsafe();
+          return {
+            payload,
+            // A zero time to live keeps the result out of both caches.
+            expiresAt: request.generation === generation ? now + 60_000 : now,
+            revision: request.revision,
+          };
+        }),
       ),
     {
       storeId: STORE_ID,
@@ -134,6 +145,7 @@ export const make = Effect.gen(function* () {
     get: Effect.fn("PullRequestReadCache.get")(function* (key, lookup, scopes = []) {
       if (!enabled) return yield* lookup;
       const read = yield* Effect.cached(lookup);
+      const started = generation;
       return yield* Effect.gen(function* () {
         const current = yield* Cache.get(revisions, undefined);
         const now = clock.currentTimeMillisUnsafe();
@@ -143,7 +155,12 @@ export const make = Effect.gen(function* () {
             return value !== undefined && value.expiresAt > now ? value.revision : "";
           })
           .join(":");
-        const request = new Read({ key: yield* digest(key), revision, lookup: read });
+        const request = new Read({
+          key: yield* digest(key),
+          revision,
+          lookup: read,
+          generation: started,
+        });
         const stored = yield* cache.get(request);
         return (
           request.matchesRevision(stored.revision) ? stored : yield* Cache.get(refreshes, request)
@@ -160,6 +177,7 @@ export const make = Effect.gen(function* () {
     }, detachStackFrame),
     invalidate: Effect.fn("PullRequestReadCache.invalidate")(
       function* (scope) {
+        generation++;
         const now = clock.currentTimeMillisUnsafe();
         const current = yield* Cache.get(revisions, undefined);
         const next = Object.fromEntries(
