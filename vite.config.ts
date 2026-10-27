@@ -576,11 +576,6 @@ export default defineConfig({
         },
       },
       {
-        // The sign-in masthead is T3 brand artwork: fixed gradients, not theme surfaces.
-        files: ["apps/web/src/components/auth/AuthSurfaceShell.tsx"],
-        rules: { "shadcn/no-arbitrary-values": "off" },
-      },
-      {
         // ESNext types allow APIs absent from Hermes; restrict shared client code, exempting Node tests.
         files: [
           "apps/mobile/src/**",
@@ -598,7 +593,7 @@ export default defineConfig({
       },
       {
         files: ["apps/web/src/**", "apps/mobile/src/**", "packages/*/src/**"],
-        rules: { "t3code/react-effect-budget": "error" },
+        rules: { "t3code/no-unreasoned-state-sync": "error" },
       },
       {
         // React Compiler caches use* functions only if they call a hook.

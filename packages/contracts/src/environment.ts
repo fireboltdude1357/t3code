@@ -115,6 +115,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadPullRequestLinking: Schema.optionalKey(Schema.Boolean),
   serverResolvedCommandContext: Schema.optionalKey(Schema.Boolean),
   threadStop: Schema.optionalKey(Schema.Boolean),
+  /** Absent on older servers and on Windows hosts, which cannot stop a discovered server. */
+  localServerStop: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
@@ -146,6 +148,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       (`linkOrigin`). Another environment links to this one only when it is
       set, since without it that work could change the user's own threads. */
   linkFence: Schema.optionalKey(Schema.Boolean),
+  /** Server answers server.prepareTriage. */
+  triage: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
