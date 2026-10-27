@@ -10,6 +10,7 @@ import {
   type ModelSelection,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
+  type OrchestrationV2ThreadHistoryPage,
   type OrchestrationV2ThreadShellSnapshot,
   NodeId,
   PlanId,
@@ -1319,6 +1320,101 @@ it.effect("lists only active subagent IDs without loading shell data", () =>
 );
 
 it.layer(layerTest)("ProjectionStoreV2", (it) => {
+  it.effect("indexes streamed messages and turn items by the timestamps in their payloads", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread:streamed-timestamps");
+      const messageId = MessageId.make("message:streamed-timestamps");
+      const turnItemId = TurnItemId.make("turn-item:streamed-timestamps");
+      const createdAt = DateTime.makeUnsafe("2026-09-14T08:00:00.125Z");
+      const updatedAt = DateTime.makeUnsafe("2026-09-14T08:00:03.5Z");
+      const text = "Streamed reply.\n\n".repeat(200);
+
+      yield* projectionStore.apply({
+        id: EventId.make("event:streamed-timestamps:message"),
+        type: "message.updated",
+        threadId,
+        occurredAt: updatedAt,
+        payload: {
+          id: messageId,
+          threadId,
+          runId: null,
+          nodeId: null,
+          createdBy: "agent",
+          creationSource: "provider",
+          role: "assistant",
+          text,
+          attachments: [],
+          streaming: true,
+          createdAt,
+          updatedAt,
+        },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:streamed-timestamps:turn-item"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: updatedAt,
+        payload: {
+          id: turnItemId,
+          threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: null,
+          startedAt: createdAt,
+          completedAt: null,
+          updatedAt,
+          type: "assistant_message",
+          messageId,
+          text,
+          streaming: true,
+        },
+      });
+
+      const [message] = yield* sql<{
+        readonly created_at: string;
+        readonly updated_at: string;
+        readonly payload_created_at: string;
+        readonly payload_updated_at: string;
+      }>`
+        SELECT
+          created_at,
+          updated_at,
+          json_extract(payload_json, '$.createdAt') AS payload_created_at,
+          json_extract(payload_json, '$.updatedAt') AS payload_updated_at
+        FROM orchestration_v2_projection_messages
+        WHERE message_id = ${messageId}
+      `;
+      assert.deepEqual(message, {
+        created_at: DateTime.formatIso(createdAt),
+        updated_at: DateTime.formatIso(updatedAt),
+        payload_created_at: DateTime.formatIso(createdAt),
+        payload_updated_at: DateTime.formatIso(updatedAt),
+      });
+      const [turnItem] = yield* sql<{
+        readonly updated_at: string;
+        readonly payload_updated_at: string;
+      }>`
+        SELECT
+          updated_at,
+          json_extract(payload_json, '$.updatedAt') AS payload_updated_at
+        FROM orchestration_v2_projection_turn_items
+        WHERE turn_item_id = ${turnItemId}
+      `;
+      assert.deepEqual(turnItem, {
+        updated_at: DateTime.formatIso(updatedAt),
+        payload_updated_at: DateTime.formatIso(updatedAt),
+      });
+    }),
+  );
+
   // regression: #21969 keep corrupt plan JSON in the typed read error
   it.effect("returns a typed read error for malformed stored plan JSON", () =>
     Effect.gen(function* () {
@@ -1770,6 +1866,21 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         SET type = 'command_execution', payload_json = json_set(payload_json, '$.type', 'command_execution')
         WHERE thread_id = ${threadId} AND ordinal BETWEEN 2 AND 70
       `;
+      // History pages reuse their timeline index until a thread event commits, as every
+      // projection write does, so these direct row edits commit one too.
+      let editVersion = 0;
+      const commitThreadEdit = () => {
+        editVersion += 1;
+        return sql`
+          INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+          ) VALUES (
+            ${`event:bounded-sql-history:edit:${editVersion}`}, 'thread', ${threadId},
+            ${editVersion}, 'turn-item.updated', ${nowIso}, 'user', '{}', '{}', 2
+          )
+        `;
+      };
 
       // A targeted page that needs more than 20 human turns must still reach its target
       // after the byte pass re-bounds it.
@@ -1781,6 +1892,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           '$.attachments', json('[]'))
         WHERE thread_id = ${threadId} AND ordinal BETWEEN 600 AND 624
       `;
+      yield* commitThreadEdit();
       const targetedPage = yield* projectionStore.getThreadHistoryPage(
         threadId,
         encodeThreadHistoryCursor({
@@ -1811,6 +1923,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             '$.type', CASE ordinal WHEN 500 THEN 'run_interrupt_request' ELSE 'run_interrupt_result' END)
         WHERE thread_id = ${threadId} AND ordinal IN (500, 580)
       `;
+      yield* commitThreadEdit();
       const interruptPage = yield* projectionStore.getThreadHistoryPage(
         threadId,
         encodeThreadHistoryCursor({
@@ -2350,6 +2463,276 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.isTrue(
         agentWindow.projection.visibleTurnItems.some((row) => row.sourceItemId === agentPromptId),
       );
+    }),
+  );
+
+  it.effect("pages a whole thread without re-reading its full timeline for every page", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const nowIso = DateTime.formatIso(now);
+      const threadId = ThreadId.make("thread:paged-scrollback");
+      const runId = RunId.make("run:paged-scrollback");
+      const itemCount = 600;
+      yield* projectionStore.apply({
+        id: EventId.make("event:paged-scrollback:thread"),
+        type: "thread.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:paged-scrollback"),
+          title: "Paged scrollback",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs (
+          run_id, thread_id, ordinal, provider, provider_thread_id, status,
+          requested_at, completed_at, payload_json
+        ) VALUES (
+          ${runId}, ${threadId}, 1, 'codex', NULL, 'completed', ${nowIso}, ${nowIso},
+          ${encodeUnknownJsonString({
+            id: runId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: "message:paged-scrollback",
+            rootNodeId: "node:paged-scrollback",
+            activeAttemptId: null,
+            status: "completed",
+            requestedAt: nowIso,
+            startedAt: nowIso,
+            completedAt: nowIso,
+            checkpointId: null,
+            contextHandoffId: null,
+          })}
+        )
+      `;
+      for (let ordinal = 0; ordinal < itemCount; ordinal += 1) {
+        const id = `turn-item:paged-scrollback:${ordinal}`;
+        const message = ordinal % 9 === 0;
+        yield* sql`
+          INSERT INTO orchestration_v2_projection_turn_items (
+            turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id,
+            parent_item_id, ordinal, type, status, updated_at, payload_json
+          ) VALUES (
+            ${id}, ${threadId}, ${runId}, NULL, NULL, NULL, NULL, ${ordinal},
+            ${message ? "user_message" : "command_execution"}, 'completed', ${nowIso},
+            ${encodeUnknownJsonString({
+              id,
+              threadId,
+              runId,
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal,
+              status: "completed",
+              title: `item ${ordinal}`,
+              startedAt: nowIso,
+              completedAt: nowIso,
+              updatedAt: nowIso,
+              ...(message
+                ? {
+                    type: "user_message",
+                    createdBy: "user",
+                    creationSource: "web",
+                    messageId: `message:paged-scrollback:${ordinal}`,
+                    inputIntent: "turn_start",
+                    text: `Turn ${ordinal}`,
+                    attachments: [],
+                  }
+                : { type: "command_execution", input: "echo", output: "ok", exitCode: 0 }),
+            })}
+          )
+        `;
+      }
+      // An unbounded read of every turn item in the thread costs O(thread) per page, so a full
+      // scrollback that repeats it on each page is quadratic in thread length.
+      const wholeThreadReads = (statements: ReadonlyArray<string>) =>
+        statements.filter(
+          (statement) =>
+            /FROM orchestration_v2_projection_turn_items\s+WHERE thread_id = \?\s*(ORDER BY|$)/.test(
+              statement,
+            ) && !/\bLIMIT\b/.test(statement),
+        ).length;
+      const snapshot = yield* projectionStore.getThreadSnapshot(threadId);
+
+      const history = traceSqlStatements();
+      let cursor: string | null = encodeThreadHistoryCursor({
+        snapshotSequence: snapshot.snapshotSequence,
+        sourceThreadId: threadId,
+        sourceItemId: "absent",
+        position: itemCount,
+      });
+      const historyIds: Array<string> = [];
+      let historyPages = 0;
+      while (cursor !== null) {
+        const page: OrchestrationV2ThreadHistoryPage = yield* projectionStore
+          .getThreadHistoryPage(threadId, cursor)
+          .pipe(Effect.withTracer(history.tracer));
+        historyIds.push(...page.items.map((row) => String(row.sourceItemId)));
+        historyPages += 1;
+        cursor = page.hasMoreHistory ? page.nextCursor : null;
+      }
+      assert.strictEqual(new Set(historyIds).size, itemCount);
+      assert.isAtLeast(historyPages, 4);
+
+      const timeline = traceSqlStatements();
+      const timelineIds: Array<string> = [];
+      let afterPosition = -1;
+      let timelinePages = 0;
+      for (let hasMore = true; hasMore;) {
+        const page = yield* projectionStore
+          .getTimelinePage(threadId, { view: "activity", afterPosition, limit: 100 })
+          .pipe(Effect.withTracer(timeline.tracer));
+        timelineIds.push(...page.items.map((row) => String(row.sourceItemId)));
+        afterPosition = page.items.at(-1)?.position ?? afterPosition;
+        timelinePages += 1;
+        hasMore = page.hasMore;
+      }
+      assert.strictEqual(new Set(timelineIds).size, itemCount);
+      assert.isAtLeast(timelinePages, 4);
+
+      assert.isAtMost(
+        wholeThreadReads(history.statements),
+        1,
+        `getThreadHistoryPage read the whole thread on each of ${historyPages} pages`,
+      );
+      assert.isAtMost(
+        wholeThreadReads(timeline.statements),
+        1,
+        `getTimelinePage read the whole thread on each of ${timelinePages} pages`,
+      );
+
+      // A write to the thread a fork inherits from must reach the fork's next page.
+      const forkThreadId = ThreadId.make("thread:paged-scrollback:fork");
+      yield* projectionStore.apply({
+        id: EventId.make("event:paged-scrollback:fork"),
+        type: "thread.created",
+        threadId: forkThreadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: forkThreadId,
+          projectId: ProjectId.make("project:paged-scrollback"),
+          title: "Paged scrollback fork",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: {
+            parentThreadId: threadId,
+            relationshipToParent: "fork",
+            rootThreadId: threadId,
+          },
+          forkedFrom: { type: "run", threadId, runId },
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      const forkPage = () =>
+        projectionStore.getTimelinePage(forkThreadId, { view: "activity", limit: 1 });
+      const forkTotal = (yield* forkPage()).totalItems;
+      assert.strictEqual((yield* forkPage()).totalItems, forkTotal);
+      yield* projectionStore.apply({
+        id: EventId.make("event:paged-scrollback:late-item"),
+        type: "turn-item.updated",
+        threadId,
+        runId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make("turn-item:paged-scrollback:late"),
+          threadId,
+          runId,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: itemCount,
+          status: "completed",
+          title: "late",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "command_execution",
+          input: "echo",
+        },
+      });
+      assert.strictEqual((yield* forkPage()).totalItems, forkTotal + 1);
+
+      // Another store instance's write reaches this one only through the committed thread event.
+      const directId = "turn-item:paged-scrollback:direct";
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_turn_items (
+          turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id,
+          parent_item_id, ordinal, type, status, updated_at, payload_json
+        ) VALUES (
+          ${directId}, ${threadId}, ${runId}, NULL, NULL, NULL, NULL, ${itemCount + 1},
+          'command_execution', 'completed', ${nowIso},
+          ${encodeUnknownJsonString({
+            id: directId,
+            threadId,
+            runId,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: itemCount + 1,
+            status: "completed",
+            title: "direct",
+            startedAt: nowIso,
+            completedAt: nowIso,
+            updatedAt: nowIso,
+            type: "command_execution",
+            input: "echo",
+          })}
+        )
+      `;
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type,
+          occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+        ) VALUES (
+          'event:paged-scrollback:direct', 'thread', ${threadId}, 1,
+          'turn-item.updated', ${nowIso}, 'user', '{}', '{}', 2
+        )
+      `;
+      assert.strictEqual((yield* forkPage()).totalItems, forkTotal + 2);
     }),
   );
 
