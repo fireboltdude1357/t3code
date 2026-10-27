@@ -11,3 +11,4 @@ reclaimable-cpu  patch/reclaimable-cpu
 full-access-never-asks  patch/full-access-never-asks
 v2-transcript-cache  patch/v2-transcript-cache  pingdotgg/t3code#24707
 sqlite-reader-pool  patch/sqlite-reader-pool  pingdotgg/t3code#24762
+desktop-update-capability  patch/desktop-update-capability
