@@ -581,7 +581,7 @@ it.effect("marks a fork a bot's thread makes as that bot's", () =>
       [threadId, null],
     ] as const) {
       const forked = yield* server
-        .callTool({ name: "t3_thread_fork", arguments: { sourcePoint: { type: "latest_stable" } } })
+        .callTool({ name: "t3_thread_transfer", arguments: { action: "fork" } })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, {
             ...scope,

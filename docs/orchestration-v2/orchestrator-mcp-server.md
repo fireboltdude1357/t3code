@@ -369,7 +369,7 @@ launching again. `create_threads` remains the batch option for a shared checkout
 
 A bot that launches work on its own passes `bot` with its short name. The new
 thread's id becomes `bot:<name>:<id>`. Threads that a marked thread creates
-through `t3_thread_launch`, `create_threads`, or `t3_thread_fork` keep the
+through `t3_thread_launch`, `create_threads`, or a `t3_thread_transfer` fork keep the
 marker; `bot: null` launches ordinary work from one instead. Clients list
 marked threads in the sidebar's Bots section instead of the inbox, and they
 notify only when the thread needs an approval, an answer, or a decision on a
