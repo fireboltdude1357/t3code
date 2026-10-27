@@ -1,7 +1,15 @@
 // @effect-diagnostics globalTimers:off - Shelf placement timers run in web and native clients, outside an Effect runtime.
-import { threadBotName, threadOwnerBotName, type BotName } from "@t3tools/contracts";
+import {
+  threadBotName,
+  threadOwnerBotName,
+  type BotName,
+  type EnvironmentId,
+} from "@t3tools/contracts";
+
+import { Atom } from "effect/reactivity";
 
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
+import type { OlderSettled } from "./olderSettledThreads.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 import { effectiveSnoozed } from "./threadSettled.ts";
 
@@ -106,17 +114,25 @@ export function sortBotThreads<T extends WorkingSortInput>(threads: readonly T[]
   );
 }
 
-/** Projects only bots work in, as `environmentId:projectId` keys: every
-    unarchived thread is a bot's or a subagent of one. Project pickers leave
-    them out. A project with no threads, or one the user also works in, is not
-    a bot project. */
+/** Projects where every unarchived thread, including older settled ones the
+    shell leaves out, is a bot's, as `environmentId:projectId` keys. A project
+    with no threads is not a bot project. */
 export function botProjectKeys(
   threads: ReadonlyArray<
     Pick<EnvironmentThreadShell, "archivedAt" | "environmentId" | "id" | "projectId"> &
       Parameters<typeof threadOwnerBotName>[0]
   >,
+  olderSettled: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly older: Pick<OlderSettled, "owners"> | null;
+  }>,
 ): ReadonlySet<string> {
   const botOnly = new Map<string, boolean>();
+  for (const { environmentId, older } of olderSettled) {
+    for (const [projectId, owner] of older?.owners ?? []) {
+      botOnly.set(`${environmentId}:${projectId}`, owner === "bot");
+    }
+  }
   for (const thread of threads) {
     if (thread.archivedAt !== null) continue;
     const key = `${thread.environmentId}:${thread.projectId}`;
@@ -124,6 +140,35 @@ export function botProjectKeys(
     botOnly.set(key, (botOnly.get(key) ?? true) && isBot);
   }
   return new Set([...botOnly].filter(([, isBot]) => isBot).map(([key]) => key));
+}
+
+/** Whether a picker row's projects are all bot projects, so the picker leaves it out. */
+export function isBotProjectRow(
+  projects: ReadonlyArray<{ readonly environmentId: EnvironmentId; readonly id: string }>,
+  botProjectKeys: ReadonlySet<string>,
+): boolean {
+  return (
+    projects.length > 0 &&
+    projects.every((project) => botProjectKeys.has(`${project.environmentId}:${project.id}`))
+  );
+}
+
+/** `botProjectKeys`, kept live across every environment that has projects. */
+export function makeBotProjectKeysAtom(input: {
+  readonly projectsAtom: Atom.Atom<ReadonlyArray<{ readonly environmentId: EnvironmentId }>>;
+  readonly threadShellsAtom: Atom.Atom<ReadonlyArray<EnvironmentThreadShell>>;
+  readonly olderSettledAtom: (environmentId: EnvironmentId) => Atom.Atom<OlderSettled | null>;
+}): Atom.Atom<ReadonlySet<string>> {
+  return Atom.make((get) => {
+    const environmentIds = new Set(get(input.projectsAtom).map((project) => project.environmentId));
+    return botProjectKeys(
+      get(input.threadShellsAtom),
+      [...environmentIds].map((environmentId) => ({
+        environmentId,
+        older: get(input.olderSettledAtom(environmentId)),
+      })),
+    );
+  }).pipe(Atom.withLabel("bot-project-keys"));
 }
 
 /** A row's project label, led by the bot's name on threads a bot launched,

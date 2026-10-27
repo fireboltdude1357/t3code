@@ -298,17 +298,47 @@ describe("botProjectKeys", () => {
   });
 
   it("marks projects where only bots and their subagents work", () => {
-    const keys = botProjectKeys([
-      projectThread("bot-only", "bot:medic:1"),
-      projectThread("bot-only", "subagent-1", "bot:medic:1"),
-      projectThread("mixed", "bot:medic:2"),
-      projectThread("mixed", "user-1"),
-      projectThread("user-only", "user-2"),
-      projectThread("archived-user", "bot:medic:3"),
-      projectThread("archived-user", "user-3", "user-3", true),
-    ]);
+    const keys = botProjectKeys(
+      [
+        projectThread("bot-only", "bot:medic:1"),
+        projectThread("bot-only", "subagent-1", "bot:medic:1"),
+        projectThread("mixed", "bot:medic:2"),
+        projectThread("mixed", "user-1"),
+        projectThread("user-only", "user-2"),
+        projectThread("archived-user", "bot:medic:3"),
+        projectThread("archived-user", "user-3", "user-3", true),
+      ],
+      [],
+    );
     expect([...keys].toSorted()).toEqual(
       ["archived-user", "bot-only"].map((projectId) => `${environmentId}:${projectId}`),
+    );
+  });
+
+  it("counts the older settled threads the shell leaves out", () => {
+    const keys = botProjectKeys(
+      [
+        projectThread("bot-loaded", "bot:medic:1"),
+        projectThread("user-loaded", "user-1"),
+        projectThread("user-older", "bot:medic:2"),
+        projectThread("no-older", "bot:medic:3"),
+      ],
+      [
+        {
+          environmentId,
+          older: {
+            owners: new Map([
+              [ProjectId.make("bot-older"), "bot"],
+              [ProjectId.make("user-older"), "user"],
+              [ProjectId.make("bot-loaded"), "bot"],
+              [ProjectId.make("user-loaded"), "bot"],
+            ]),
+          },
+        },
+      ],
+    );
+    expect([...keys].toSorted()).toEqual(
+      ["bot-loaded", "bot-older", "no-older"].map((projectId) => `${environmentId}:${projectId}`),
     );
   });
 });

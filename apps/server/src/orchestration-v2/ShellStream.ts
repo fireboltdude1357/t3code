@@ -9,10 +9,10 @@ import type {
   OrchestrationV2ThreadShellSnapshot,
   OrchestrationV2ShellStreamItem,
   OrchestrationV2StoredEvent,
-  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import {
+  countOlderSettledByProject,
   isLiveSubagentShell,
   isOlderSettledThreadShell,
   OrchestrationProjectShell as ProjectShellSchema,
@@ -147,10 +147,10 @@ export function omitOlderSettledShells(input: {
     if (thread.lineage.parentThreadId !== null) ancestorIds.add(thread.lineage.parentThreadId);
     ancestorIds.add(thread.lineage.rootThreadId);
   }
-  const counts = new Map<ProjectId, number>();
+  const older: Array<OrchestrationV2ThreadShell> = [];
   const threads = input.threads.filter((thread) => {
     if (!isOlderSettledThreadShell(thread, beforeMs)) return true;
-    counts.set(thread.projectId, (counts.get(thread.projectId) ?? 0) + 1);
+    older.push(thread);
     return (
       thread.pinnedAt != null ||
       (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs) ||
@@ -163,7 +163,7 @@ export function omitOlderSettledShells(input: {
     olderSettled: {
       before: DateTime.formatIso(DateTime.makeUnsafe(beforeMs)),
       asOfSequence: input.snapshotSequence,
-      counts: Array.from(counts, ([projectId, count]) => ({ projectId, count })),
+      counts: countOlderSettledByProject(older),
     },
   };
 }
