@@ -109,13 +109,19 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useScratchProject } from "../hooks/useScratchProject";
 import { useNewProject } from "../hooks/useNewProject";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
-import { botProjectKeys } from "@t3tools/client-runtime/state/thread-inbox";
+import { isBotProjectRow } from "@t3tools/client-runtime/state/thread-inbox";
 import {
   useEnvironmentProviders,
   useEnvironments,
   usePrimaryEnvironmentId,
 } from "../state/environments";
-import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
+import {
+  useBotProjectKeys,
+  useProjects,
+  useServerConfigs,
+  useThreadShells,
+  waitForProject,
+} from "../state/entities";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
   appendBrowsePathSegment,
@@ -510,16 +516,11 @@ function OpenCommandPaletteDialog(props: {
     groups: projectGroups,
     preferredProjectRef: contextualProjectRef,
   });
-  const botProjects = botProjectKeys(threads);
+  const botProjects = useBotProjectKeys();
   // Projects only bots work in stay out of search and the new-thread picker;
   // the sidebar's Bots section is where their work lives.
   const pickerProjects = projectPickerEntries
-    .filter(
-      ({ group }) =>
-        !group.memberProjects.every((project) =>
-          botProjects.has(`${project.environmentId}:${project.id}`),
-        ),
-    )
+    .filter(({ group }) => !isBotProjectRow(group.memberProjects, botProjects))
     .map(({ group, targetProject }) => ({
       ...targetProject,
       displayName: group.displayName,
@@ -1162,7 +1163,11 @@ function OpenCommandPaletteDialog(props: {
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
       (currentProjectId ? (projectTitleById.get(currentProjectId) ?? null) : null);
 
-    if (activeProjectTitle) {
+    const contextIsBotProject =
+      contextualProjectRef !== null &&
+      botProjects.has(`${contextualProjectRef.environmentId}:${contextualProjectRef.projectId}`);
+
+    if (activeProjectTitle && !contextIsBotProject) {
       actionItems.push({
         kind: "action",
         value: "action:new-thread",
