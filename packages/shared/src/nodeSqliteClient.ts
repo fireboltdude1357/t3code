@@ -317,7 +317,8 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
   const slots: Array<Reader | undefined> = Array.from({ length: READER_WORKERS }, () => undefined);
   // Lowest free slot first, so a worker beyond the first starts only while the others are busy.
   const free = slots.map((_, slot) => slot);
-  const permits = yield* Semaphore.make(READER_WORKERS);
+  // Effect's Semaphore lets a new acquire overtake a woken waiter, so slots go to waiters in arrival order.
+  const waiters = new Set<(slot: number) => void>();
   let unavailable = false;
   let nextRequestId = 0;
 
@@ -501,10 +502,44 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
     });
 
   const release = (slot: number) =>
+    Effect.sync(() => {
+      const next = waiters.values().next();
+      if (next.done) {
+        free.push(slot);
+        free.sort((a, b) => a - b);
+        return;
+      }
+      waiters.delete(next.value);
+      next.value(slot);
+    });
+
+  const take = (wait: typeof Effect.interruptible) =>
     Effect.suspend(() => {
-      free.push(slot);
-      free.sort((a, b) => a - b);
-      return permits.release(1);
+      let taken: number | undefined;
+      const admit = Effect.callback<number>((resume) => {
+        if (waiters.size === 0 && free.length > 0) {
+          taken = free.shift()!;
+          resume(Effect.succeed(taken));
+          return;
+        }
+        const waiter = (slot: number) => {
+          taken = slot;
+          resume(Effect.succeed(slot));
+        };
+        waiters.add(waiter);
+        return Effect.sync(() => {
+          waiters.delete(waiter);
+        });
+      });
+      return Effect.onExit(
+        // Without a scheduler yield, nothing interrupts an admitted caller before it uses its slot.
+        Effect.provideService(wait(admit), Scheduler.PreventSchedulerYield, true),
+        (exit) => {
+          const slot = taken;
+          // A slot taken by a caller interrupted before it returns goes to the next waiter.
+          return Exit.isFailure(exit) && slot !== undefined ? release(slot) : Effect.void;
+        },
+      );
     });
 
   /** Undefined means reads use the writer. Run masked; `wait` restores the caller's interruptibility. */
@@ -512,19 +547,14 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
     unavailable
       ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
         Effect.succeed(undefined)
-      : Effect.flatMap(
-          // A scheduler yield after the take is interruptible and would drop the permit.
-          Effect.provideService(wait(permits.take(1)), Scheduler.PreventSchedulerYield, true),
-          () => {
-            const slot = free.shift()!;
-            return Effect.onExit(connect(slot), (exit) =>
-              Exit.isSuccess(exit) && exit.value !== undefined ? Effect.void : release(slot),
-            ).pipe(
-              Effect.map((connection) =>
-                connection === undefined ? undefined : { connection, release: release(slot) },
-              ),
-            );
-          },
+      : Effect.flatMap(take(wait), (slot) =>
+          Effect.onExit(connect(slot), (exit) =>
+            Exit.isSuccess(exit) && exit.value !== undefined ? Effect.void : release(slot),
+          ).pipe(
+            Effect.map((connection) =>
+              connection === undefined ? undefined : { connection, release: release(slot) },
+            ),
+          ),
         );
 });
 
