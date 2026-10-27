@@ -33,6 +33,7 @@ import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import { resolveAutoUpdateDisabledReason } from "./autoUpdateSupport.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
 import {
@@ -59,9 +60,6 @@ interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
   readonly failed: boolean;
 }
 
-const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
-type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
-
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
   // Malformed notes must not block update-state decoding; normalizeDesktopUpdateReleaseNotes validates separately.
@@ -78,7 +76,6 @@ const DesktopUpdateInstallRecord = Schema.fromJsonString(
 const decodeInstallRecord = Schema.decodeUnknownEffect(DesktopUpdateInstallRecord);
 const encodeInstallRecord = Schema.encodeEffect(DesktopUpdateInstallRecord);
 
-const decodeAppUpdateYmlConfig = Schema.decodeUnknownEffect(AppUpdateYmlConfig);
 const decodeUpdateInfo = Schema.decodeUnknownEffect(UpdateInfo);
 const decodeDownloadProgressInfo = Schema.decodeUnknownEffect(DownloadProgressInfo);
 
@@ -254,21 +251,6 @@ export function describeUpdateErrorCause(cause: unknown): string {
   }
 }
 
-function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYmlConfig>> {
-  const entries: Record<string, string> = {};
-  for (const line of raw.split("\n")) {
-    const match = line.match(/^(\w+):\s*(.+)$/);
-    if (match?.[1] && match[2]) {
-      entries[match[1]] = match[2].trim();
-    }
-  }
-
-  return decodeAppUpdateYmlConfig(entries).pipe(
-    Effect.map((config) => (config.provider ? Option.some(config) : Option.none())),
-    Effect.orElseSucceed(() => Option.none<AppUpdateYmlConfig>()),
-  );
-}
-
 function createBaseUpdateState(
   channel: DesktopUpdateChannel,
   disabledReason: Option.Option<string>,
@@ -305,30 +287,6 @@ function shouldBroadcastDownloadProgress(
   return nextStep !== previousStep || nextPercent === 100;
 }
 
-function getAutoUpdateDisabledReason(args: {
-  isDevelopment: boolean;
-  isPackaged: boolean;
-  platform: NodeJS.Platform;
-  appImage?: string | undefined;
-  isDebPackage: boolean;
-  disabledByEnv: boolean;
-  hasUpdateFeedConfig: boolean;
-}): string | null {
-  if (!args.hasUpdateFeedConfig) {
-    return "Automatic updates are not available because no update feed is configured.";
-  }
-  if (args.isDevelopment || !args.isPackaged) {
-    return "Automatic updates are only available in packaged production builds.";
-  }
-  if (args.disabledByEnv) {
-    return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
-  }
-  if (args.platform === "linux" && !args.appImage && !args.isDebPackage) {
-    return "Automatic updates on Linux require the AppImage or the .deb package.";
-  }
-  return null;
-}
-
 function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean {
   return runtimeInfo.hostArch === "arm64" && runtimeInfo.appArch === "x64";
 }
@@ -344,7 +302,6 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
 
-  const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
   const installRunningBackendsRef = yield* Ref.make<
     ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>
@@ -386,45 +343,7 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const readAppUpdateYml = fileSystem.readFileString(environment.appUpdateYmlPath, "utf-8").pipe(
-    Effect.option,
-    Effect.flatMap(
-      Option.match({
-        onNone: () => Effect.succeed(Option.none<AppUpdateYmlConfig>()),
-        onSome: parseAppUpdateYml,
-      }),
-    ),
-  );
-
-  // electron-updater uses this marker to install .deb updates with dpkg.
-  const isDebPackage =
-    environment.platform === "linux" && environment.isPackaged
-      ? yield* fileSystem
-          .readFileString(environment.path.join(environment.resourcesPath, "package-type"))
-          .pipe(
-            Effect.map((packageType) => packageType.trim() === "deb"),
-            Effect.orElseSucceed(() => false),
-          )
-      : false;
-
-  const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
-    Effect.map((appUpdateYmlConfig) => Option.isSome(appUpdateYmlConfig) || config.mockUpdates),
-  );
-
-  const resolveDisabledReason = Effect.gen(function* () {
-    const hasFeedConfig = yield* hasUpdateFeedConfig;
-    return Option.fromNullishOr(
-      getAutoUpdateDisabledReason({
-        isDevelopment: environment.isDevelopment,
-        isPackaged: environment.isPackaged,
-        platform: environment.platform,
-        appImage: Option.getOrUndefined(config.appImagePath),
-        isDebPackage,
-        disabledByEnv: config.disableAutoUpdate,
-        hasUpdateFeedConfig: hasFeedConfig,
-      }),
-    );
-  });
+  const disabledReason = yield* resolveAutoUpdateDisabledReason(config);
 
   const activeUpdateAction = Ref.get(activeUpdateActionRef);
 
@@ -1020,15 +939,12 @@ export const make = Effect.gen(function* () {
       }),
     ),
     emitState,
-    disabledReason: resolveDisabledReason,
+    disabledReason: Effect.succeed(disabledReason),
     configure: Effect.gen(function* () {
       const context = yield* Effect.context<never>();
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);
       };
-
-      const appUpdateYmlConfig = yield* readAppUpdateYml;
-      yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
 
       const notAppliedVersion = yield* readNotAppliedInstallVersion;
       yield* Ref.set(notAppliedVersionRef, notAppliedVersion);
@@ -1047,7 +963,6 @@ export const make = Effect.gen(function* () {
       }
 
       const settings = yield* desktopSettings.get;
-      const disabledReason = yield* resolveDisabledReason;
       yield* setState(yield* baseUpdateState(settings.updateChannel, disabledReason));
       if (Option.isSome(disabledReason)) {
         return;
@@ -1118,7 +1033,6 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-        const disabledReason = yield* resolveDisabledReason;
         yield* setState(yield* baseUpdateState(nextChannel, disabledReason));
 
         if (Option.isSome(disabledReason) || !(yield* Ref.get(updaterConfiguredRef))) {
