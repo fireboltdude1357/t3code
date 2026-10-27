@@ -88,7 +88,6 @@ import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import {
   resolveNewTaskBranchLabel,
   resolveNewTaskWorkspaceLabel,
-  resolveNewTaskWorkspaceSelection,
 } from "./new-task-context-presentation";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { selectIncomingShareAttachmentsForServer } from "../sharing/incoming-share-model";
@@ -808,15 +807,7 @@ export function NewTaskDraftScreen(props: {
         draft.modelSelection ?? null,
         selectedProject.id,
       ) ?? flow.selectedModel;
-    const workspaceSelection = resolveNewTaskWorkspaceSelection({
-      selection: draft.workspaceSelection,
-      fallback: {
-        mode: flow.workspaceMode,
-        branch: flow.selectedBranchName,
-        worktreePath: flow.selectedWorktreePath,
-      },
-      isGitRepo: flow.isGitRepo,
-    });
+    const workspaceSelection = flow.resolveWorkspaceSelection(draft.workspaceSelection);
     const workspaceMode = workspaceSelection.mode;
     const selectedBranchName = workspaceSelection.branch;
     const initialMessageText = draft.text.trim();
@@ -1076,18 +1067,21 @@ export function NewTaskDraftScreen(props: {
 
   if (!flow.selectedModel) {
     return (
-      <ThreadScreenFallback>
-        <AppBar
-          title="New thread"
-          sidebar={false}
-          onBack={goBack}
-          options={{
-            ...threadHeaderAppearance(NATIVE_LIQUID_GLASS_SUPPORTED),
-            unstable_headerSubtitle: undefined,
-            unstable_headerRightItems: () => [],
-            unstable_headerToolbarItems: () => [],
-          }}
-        />
+      <ThreadScreenFallback
+        header={
+          <AppBar
+            title="New thread"
+            sidebar={false}
+            onBack={goBack}
+            options={{
+              ...threadHeaderAppearance(NATIVE_LIQUID_GLASS_SUPPORTED),
+              unstable_headerSubtitle: undefined,
+              unstable_headerRightItems: () => [],
+              unstable_headerToolbarItems: () => [],
+            }}
+          />
+        }
+      >
         <View className="flex-1 justify-end gap-3 p-4">
           {environmentControl}
           <Text className="text-foreground-muted">
