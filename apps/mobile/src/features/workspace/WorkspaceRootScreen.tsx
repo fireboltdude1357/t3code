@@ -18,7 +18,6 @@ import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { useWorkspaceSurface } from "./useWorkspaceSurface";
 import {
   useDeviceType,
-  useDuoBottomBarInset,
   useNativeColumnLayoutMetrics,
   useNativeLayoutMetrics,
 } from "../../native/native-layout-metrics";
@@ -35,7 +34,6 @@ import {
 import { WorkspaceToolbar } from "./WorkspaceToolbar";
 import {
   WORKSPACE_DOCK,
-  workspaceSearchBottomClearance,
   workspaceDockBottomClearance,
   workspaceToolbarHeight,
 } from "./workspace-tabs-state";
@@ -54,16 +52,17 @@ function WorkspaceRootTitle(props: {
   readonly maxWidth: number;
   readonly onOpenEnvironments: () => void;
 }) {
-  const { state } = useWorkspaceTabs()!;
+  const { state, settingsOpen } = useWorkspaceTabs()!;
   const enabled = useEnabledNavigationTabs();
+  const tabTitle = settingsOpen
+    ? "Settings"
+    : enabled.length
+      ? TAB_TITLES[state.selectedTab]
+      : "Navigation";
   return (
     <View style={{ width: props.maxWidth, minHeight: 32, justifyContent: "center" }}>
       <WorkspaceConnectionTitle
-        brand={
-          <CompactBrandTitle
-            accessibilityLabel={`T3 Code, ${enabled.length ? TAB_TITLES[state.selectedTab] : "Navigation"}`}
-          />
-        }
+        brand={<CompactBrandTitle accessibilityLabel={`T3 Code, ${tabTitle}`} />}
         maxWidth={props.maxWidth}
         onPress={props.onOpenEnvironments}
       />
@@ -93,7 +92,6 @@ function WorkspaceRootContent() {
       (nativeMetrics !== null && nativeMetrics.verticalBarEdge !== "none"));
   const width = columnMetrics?.width ?? windowWidth;
   const insets = useSafeAreaInsets();
-  const bottomBarInset = useDuoBottomBarInset();
   const keyboardHeight = useKeyboardState((keyboard) => keyboard.height);
   const workspace = useWorkspaceTabs()!;
   const { state } = workspace;
@@ -106,18 +104,15 @@ function WorkspaceRootContent() {
     ),
     [width, navigation],
   );
-  const tab = state.tabs[state.selectedTab];
   // Settings is a workspace tab too; its list takes the place of the selected tab's.
   const settingsOpen = workspace.settingsOpen;
+  const tab = state.tabs[settingsOpen ? "settings" : state.selectedTab];
   const bottomClearance =
     layout.primarySidebarOverlaysContent && state.selectedTab === "usage"
       ? workspaceDockBottomClearance({ bottomInset: insets.bottom, keyboardHeight })
       : Platform.OS === "ios" && isDuoDevice(deviceType)
-        ? workspaceSearchBottomClearance({
-            bottomInset: insets.bottom,
-            bottomBarInset,
-            keyboardHeight,
-          })
+        ? // The column's safe area already holds the Duo's search toolbar and keyboard.
+          Math.max(insets.bottom, keyboardHeight) + 16
         : compactTabs || deviceType === "pad"
           ? workspaceDockBottomClearance({ bottomInset: insets.bottom, keyboardHeight })
           : Platform.OS === "ios"
@@ -164,8 +159,12 @@ function WorkspaceRootContent() {
                 ? { headerSearchBarOptions: undefined, unstable_headerRightItems: () => [] }
                 : {}),
               unstable_headerLeftItems: () => [],
+              // Beside a detail column the tab bar names the tab and the detail header the page,
+              // so the sidebar keeps the brand.
               headerTitle:
-                settingsOpen || state.selectedTab === "usage" ? undefined : renderHeaderTitle,
+                sidebarNavigation || (!settingsOpen && state.selectedTab !== "usage")
+                  ? renderHeaderTitle
+                  : undefined,
             }}
           />
         ) : (
@@ -199,10 +198,7 @@ function WorkspaceRootContent() {
           }
         >
           {settingsOpen ? (
-            <>
-              <NativeStackScreenOptions options={{ headerSearchBarOptions: undefined }} />
-              <SettingsRouteScreen />
-            </>
+            <SettingsRouteScreen />
           ) : enabled.length === 0 ? (
             <WorkspaceNoTabs />
           ) : state.selectedTab === "threads" ? (
@@ -216,14 +212,15 @@ function WorkspaceRootContent() {
         {deviceType !== "pad" && deviceType !== "phone" && sidebarPicker ? (
           <WorkspaceSidebarTabs />
         ) : null}
-        {enabled.length === 0 && !settingsOpen ? null : !settingsOpen &&
-          (state.selectedTab === "threads" || state.selectedTab === "pullRequests") ? (
+        {/* Android's Settings list carries its own search in its app bar. */}
+        {enabled.length === 0 && !settingsOpen ? null : (
+            settingsOpen
+              ? Platform.OS === "ios"
+              : state.selectedTab === "threads" || state.selectedTab === "pullRequests"
+          ) ? (
           <WorkspaceToolbar sidebar={sidebarNavigation} onNewTask={startNewTask} />
         ) : (
-          <WorkspaceSectionToolbar
-            onNewTask={startNewTask}
-            showCompose={!settingsOpen && state.selectedTab !== "usage"}
-          />
+          <WorkspaceSectionToolbar onNewTask={startNewTask} showCompose={false} />
         )}
       </View>
     </WorkspaceTabsContext>
