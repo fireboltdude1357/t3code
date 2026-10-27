@@ -5,7 +5,6 @@ import {
   ProviderInstanceId,
   ThreadId,
   threadBotName,
-  type OrchestrationV2ThreadShell,
   type Project as ProjectRecord,
   type ModelSelection,
   type RuntimeMode,
