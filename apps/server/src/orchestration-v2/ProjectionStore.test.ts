@@ -1257,6 +1257,7 @@ it.effect.each([
       project: "project:c",
       root: "bot:medic:old",
     });
+    yield* createThread({ name: "bot:Medic:user", settledDay: 3, project: "project:b" });
     yield* createThread({ name: "snoozed", settledDay: 2, snoozedUntilDay: 30 });
     yield* createThread({ name: "recent", settledDay: 20 });
     yield* createThread({ name: "unsettled", settledDay: null });
@@ -1275,7 +1276,7 @@ it.effect.each([
       [...(yield* list(before, 0)).counts],
       [
         { projectId: ProjectId.make("project:a"), count: 4, botCount: 0 },
-        { projectId: ProjectId.make("project:b"), count: 1, botCount: 0 },
+        { projectId: ProjectId.make("project:b"), count: 2, botCount: 0 },
         { projectId: ProjectId.make("project:c"), count: 2, botCount: 2 },
       ],
     );
@@ -1284,7 +1285,7 @@ it.effect.each([
       [...(yield* list({ settledAt: DateTime.formatIso(at(4)) }, 0)).counts],
       [
         { projectId: ProjectId.make("project:a"), count: 1, botCount: 0 },
-        { projectId: ProjectId.make("project:b"), count: 1, botCount: 0 },
+        { projectId: ProjectId.make("project:b"), count: 2, botCount: 0 },
         { projectId: ProjectId.make("project:c"), count: 2, botCount: 2 },
       ],
     );
@@ -1292,6 +1293,7 @@ it.effect.each([
     const next = yield* list({ settledAt: DateTime.formatIso(at(4)), threadId: id("b") }, 10);
     assert.deepEqual(next.threadIds, [
       id("c"),
+      id("bot:Medic:user"),
       id("bot:medic:old"),
       id("bot-child"),
       id("d"),
@@ -1301,7 +1303,7 @@ it.effect.each([
     const scoped = yield* list(before, 0, [ProjectId.make("project:b")]);
     assert.deepEqual(scoped, {
       threadIds: [],
-      counts: [{ projectId: ProjectId.make("project:b"), count: 1, botCount: 0 }],
+      counts: [{ projectId: ProjectId.make("project:b"), count: 2, botCount: 0 }],
     });
   }).pipe(Effect.provide(layer)),
 );
