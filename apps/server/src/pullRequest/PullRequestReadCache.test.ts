@@ -236,6 +236,119 @@ it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
     }),
   );
 
+  it.effect("caches a read when only another scope was invalidated meanwhile", () =>
+    Effect.gen(function* () {
+      const cache = yield* PullRequestReadCache.make;
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const read = yield* cache
+        .get(
+          "summary",
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as("first"),
+          ),
+          ["pr-a"],
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* cache.invalidate("pr-b");
+      yield* Deferred.succeed(release, undefined);
+      assert.strictEqual(yield* Fiber.join(read), "first");
+
+      assert.strictEqual(yield* cache.get("summary", Effect.succeed("second"), ["pr-a"]), "first");
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  );
+
+  it.effect("does not cache a read that started while an invalidation was publishing", () =>
+    Effect.gen(function* () {
+      const backing = yield* KeyValueStore.KeyValueStore;
+      const publishing = yield* Deferred.make<void>();
+      const publish = yield* Deferred.make<void>();
+      let pause = false;
+      const cache = yield* PullRequestReadCache.make.pipe(
+        Effect.provideService(KeyValueStore.KeyValueStore, {
+          ...backing,
+          set: (key, value) =>
+            key === "revisions" && pause
+              ? Deferred.succeed(publishing, undefined).pipe(
+                  Effect.andThen(Deferred.await(publish)),
+                  Effect.andThen(backing.set(key, value)),
+                )
+              : backing.set(key, value),
+        }),
+      );
+      pause = true;
+      const invalidation = yield* cache.invalidate("pr").pipe(Effect.forkChild);
+      yield* Deferred.await(publishing);
+      const release = yield* Deferred.make<void>();
+      const read = yield* cache
+        .get("summary", Deferred.await(release).pipe(Effect.as("old")), ["pr"])
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(publish, undefined);
+      yield* Fiber.join(invalidation);
+      yield* TestClock.adjust("30 seconds");
+      yield* Deferred.succeed(release, undefined);
+      assert.strictEqual(yield* Fiber.join(read), "old");
+      yield* TestClock.adjust("31 seconds");
+
+      assert.strictEqual(yield* cache.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  );
+
+  it.effect("does not serve a stale entry written between a refresh's removal and reload", () =>
+    Effect.gen(function* () {
+      const backing = yield* KeyValueStore.KeyValueStore;
+      const holdWrite = yield* Deferred.make<void>();
+      const written = yield* Deferred.make<void>();
+      let holding = false;
+      let releaseOnRemove = false;
+      const cache = yield* PullRequestReadCache.make.pipe(
+        Effect.provideService(KeyValueStore.KeyValueStore, {
+          ...backing,
+          set: (key, value) =>
+            key !== "revisions" && holding
+              ? Effect.sync(() => {
+                  holding = false;
+                }).pipe(
+                  Effect.andThen(Deferred.await(holdWrite)),
+                  Effect.andThen(backing.set(key, value)),
+                  Effect.andThen(Deferred.succeed(written, undefined)),
+                )
+              : backing.set(key, value),
+          remove: (key) =>
+            backing.remove(key).pipe(
+              Effect.andThen(
+                key !== "revisions" && releaseOnRemove
+                  ? Effect.sync(() => {
+                      releaseOnRemove = false;
+                    }).pipe(
+                      Effect.andThen(Deferred.succeed(holdWrite, undefined)),
+                      Effect.andThen(Deferred.await(written)),
+                    )
+                  : Effect.void,
+              ),
+            ),
+        }),
+      );
+      // Read A finishes its lookup under revision 1, but its store write is held back.
+      yield* cache.invalidate("pr");
+      holding = true;
+      const stale = yield* cache
+        .get("summary", Effect.succeed("stale"), ["pr"])
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      // Read B stores its entry under revision 2.
+      yield* cache.invalidate("pr");
+      yield* cache.get("summary", Effect.succeed("newer"), ["pr"]);
+      // Read C under revision 3 refreshes; A's held write lands between its removal and reload.
+      yield* cache.invalidate("pr");
+      releaseOnRemove = true;
+
+      assert.strictEqual(yield* cache.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
+      assert.strictEqual(yield* Fiber.join(stale), "stale");
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  );
+
   it.effect("cancels abandoned reads without blocking invalidation", () =>
     Effect.gen(function* () {
       const cache = yield* PullRequestReadCache.make;
