@@ -45,7 +45,7 @@ class Read extends Persistable.Class<{
     key: string;
     revision: string;
     lookup: Effect.Effect<string, ReadError>;
-    /** The read's scopes and their generations when it started; equality and hashing ignore them. */
+    /** The read's scopes and their generations once it held its permit. */
     scopes: ReadonlyArray<string>;
     generations: ReadonlyArray<number>;
   };
@@ -65,11 +65,17 @@ class Read extends Persistable.Class<{
       .every((value, index) => value === "" || value === stored[index]);
   }
 
+  // Generations keep a read from joining a lookup that started before an invalidation of its scopes.
   [Equal.symbol](that: unknown): boolean {
-    return that instanceof Read && that.key === this.key && that.revision === this.revision;
+    return (
+      that instanceof Read &&
+      that.key === this.key &&
+      that.revision === this.revision &&
+      that.generations.join(",") === this.generations.join(",")
+    );
   }
   [Hash.symbol](): number {
-    return Hash.string(`${this.key}:${this.revision}`);
+    return Hash.string(`${this.key}:${this.revision}:${this.generations.join(",")}`);
   }
 }
 
@@ -92,8 +98,9 @@ export const make = Effect.gen(function* () {
   let enabled = true;
   const lock = yield* Semaphore.make(CONCURRENT_READS);
   // Invalidations don't wait for reads in flight; they only exclude each other. An invalidation
-  // bumps its scope's generation when it starts and again once its revision is published. A lookup
-  // whose scopes moved meanwhile still answers its caller but is never cached, in memory or on disk.
+  // bumps its scope's generation when it starts and again once its revision is published, so an odd
+  // generation means one is in progress. A lookup that started mid-invalidation, or whose scopes
+  // moved meanwhile, still answers its caller but is never cached, in memory or on disk.
   const invalidations = yield* Semaphore.make(1);
   const scopeGenerations = new Map<string, number>();
   const generationsOf = (scopes: ReadonlyArray<string>) =>
@@ -125,7 +132,7 @@ export const make = Effect.gen(function* () {
             payload,
             // A zero time to live keeps the result out of both caches.
             expiresAt: generationsOf(request.scopes).every(
-              (current, index) => current === request.generations[index],
+              (current, index) => current === request.generations[index] && current % 2 === 0,
             )
               ? now + 60_000
               : now,
