@@ -1163,7 +1163,11 @@ function OpenCommandPaletteDialog(props: {
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
       (currentProjectId ? (projectTitleById.get(currentProjectId) ?? null) : null);
 
-    if (activeProjectTitle) {
+    const contextIsBotProject =
+      contextualProjectRef !== null &&
+      botProjects.has(`${contextualProjectRef.environmentId}:${contextualProjectRef.projectId}`);
+
+    if (activeProjectTitle && !contextIsBotProject) {
       actionItems.push({
         kind: "action",
         value: "action:new-thread",

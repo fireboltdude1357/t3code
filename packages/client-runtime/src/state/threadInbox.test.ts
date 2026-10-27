@@ -321,27 +321,25 @@ describe("botProjectKeys", () => {
         projectThread("bot-loaded", "bot:medic:1"),
         projectThread("user-loaded", "user-1"),
         projectThread("user-older", "bot:medic:2"),
+        projectThread("unknown", "bot:medic:3"),
       ],
       [
         {
           environmentId,
           older: {
-            counts: new Map(
-              ["bot-older", "user-older", "bot-loaded", "user-loaded", "bot-empty"].map(
-                (projectId) => [ProjectId.make(projectId), projectId === "bot-empty" ? 0 : 2],
-              ),
-            ),
-            botOnlyProjectIds: new Set(
-              ["bot-older", "bot-loaded", "user-loaded", "bot-empty"].map((projectId) =>
-                ProjectId.make(projectId),
-              ),
-            ),
+            // "unknown" stands for an older server that sent no botCount.
+            owners: new Map([
+              [ProjectId.make("bot-older"), "bot"],
+              [ProjectId.make("user-older"), "user"],
+              [ProjectId.make("bot-loaded"), "bot"],
+              [ProjectId.make("user-loaded"), "bot"],
+            ]),
           },
         },
       ],
     );
     expect([...keys].toSorted()).toEqual(
-      ["bot-loaded", "bot-older"].map((projectId) => `${environmentId}:${projectId}`),
+      ["bot-loaded", "bot-older", "unknown"].map((projectId) => `${environmentId}:${projectId}`),
     );
   });
 });

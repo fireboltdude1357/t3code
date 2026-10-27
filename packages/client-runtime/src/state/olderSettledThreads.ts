@@ -31,8 +31,8 @@ export interface OlderSettled {
   readonly before: string;
   readonly beforeMs: number;
   readonly counts: ReadonlyMap<ProjectId, number>;
-  /** Projects whose older settled threads are all a bot's work. */
-  readonly botOnlyProjectIds: ReadonlySet<ProjectId>;
+  /** Who owns each project's older settled threads. Absent when the server sent no `botCount`. */
+  readonly owners: ReadonlyMap<ProjectId, "bot" | "user">;
 }
 
 /** The scope's projects in one environment, or null for all of them. */
@@ -138,6 +138,19 @@ export function isListedSettledThread(
   frontier: OrchestrationV2OlderSettledCursor | null,
 ): boolean {
   return frontier === null || atOrAboveCursor(thread, frontier);
+}
+
+/** `OlderSettled.owners` from the server's counts. */
+export function olderSettledOwners(
+  counts: OrchestrationV2OlderSettledThreadsPage["counts"],
+): ReadonlyMap<ProjectId, "bot" | "user"> {
+  return new Map(
+    counts.flatMap(({ projectId, count, botCount }) =>
+      count === 0 || botCount === undefined
+        ? []
+        : [[projectId, botCount === count ? "bot" : "user"] as const],
+    ),
+  );
 }
 
 /**
@@ -258,11 +271,7 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
     readonly counts: OrchestrationV2OlderSettledThreadsPage["counts"];
   }) => ({
     counts: new Map(source.counts.map(({ projectId, count }) => [projectId, count] as const)),
-    botOnlyProjectIds: new Set(
-      source.counts.flatMap(({ projectId, count, botCount }) =>
-        count > 0 && botCount === count ? [projectId] : [],
-      ),
-    ),
+    owners: olderSettledOwners(source.counts),
   });
 
   const olderSettledAtom = Atom.family((environmentId: EnvironmentId) => {

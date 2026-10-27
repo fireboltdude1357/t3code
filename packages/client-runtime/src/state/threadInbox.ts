@@ -124,15 +124,13 @@ export function botProjectKeys(
   >,
   olderSettled: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
-    readonly older: Pick<OlderSettled, "counts" | "botOnlyProjectIds"> | null;
+    readonly older: Pick<OlderSettled, "owners"> | null;
   }>,
 ): ReadonlySet<string> {
   const botOnly = new Map<string, boolean>();
   for (const { environmentId, older } of olderSettled) {
-    if (older === null) continue;
-    for (const [projectId, count] of older.counts) {
-      if (count === 0) continue;
-      botOnly.set(`${environmentId}:${projectId}`, older.botOnlyProjectIds.has(projectId));
+    for (const [projectId, owner] of older?.owners ?? []) {
+      botOnly.set(`${environmentId}:${projectId}`, owner === "bot");
     }
   }
   for (const thread of threads) {
