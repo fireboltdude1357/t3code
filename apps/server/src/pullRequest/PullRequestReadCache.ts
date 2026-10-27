@@ -45,8 +45,9 @@ class Read extends Persistable.Class<{
     key: string;
     revision: string;
     lookup: Effect.Effect<string, ReadError>;
-    /** Invalidations seen when the read started; equality and hashing ignore it. */
-    generation: number;
+    /** The read's scopes and their generations when it started; equality and hashing ignore them. */
+    scopes: ReadonlyArray<string>;
+    generations: ReadonlyArray<number>;
   };
 }>()("PullRequestRead", {
   primaryKey: ({ key }) => key,
@@ -90,10 +91,15 @@ export const make = Effect.gen(function* () {
   const clock = yield* Clock.Clock;
   let enabled = true;
   const lock = yield* Semaphore.make(CONCURRENT_READS);
-  // Invalidations don't wait for reads in flight; they only exclude each other. A lookup that an
-  // invalidation overtook still answers its caller but is never cached, in memory or on disk.
+  // Invalidations don't wait for reads in flight; they only exclude each other. An invalidation
+  // bumps its scope's generation when it starts and again once its revision is published. A lookup
+  // whose scopes moved meanwhile still answers its caller but is never cached, in memory or on disk.
   const invalidations = yield* Semaphore.make(1);
-  let generation = 0;
+  const scopeGenerations = new Map<string, number>();
+  const generationsOf = (scopes: ReadonlyArray<string>) =>
+    scopes.map((scope) => scopeGenerations.get(scope) ?? 0);
+  const bump = (scope: string) =>
+    scopeGenerations.set(scope, (scopeGenerations.get(scope) ?? 0) + 1);
   const digest = (key: string) =>
     crypto.digest("SHA-256", new TextEncoder().encode(key)).pipe(Effect.map(Hex.encode));
   const revisions = yield* Cache.makeWith(
@@ -118,7 +124,11 @@ export const make = Effect.gen(function* () {
           return {
             payload,
             // A zero time to live keeps the result out of both caches.
-            expiresAt: request.generation === generation ? now + 60_000 : now,
+            expiresAt: generationsOf(request.scopes).every(
+              (current, index) => current === request.generations[index],
+            )
+              ? now + 60_000
+              : now,
             revision: request.revision,
           };
         }),
@@ -135,7 +145,11 @@ export const make = Effect.gen(function* () {
       const stored = yield* cache.get(request);
       if (request.matchesRevision(stored.revision)) return stored;
       yield* cache.invalidate(request);
-      return yield* cache.get(request);
+      const reloaded = yield* cache.get(request);
+      if (request.matchesRevision(reloaded.revision)) return reloaded;
+      // An older lookup's write landed between the removal and the reload.
+      yield* cache.invalidate(request);
+      return { payload: yield* request.lookup, expiresAt: 0, revision: request.revision };
     }),
     { capacity: CONCURRENT_READS, timeToLive: () => Duration.zero },
   );
@@ -145,8 +159,8 @@ export const make = Effect.gen(function* () {
     get: Effect.fn("PullRequestReadCache.get")(function* (key, lookup, scopes = []) {
       if (!enabled) return yield* lookup;
       const read = yield* Effect.cached(lookup);
-      const started = generation;
       return yield* Effect.gen(function* () {
+        const generations = generationsOf(scopes);
         const current = yield* Cache.get(revisions, undefined);
         const now = clock.currentTimeMillisUnsafe();
         const revision = scopes
@@ -159,7 +173,8 @@ export const make = Effect.gen(function* () {
           key: yield* digest(key),
           revision,
           lookup: read,
-          generation: started,
+          scopes,
+          generations,
         });
         const stored = yield* cache.get(request);
         return (
@@ -177,7 +192,7 @@ export const make = Effect.gen(function* () {
     }, detachStackFrame),
     invalidate: Effect.fn("PullRequestReadCache.invalidate")(
       function* (scope) {
-        generation++;
+        bump(scope);
         const now = clock.currentTimeMillisUnsafe();
         const current = yield* Cache.get(revisions, undefined);
         const next = Object.fromEntries(
@@ -187,6 +202,7 @@ export const make = Effect.gen(function* () {
         const encoded = yield* Schema.encodeEffect(revisionCodec)(next);
         yield* backing.set("revisions", encoded);
         yield* Cache.set(revisions, undefined, next);
+        bump(scope);
       },
       Effect.catch(() => {
         enabled = false;
