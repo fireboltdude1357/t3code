@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
+import * as TestClock from "effect/testing/TestClock";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 
 NodeV8.setFlagsFromString("--expose-gc");
@@ -201,6 +202,38 @@ it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
       assert.strictEqual(yield* Fiber.join(read), "old");
       assert.strictEqual(yield* cache.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+  );
+
+  it.effect("does not cache a read that an invalidation overtook", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pr-cache-" });
+      const cache = yield* cacheLayer(directory);
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const read = yield* cache
+        .get(
+          "summary",
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as("old"),
+          ),
+          ["pr"],
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* cache.invalidate("pr");
+      // The old lookup finishes well after the invalidation...
+      yield* TestClock.adjust("30 seconds");
+      yield* Deferred.succeed(release, undefined);
+      assert.strictEqual(yield* Fiber.join(read), "old");
+      // ...and the invalidation's own revision has expired by now.
+      yield* TestClock.adjust("31 seconds");
+
+      assert.strictEqual(yield* cache.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
+      const restarted = yield* cacheLayer(directory);
+      assert.strictEqual(yield* restarted.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
+    }),
   );
 
   it.effect("cancels abandoned reads without blocking invalidation", () =>
