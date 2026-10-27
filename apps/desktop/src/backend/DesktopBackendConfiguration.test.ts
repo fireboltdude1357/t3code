@@ -25,7 +25,11 @@ const layerShellEnvironment = (prepared = true) =>
   });
 
 const layerBackendConfiguration = (prepared = true) =>
-  DesktopBackendConfiguration.layer.pipe(Layer.provide(layerShellEnvironment(prepared)));
+  DesktopBackendConfiguration.layer.pipe(
+    Layer.provide(layerShellEnvironment(prepared)),
+    // Without this the layer reads APPIMAGE and T3CODE_DISABLE_AUTO_UPDATE from the shell running the tests.
+    Layer.provide(DesktopConfig.layerTest({})),
+  );
 
 const layerServerExposure = Layer.succeed(DesktopServerExposure.DesktopServerExposure, {
   getState: Effect.die("unexpected getState"),
