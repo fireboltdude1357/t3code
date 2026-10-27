@@ -270,9 +270,8 @@ provider session. The request becomes the V2 command
 the timeout expires. A wait timeout does not cancel the child; the result sets
 `waitTimedOut: true`, and the caller can continue with `task_status`. A pending blocking
 question also ends the wait with `hasPendingQuestion: true` and `waitTimedOut: false`.
-If `hasPendingQuestion`, pass `threadId=childThreadId` to `t3_pending_request_list`,
-`t3_pending_request_read` (with `requestId`) and `t3_pending_request_respond`, or ask
-the user; the task's completion still wakes this thread. A pending live approval for the
+If `hasPendingQuestion`, pass `threadId=childThreadId` to `t3_pending_request` with
+action `list`, `read` (with `requestId`), or `respond`, or ask the user; the task's completion still wakes this thread. A pending live approval for the
 task's own unfinished work also ends the wait. Its identity appears in `pendingApproval`;
 it grants no approval authority. Read the fresh full request in the child thread before
 responding, since the durable record can outlive its provider callback. Async questions
@@ -370,7 +369,7 @@ launching again. `create_threads` remains the batch option for a shared checkout
 
 A bot that launches work on its own passes `bot` with its short name. The new
 thread's id becomes `bot:<name>:<id>`. Threads that a marked thread creates
-through `t3_thread_launch`, `create_threads`, or `t3_thread_fork` keep the
+through `t3_thread_launch`, `create_threads`, or a `t3_thread_transfer` fork keep the
 marker; `bot: null` launches ordinary work from one instead. Clients list
 marked threads in the sidebar's Bots section instead of the inbox, and they
 notify only when the thread needs an approval, an answer, or a decision on a
