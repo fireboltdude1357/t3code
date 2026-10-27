@@ -9,10 +9,13 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import {
-  createNavigationContainerRef,
+  CommonActions,
+  createPathConfigForStaticNavigation,
   createStaticNavigation,
   getActionFromState,
   getStateFromPath,
+  type NavigationAction,
+  type NavigationState,
 } from "@react-navigation/native";
 
 import { RegistryContext } from "@effect/atom-react";
@@ -21,12 +24,25 @@ import { ThreadArrangementHost } from "./features/threads/ThreadArrangementSheet
 import * as Dialog from "./components/ui/Dialog";
 import { CloudAuthProvider } from "./features/cloud/CloudAuthProvider";
 import { prepareNativeShowcaseCapture } from "./features/showcase/nativeShowcaseScene";
-import { IncomingShareProvider } from "./features/sharing/IncomingShareProvider";
+import {
+  presentPendingIncomingShare,
+  pruneIncomingShareImports,
+  startIncomingShareInbox,
+} from "./features/sharing/IncomingShareProvider";
+import {
+  installAgentNotificationNavigation,
+  setAgentNotificationPathname,
+} from "./features/agent-awareness/notificationNavigation";
+import {
+  installAppShortcuts,
+  recordAppShortcutNavigationState,
+} from "./features/shortcuts/appShortcutsRuntime";
 import {
   AppearancePreferencesProvider,
+  installAppearanceRuntime,
   useAppearancePreferences,
 } from "./features/settings/appearance/AppearancePreferencesProvider";
-import { RootStack } from "./Stack";
+import { RootStack, workspaceLocationFromState } from "./Stack";
 import { appAtomRegistry } from "./state/atom-registry";
 import { subscribeComposerDraftModelReconciliation } from "./state/use-composer-drafts";
 import { environmentThreadShells } from "./state/threads";
@@ -40,8 +56,9 @@ import {
   type FoundationHotModule,
 } from "./lib/foundation-fast-refresh";
 import { useMobileNavigationTheme } from "./lib/useMobileNavigationTheme";
-import { useUiRuntimeMemoryWarningGc } from "./lib/useUiRuntimeMemoryWarningGc";
+import { installUiRuntimeMemoryWarningGc } from "./lib/useUiRuntimeMemoryWarningGc";
 import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
+import { installSubscriptionUsageRefresh } from "./widgets/useSubscriptionUsage";
 import { GlobalVoiceInputControl } from "./features/voice-input/GlobalVoiceInputControl";
 import { restoreSettingsLinkState } from "./features/settings/settings-navigation";
 import {
@@ -52,6 +69,13 @@ import {
 } from "./features/workspace/workspace-selection-store";
 import { workspaceDetailLinkAction } from "./features/workspace/workspace-detail-selection";
 import { NativeLayoutMetricsProvider } from "./native/native-layout-metrics";
+import {
+  attachRootNavigation,
+  flushRootNavigationQueue,
+  linkToRootPath,
+  rootNavigationRef,
+} from "./lib/rootNavigation";
+import { pruneNewTaskBranchCheckouts } from "./features/threads/NewTaskDraftRouteScreen";
 
 import "../global.css";
 
@@ -61,6 +85,20 @@ if (process.env.EXPO_PUBLIC_SHOWCASE === "1") {
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 void hydrateWorkspaceSelections();
+
+const linkingConfig = {
+  initialRouteName: "Home",
+  screens: createPathConfigForStaticNavigation(RootStack, { initialRouteName: "Home" }) ?? {},
+} as const;
+
+function getAppStateFromPath(path: string, options: Parameters<typeof getStateFromPath>[1]) {
+  return takeScheduledTaskNewLink(
+    restoreSettingsLinkState(
+      restoreDraftLinkState(getStateFromPath(path, options), path),
+      settingsLinkPage(),
+    ),
+  );
+}
 
 const appLinking = {
   prefixes: [Linking.createURL("/"), "t3code://", "t3code-dev://", "t3code-preview://"],
@@ -74,24 +112,54 @@ const appLinking = {
     // Our router handles the selection; React Navigation's type only lists its own actions.
     (workspaceDetailLinkAction(state) as ReturnType<typeof getActionFromState>) ??
     getActionFromState(state, options),
-  getStateFromPath: (path: string, options: Parameters<typeof getStateFromPath>[1]) =>
-    takeScheduledTaskNewLink(
-      restoreSettingsLinkState(
-        restoreDraftLinkState(getStateFromPath(path, options), path),
-        settingsLinkPage(),
-      ),
-    ),
+  getStateFromPath: getAppStateFromPath,
 };
 
+function appLinkAction(href: string): NavigationAction {
+  const state = getAppStateFromPath(href, linkingConfig);
+  if (!state) throw new Error(`Failed to parse the href to a navigation state (${href}).`);
+  return appLinking.getActionFromState(state, linkingConfig) ?? CommonActions.reset(state);
+}
+
+function linkToAppPath(href: string): void {
+  linkToRootPath(href, appLinkAction);
+}
+
 const Navigation = createStaticNavigation(RootStack);
-const navigationRef = createNavigationContainerRef();
+
+function handleNavigationStateChange(state: NavigationState | undefined): void {
+  recordWorkspaceSelections(state);
+  presentPendingIncomingShare();
+  if (!state) return;
+  setAgentNotificationPathname(workspaceLocationFromState(state).pathname);
+  recordAppShortcutNavigationState(state);
+  pruneNewTaskBranchCheckouts(state);
+  pruneIncomingShareImports(state);
+}
+
+function handleNavigationReady(): void {
+  handleNavigationStateChange(rootNavigationRef.getRootState());
+  flushRootNavigationQueue();
+}
 
 declare const module: { readonly hot?: FoundationHotModule } | undefined;
 
 const appServiceDisposers = [
+  installUiRuntimeMemoryWarningGc(),
+  subscribeComposerDraftModelReconciliation({
+    registry: appAtomRegistry,
+    threadShellAtom: environmentThreadShells.threadShellAtom,
+    threadRefsAtom: environmentThreadShells.threadRefsAtom,
+    shellStateAtom: environmentShell.stateAtom,
+  }),
+  installAppearanceRuntime(),
+  installSubscriptionUsageRefresh(),
   installPermissionUpdateNotice(),
   installThreadOutboxDelivery(),
   installComposerAttachmentUploads(),
+  startIncomingShareInbox(),
+  installAgentNotificationNavigation(linkToAppPath),
+  installAppShortcuts(linkToAppPath),
 ];
 disposeOnFoundationReplace(typeof module === "undefined" ? undefined : module.hot, () => {
   for (const dispose of appServiceDisposers) dispose();
@@ -108,18 +176,6 @@ function SplashScreenCoordinator() {
 }
 
 export default function App() {
-  useUiRuntimeMemoryWarningGc();
-  useEffect(
-    () =>
-      subscribeComposerDraftModelReconciliation({
-        registry: appAtomRegistry,
-        threadShellAtom: environmentThreadShells.threadShellAtom,
-        threadRefsAtom: environmentThreadShells.threadRefsAtom,
-        shellStateAtom: environmentShell.stateAtom,
-      }),
-    [],
-  );
-
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
       <CloudAuthProvider>
@@ -146,15 +202,13 @@ function AppContent() {
             {/* native-stack needs the theme's dark flag to select dark native headers. */}
             <GlobalVoiceInputControl>
               <NativeLayoutMetricsProvider>
-                <IncomingShareProvider>
-                  <Navigation
-                    ref={navigationRef}
-                    linking={appLinking}
-                    onReady={() => recordWorkspaceSelections(navigationRef.getRootState())}
-                    theme={navigationTheme}
-                    onStateChange={recordWorkspaceSelections}
-                  />
-                </IncomingShareProvider>
+                <Navigation
+                  ref={attachRootNavigation}
+                  linking={appLinking}
+                  onReady={handleNavigationReady}
+                  theme={navigationTheme}
+                  onStateChange={handleNavigationStateChange}
+                />
                 <Dialog.Host />
                 <ThreadArrangementHost />
                 <ProjectChipIconRasterizer />
