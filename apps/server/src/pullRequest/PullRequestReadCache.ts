@@ -84,6 +84,9 @@ export const make = Effect.gen(function* () {
   const clock = yield* Clock.Clock;
   let enabled = true;
   const lock = yield* Semaphore.make(CONCURRENT_READS);
+  // Entries carry the scope revision they were read under, so an invalidation never has to wait for
+  // reads in flight; it only has to keep other invalidations off the revisions map.
+  const invalidations = yield* Semaphore.make(1);
   const digest = (key: string) =>
     crypto.digest("SHA-256", new TextEncoder().encode(key)).pipe(Effect.map(Hex.encode));
   const revisions = yield* Cache.makeWith(
@@ -172,7 +175,7 @@ export const make = Effect.gen(function* () {
         return Effect.logWarning("PR cache disabled after clearing failed");
       }),
       Effect.uninterruptible,
-      lock.withPermits(CONCURRENT_READS),
+      invalidations.withPermits(1),
       detachStackFrame,
     ),
   });
