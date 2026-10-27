@@ -1771,6 +1771,21 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         SET type = 'command_execution', payload_json = json_set(payload_json, '$.type', 'command_execution')
         WHERE thread_id = ${threadId} AND ordinal BETWEEN 2 AND 70
       `;
+      // History pages reuse their timeline index until a thread event commits, as every
+      // projection write does, so these direct row edits commit one too.
+      let editVersion = 0;
+      const commitThreadEdit = () => {
+        editVersion += 1;
+        return sql`
+          INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+          ) VALUES (
+            ${`event:bounded-sql-history:edit:${editVersion}`}, 'thread', ${threadId},
+            ${editVersion}, 'turn-item.updated', ${nowIso}, 'user', '{}', '{}', 2
+          )
+        `;
+      };
 
       // A targeted page that needs more than 20 human turns must still reach its target
       // after the byte pass re-bounds it.
@@ -1782,6 +1797,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           '$.attachments', json('[]'))
         WHERE thread_id = ${threadId} AND ordinal BETWEEN 600 AND 624
       `;
+      yield* commitThreadEdit();
       const targetedPage = yield* projectionStore.getThreadHistoryPage(
         threadId,
         encodeThreadHistoryCursor({
@@ -1812,6 +1828,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             '$.type', CASE ordinal WHEN 500 THEN 'run_interrupt_request' ELSE 'run_interrupt_result' END)
         WHERE thread_id = ${threadId} AND ordinal IN (500, 580)
       `;
+      yield* commitThreadEdit();
       const interruptPage = yield* projectionStore.getThreadHistoryPage(
         threadId,
         encodeThreadHistoryCursor({
