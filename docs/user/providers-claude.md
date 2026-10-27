@@ -67,7 +67,7 @@ over 200,000 tokens. Each Claude provider's settings can override it:
 - **Never** skips idle compaction and Claude's resume prompt. **Auto-compact after**
   still applies, and you can still compact by hand.
 
-**Compact before cache expires** in **Settings > General** is a separate setting
+**Compact before cache expires** in **Settings > Threads** is a separate setting
 that also covers Codex threads. It sends `/compact` to idle threads using at
 least the chosen context size (150k tokens by default) shortly before their
 cache runs out, keeps working across server restarts, and skips snoozed,
