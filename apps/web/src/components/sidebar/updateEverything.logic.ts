@@ -98,7 +98,7 @@ export function collectServerUpdateTargets(
       continue;
     }
     if (selfUpdate === "desktop-managed" && !desktopAppUpdate) {
-      skip("needs a newer desktop app");
+      skip("its desktop app cannot update itself");
       continue;
     }
     const serverVersion = config.environment.serverVersion;
