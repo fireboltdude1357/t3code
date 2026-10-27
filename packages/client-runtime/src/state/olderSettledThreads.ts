@@ -31,7 +31,7 @@ export interface OlderSettled {
   readonly before: string;
   readonly beforeMs: number;
   readonly counts: ReadonlyMap<ProjectId, number>;
-  /** Who owns each project's older settled threads. Absent when the server sent no `botCount`. */
+  /** Who owns each project's older settled threads. */
   readonly owners: ReadonlyMap<ProjectId, "bot" | "user">;
 }
 
@@ -140,15 +140,14 @@ export function isListedSettledThread(
   return frontier === null || atOrAboveCursor(thread, frontier);
 }
 
-/** `OlderSettled.owners` from the server's counts. */
+/** `OlderSettled.owners` from the server's counts. A missing `botCount` (an older server) counts
+    as the user's, so a picker never hides a project it can't prove belongs to bots. */
 export function olderSettledOwners(
   counts: OrchestrationV2OlderSettledThreadsPage["counts"],
 ): ReadonlyMap<ProjectId, "bot" | "user"> {
   return new Map(
     counts.flatMap(({ projectId, count, botCount }) =>
-      count === 0 || botCount === undefined
-        ? []
-        : [[projectId, botCount === count ? "bot" : "user"] as const],
+      count === 0 ? [] : [[projectId, botCount === count ? "bot" : "user"] as const],
     ),
   );
 }

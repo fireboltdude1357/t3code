@@ -567,16 +567,18 @@ describe("createOlderSettledThreadAtoms", () => {
   );
 });
 
-it("olderSettledOwners leaves a project out when the server sent no botCount", () => {
+it("olderSettledOwners counts a project without botCount as the user's", () => {
   const other = ProjectId.make("project-b");
   const unknown = ProjectId.make("project-c");
   const owners = olderSettledOwners([
     { projectId: project, count: 2, botCount: 2 },
     { projectId: other, count: 2, botCount: 1 },
     { projectId: unknown, count: 2 },
+    { projectId: ProjectId.make("project-d"), count: 0, botCount: 0 },
   ]);
   expect([...owners]).toEqual([
     [project, "bot"],
     [other, "user"],
+    [unknown, "user"],
   ]);
 });
