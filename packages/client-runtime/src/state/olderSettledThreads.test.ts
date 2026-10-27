@@ -52,6 +52,7 @@ const older: OlderSettled = {
   before,
   beforeMs: 50 * DAY,
   counts: new Map([[project, 3]]),
+  botOnlyProjectIds: new Set(),
 };
 
 const row = (

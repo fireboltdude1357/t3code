@@ -298,17 +298,50 @@ describe("botProjectKeys", () => {
   });
 
   it("marks projects where only bots and their subagents work", () => {
-    const keys = botProjectKeys([
-      projectThread("bot-only", "bot:medic:1"),
-      projectThread("bot-only", "subagent-1", "bot:medic:1"),
-      projectThread("mixed", "bot:medic:2"),
-      projectThread("mixed", "user-1"),
-      projectThread("user-only", "user-2"),
-      projectThread("archived-user", "bot:medic:3"),
-      projectThread("archived-user", "user-3", "user-3", true),
-    ]);
+    const keys = botProjectKeys(
+      [
+        projectThread("bot-only", "bot:medic:1"),
+        projectThread("bot-only", "subagent-1", "bot:medic:1"),
+        projectThread("mixed", "bot:medic:2"),
+        projectThread("mixed", "user-1"),
+        projectThread("user-only", "user-2"),
+        projectThread("archived-user", "bot:medic:3"),
+        projectThread("archived-user", "user-3", "user-3", true),
+      ],
+      [],
+    );
     expect([...keys].toSorted()).toEqual(
       ["archived-user", "bot-only"].map((projectId) => `${environmentId}:${projectId}`),
+    );
+  });
+
+  it("counts the older settled threads the shell leaves out", () => {
+    const keys = botProjectKeys(
+      [
+        projectThread("bot-loaded", "bot:medic:1"),
+        projectThread("user-loaded", "user-1"),
+        projectThread("user-older", "bot:medic:2"),
+      ],
+      [
+        {
+          environmentId,
+          older: {
+            counts: new Map(
+              ["bot-older", "user-older", "bot-loaded", "user-loaded", "bot-empty"].map(
+                (projectId) => [ProjectId.make(projectId), projectId === "bot-empty" ? 0 : 2],
+              ),
+            ),
+            botOnlyProjectIds: new Set(
+              ["bot-older", "bot-loaded", "user-loaded", "bot-empty"].map((projectId) =>
+                ProjectId.make(projectId),
+              ),
+            ),
+          },
+        },
+      ],
+    );
+    expect([...keys].toSorted()).toEqual(
+      ["bot-loaded", "bot-older"].map((projectId) => `${environmentId}:${projectId}`),
     );
   });
 });

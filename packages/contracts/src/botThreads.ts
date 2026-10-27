@@ -16,7 +16,7 @@ export type BotName = typeof BotName.Type;
  * name and another colon. The marker travels with the thread, so clients and
  * the relay keep bot work out of the inbox without any new thread state.
  */
-export const BOT_THREAD_ID_PREFIX = "bot:";
+const BOT_THREAD_ID_PREFIX = "bot:";
 
 /** The id for a thread `bot` launches, built from an otherwise unique id. */
 export const botThreadId = (bot: BotName, id: string): string =>
