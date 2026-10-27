@@ -311,6 +311,76 @@ it.effect("serves a waiting read before a read requested after it", () =>
   ),
 );
 
+const holdReaders = (sql: SqlClient.SqlClient, releases: ReadonlyArray<Deferred.Deferred<void>>) =>
+  Effect.forEach(releases, (release) =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const holder = yield* sql
+        .withTransaction(
+          countEntries(sql).pipe(
+            Effect.andThen(Deferred.succeed(held, undefined)),
+            Effect.andThen(Deferred.await(release)),
+          ),
+        )
+        .pipe(SqliteClient.readOnly, Effect.forkChild);
+      yield* Deferred.await(held);
+      return holder;
+    }),
+  );
+
+it.effect("gives the reader to the next read after a queued read is interrupted", () =>
+  withReaderClient((sql) =>
+    Effect.gen(function* () {
+      const releases = yield* Effect.forEach([0, 1, 2, 3], () => Deferred.make<void>());
+      const holders = yield* holdReaders(sql, releases);
+      const abandoned = yield* Effect.forkChild(countEntries(sql).pipe(SqliteClient.readOnly), {
+        startImmediately: true,
+      });
+      yield* Fiber.interrupt(abandoned);
+      const next = yield* Effect.forkChild(countEntries(sql).pipe(SqliteClient.readOnly), {
+        startImmediately: true,
+      });
+
+      yield* Deferred.succeed(releases[0]!, undefined);
+      assert.equal(yield* Fiber.join(next), 1);
+      yield* Effect.forEach(releases, (release) => Deferred.succeed(release, undefined));
+      yield* Effect.forEach(holders, Fiber.join);
+    }),
+  ),
+);
+
+it.effect("moves queued reads to the writer in arrival order when the readers turn off", () =>
+  withFileClient((sql, filename) =>
+    Effect.gen(function* () {
+      yield* sql`PRAGMA journal_mode = WAL`;
+      yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
+      yield* sql`INSERT INTO entries VALUES ('kept')`;
+      const finished: Array<string> = [];
+      const read = (name: string) =>
+        countEntries(sql).pipe(
+          SqliteClient.readOnly,
+          Effect.andThen(Effect.sync(() => finished.push(name))),
+        );
+      const releases = yield* Effect.forEach([0, 1, 2], () => Deferred.make<void>());
+      const holders = yield* holdReaders(sql, releases);
+
+      // The fourth reader can't open the removed file, which turns the readers off with reads queued.
+      yield* (yield* FileSystem.FileSystem).remove(filename);
+      const reads = yield* Effect.forEach(["starting", "first", "second", "third"], (name) =>
+        Effect.forkChild(read(name), { startImmediately: true }),
+      );
+      yield* Effect.forEach(reads, Fiber.join);
+
+      assert.deepEqual(
+        finished.filter((name) => name !== "starting"),
+        ["first", "second", "third"],
+      );
+      yield* Effect.forEach(releases, (release) => Deferred.succeed(release, undefined));
+      yield* Effect.forEach(holders, Fiber.join);
+    }),
+  ),
+);
+
 // regression: #19226 read-only transactions run on the separate reader connection
 it.effect("rejects a write in a read-only transaction", () =>
   withReaderClient((sql) =>
