@@ -349,35 +349,37 @@ it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   );
 
-  it.effect("does not cache a read that started and finished while an invalidation was publishing", () =>
-    Effect.gen(function* () {
-      const backing = yield* KeyValueStore.KeyValueStore;
-      const publishing = yield* Deferred.make<void>();
-      const publish = yield* Deferred.make<void>();
-      let pause = false;
-      const cache = yield* PullRequestReadCache.make.pipe(
-        Effect.provideService(KeyValueStore.KeyValueStore, {
-          ...backing,
-          set: (key, value) =>
-            key === "revisions" && pause
-              ? Deferred.succeed(publishing, undefined).pipe(
-                  Effect.andThen(Deferred.await(publish)),
-                  Effect.andThen(backing.set(key, value)),
-                )
-              : backing.set(key, value),
-        }),
-      );
-      pause = true;
-      const invalidation = yield* cache.invalidate("pr").pipe(Effect.forkChild);
-      yield* Deferred.await(publishing);
-      yield* TestClock.adjust("30 seconds");
-      assert.strictEqual(yield* cache.get("summary", Effect.succeed("old"), ["pr"]), "old");
-      yield* Deferred.succeed(publish, undefined);
-      yield* Fiber.join(invalidation);
-      yield* TestClock.adjust("31 seconds");
+  it.effect(
+    "does not cache a read that started and finished while an invalidation was publishing",
+    () =>
+      Effect.gen(function* () {
+        const backing = yield* KeyValueStore.KeyValueStore;
+        const publishing = yield* Deferred.make<void>();
+        const publish = yield* Deferred.make<void>();
+        let pause = false;
+        const cache = yield* PullRequestReadCache.make.pipe(
+          Effect.provideService(KeyValueStore.KeyValueStore, {
+            ...backing,
+            set: (key, value) =>
+              key === "revisions" && pause
+                ? Deferred.succeed(publishing, undefined).pipe(
+                    Effect.andThen(Deferred.await(publish)),
+                    Effect.andThen(backing.set(key, value)),
+                  )
+                : backing.set(key, value),
+          }),
+        );
+        pause = true;
+        const invalidation = yield* cache.invalidate("pr").pipe(Effect.forkChild);
+        yield* Deferred.await(publishing);
+        yield* TestClock.adjust("30 seconds");
+        assert.strictEqual(yield* cache.get("summary", Effect.succeed("old"), ["pr"]), "old");
+        yield* Deferred.succeed(publish, undefined);
+        yield* Fiber.join(invalidation);
+        yield* TestClock.adjust("31 seconds");
 
-      assert.strictEqual(yield* cache.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
-    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+        assert.strictEqual(yield* cache.get("summary", Effect.succeed("fresh"), ["pr"]), "fresh");
+      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   );
 
   it.effect("does not let a read join a lookup that started before an invalidation", () =>
