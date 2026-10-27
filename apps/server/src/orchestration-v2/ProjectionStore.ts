@@ -6667,44 +6667,46 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY older.settled_at DESC, older.thread_id ASC
               LIMIT ${limit}
             `;
+      // One statement, so totals and bot rows share a snapshot. The prefix only narrows the bot
+      // rows; threadOwnerBotName decides, as snapshots do.
       const countRows =
-        limit !== 0
-          ? []
-          : yield* sql<{ readonly project_id: string; readonly count: number }>`
-              WITH older AS (${older})
-              SELECT older.project_id, COUNT(*) AS count FROM older
-              WHERE ${belowCursor}
-              GROUP BY older.project_id
-            `;
-      // The prefix only narrows the rows; threadOwnerBotName decides, as snapshots do.
-      const botRows =
         limit !== 0
           ? []
           : yield* sql<{
               readonly project_id: string;
-              readonly thread_id: string;
-              readonly root_thread_id: string;
+              readonly count: number | null;
+              readonly thread_id: string | null;
+              readonly root_thread_id: string | null;
             }>`
-              WITH older AS (${older})
-              SELECT older.project_id, older.thread_id, older.root_thread_id FROM older
-              WHERE ${belowCursor}
-                AND (substr(older.thread_id, 1, 4) = 'bot:'
-                  OR substr(older.root_thread_id, 1, 4) = 'bot:')
+              WITH older AS (${older}), below AS (SELECT * FROM older WHERE ${belowCursor})
+              SELECT project_id, COUNT(*) AS count, NULL AS thread_id, NULL AS root_thread_id
+              FROM below GROUP BY project_id
+              UNION ALL
+              SELECT project_id, NULL, thread_id, root_thread_id FROM below
+              WHERE substr(thread_id, 1, 4) = 'bot:' OR substr(root_thread_id, 1, 4) = 'bot:'
             `;
+      const totals = new Map<string, number>();
       const botCounts = new Map<string, number>();
-      for (const row of botRows) {
-        const owner = threadOwnerBotName({
-          id: row.thread_id,
-          lineage: { rootThreadId: row.root_thread_id },
-        });
-        if (owner !== null) botCounts.set(row.project_id, (botCounts.get(row.project_id) ?? 0) + 1);
+      for (const row of countRows) {
+        if (row.count !== null) {
+          totals.set(row.project_id, row.count);
+        } else if (
+          row.thread_id !== null &&
+          row.root_thread_id !== null &&
+          threadOwnerBotName({
+            id: row.thread_id,
+            lineage: { rootThreadId: row.root_thread_id },
+          }) !== null
+        ) {
+          botCounts.set(row.project_id, (botCounts.get(row.project_id) ?? 0) + 1);
+        }
       }
       return {
         threadIds: pageRows.map((row) => ThreadId.make(row.thread_id)),
-        counts: countRows.map((row) => ({
-          projectId: ProjectId.make(row.project_id),
-          count: row.count,
-          botCount: botCounts.get(row.project_id) ?? 0,
+        counts: Array.from(totals, ([projectId, count]) => ({
+          projectId: ProjectId.make(projectId),
+          count,
+          botCount: botCounts.get(projectId) ?? 0,
         })),
       };
     }, Effect.mapError(shellSnapshotReadError));
