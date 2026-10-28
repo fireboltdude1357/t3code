@@ -21,6 +21,7 @@ import {
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadProjection,
   type ServerProvider,
+  threadBotName,
 } from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
@@ -1102,6 +1103,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         modelSelection,
         runtimeMode: "full-access",
         interactionMode: "default",
+        lineage: { rootThreadId: parentThreadId, parentThreadId: null, relationshipToParent: null },
       },
       runs: [
         {
@@ -1454,6 +1456,88 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
   });
+
+  it.effect("marks threads a bot's thread creates as that bot's, stable across retries", () =>
+    Effect.gen(function* () {
+      for (const [callerId, expectedBot] of [
+        [ThreadId.make("bot:warden:parent"), "warden"],
+        [parentThreadId, null],
+      ] as const) {
+        const parent = parentProjection([]);
+        const createdIds = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            assertProviderInstanceEnabled: () => Effect.void,
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === callerId
+                  ? {
+                      ...parent,
+                      thread: {
+                        ...parent.thread,
+                        id: callerId,
+                        lineage: {
+                          rootThreadId: callerId,
+                          parentThreadId: null,
+                          relationshipToParent: null,
+                        },
+                      },
+                    }
+                  : {
+                      ...childProjection,
+                      thread: {
+                        ...childProjection.thread,
+                        modelSelection: parent.thread.modelSelection,
+                      },
+                    },
+              ),
+            dispatch: (command) =>
+              (command.type === "thread.create"
+                ? Ref.update(createdIds, (ids) => [...ids, command.threadId])
+                : Effect.void
+              ).pipe(Effect.as({} as never)),
+          }),
+          ServerSettings.layerTest(),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const callerScope: McpInvocationScope = {
+            ...scope,
+            thread: {
+              threadId: callerId,
+              providerSessionId: "provider-session:mcp-providers",
+              providerInstanceId: codexInstanceId,
+            },
+          };
+          const create = service.createThreads(callerScope, {
+            threads: [{}],
+            clientRequestId: "create-threads-bot",
+          });
+          const first = yield* create;
+          const retry = yield* create;
+          const [createdId] = yield* Ref.get(createdIds);
+          assert.equal(threadBotName(createdId!), expectedBot, callerId);
+          assert.equal(first.threads[0]?.threadId, createdId);
+          assert.equal(retry.threads[0]?.threadId, createdId);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }
+    }),
+  );
 
   it.effect("rejects delegation to a provider without a registered adapter", () =>
     Effect.gen(function* () {
