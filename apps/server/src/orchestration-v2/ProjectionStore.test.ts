@@ -1873,6 +1873,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         SET type = 'command_execution', payload_json = json_set(payload_json, '$.type', 'command_execution')
         WHERE thread_id = ${threadId} AND ordinal BETWEEN 600 AND 624
       `;
+      yield* commitThreadEdit();
 
       // A turn split by the row budget keeps an interrupt result's request on the same page.
       yield* sql`
@@ -1905,6 +1906,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             '$.runId', 'run:bounded-sql-history:' || ordinal, '$.type', 'command_execution')
         WHERE thread_id = ${threadId} AND ordinal IN (500, 580)
       `;
+      yield* commitThreadEdit();
 
       const retainedRequestPlan = yield* sql<{ readonly detail: string }>`
         EXPLAIN QUERY PLAN
@@ -2000,6 +2002,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       yield* sql`UPDATE orchestration_v2_projection_turn_items SET ordinal = 1000,
         payload_json = json_set(payload_json, '$.ordinal', 1000)
         WHERE thread_id = ${threadId} AND ordinal = 999`;
+      yield* commitThreadEdit();
       const promptId = TurnItemId.make("turn-item:bounded-sql-history:1");
       const { statements: deferredStatements, tracer: deferredTracer } = traceSqlStatements();
       const deferred = yield* projectionStore
@@ -2048,6 +2051,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         yield* sql`UPDATE orchestration_v2_projection_turn_items SET type = 'dynamic_tool',
           payload_json = json_set(payload_json, '$.type', 'dynamic_tool', '$.toolName', ${toolName})
           WHERE thread_id = ${threadId} AND ordinal = 2`;
+        yield* commitThreadEdit();
         const window = yield* projectionStore.getThreadSnapshotWindow(threadId, {
           rowLimit: sqlPageLimit,
           userTurnLimit: 10,
@@ -2077,6 +2081,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }
       yield* sql`UPDATE orchestration_v2_projection_turn_items SET type = 'command_execution',
         payload_json = json_set(payload_json, '$.type', 'command_execution') WHERE thread_id = ${threadId} AND ordinal = 2`;
+      yield* commitThreadEdit();
       const sharedRunId = "run:bounded-sql-history:1";
       for (const [ordinal, status] of [
         [0, "completed"],
@@ -2104,9 +2109,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         SET node_id = CASE WHEN ordinal < 990 AND ordinal <> 10 THEN 'node:bounded-sql-history:attempt-1' ELSE 'node:bounded-sql-history:attempt-2' END,
           payload_json = json_set(payload_json, '$.nodeId', CASE WHEN ordinal < 990 AND ordinal <> 10 THEN 'node:bounded-sql-history:attempt-1' ELSE 'node:bounded-sql-history:attempt-2' END)
         WHERE thread_id = ${threadId}`;
+      yield* commitThreadEdit();
       for (const status of ["completed", "running"]) {
         yield* sql`UPDATE orchestration_v2_projection_runs SET status = ${status},
           payload_json = json_set(payload_json, '$.status', ${status}) WHERE run_id = ${sharedRunId}`;
+        yield* commitThreadEdit();
         const window = yield* projectionStore.getThreadSnapshotWindow(threadId, {
           rowLimit: sqlPageLimit,
           userTurnLimit: 10,
@@ -2140,6 +2147,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       yield* sql`UPDATE orchestration_v2_projection_turn_items SET run_id = NULL,
         payload_json = json_set(payload_json, '$.runId', NULL)
         WHERE thread_id = ${threadId} AND ordinal > 1 AND ordinal < 851`;
+      yield* commitThreadEdit();
       const inlineWindow = yield* projectionStore.getThreadSnapshotWindow(threadId, {
         rowLimit: sqlPageLimit,
         userTurnLimit: 10,
@@ -2149,6 +2157,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       yield* sql`UPDATE orchestration_v2_projection_turn_items SET run_id = ${sharedRunId},
         payload_json = json_set(payload_json, '$.runId', ${sharedRunId})
         WHERE thread_id = ${threadId} AND ordinal = 850`;
+      yield* commitThreadEdit();
       const deferredWindow = yield* projectionStore.getThreadSnapshotWindow(threadId, {
         rowLimit: sqlPageLimit,
         userTurnLimit: 10,
@@ -2171,6 +2180,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         SET type = 'command_execution', payload_json = json_set(payload_json, '$.type', 'command_execution')
         WHERE thread_id = ${threadId} AND ordinal = 1
       `;
+      yield* commitThreadEdit();
       const backgroundWindow = yield* projectionStore.getThreadSnapshotWindow(threadId, {
         rowLimit: sqlPageLimit,
         userTurnLimit: 10,
@@ -2188,6 +2198,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           payload_json = json_set(payload_json, '$.runId', 'run:bounded-sql-history:' || ordinal)
         WHERE thread_id = ${threadId}
       `;
+      yield* commitThreadEdit();
       yield* setNewestTurnType("user_message");
 
       const tiedIds = [
@@ -2600,6 +2611,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         SET payload_json = json_set(payload_json, '$.createdBy', 'agent')
         WHERE thread_id = ${threadId} AND type = 'user_message'
       `;
+      yield* commitThreadEdit();
       const agentPromptId = TurnItemId.make("turn-item:bounded-sql-history:interrupt-filler:1281");
       yield* sql`
         UPDATE orchestration_v2_projection_turn_items
@@ -2611,6 +2623,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             '$.text', 'Continue the child task', '$.attachments', json('[]'))
         WHERE turn_item_id = ${agentPromptId}
       `;
+      yield* commitThreadEdit();
       const agentWindow = yield* projectionStore.getThreadSnapshotWindow(threadId, {
         rowLimit: sqlPageLimit,
         userTurnLimit: THREAD_HISTORY_PAGE_POLICY.maxUserTurns,
