@@ -257,8 +257,8 @@ export const waitForDesktopUpdateTarget = Effect.fn("waitForDesktopUpdateTarget"
   targetVersion: string,
   nextReady: Effect.Effect<ServerLifecycleStreamReadyEvent, EReady>,
   retryCommit: Effect.Effect<void, ECommit>,
-  maxCommitAttempts = 3,
 ): Effect.fn.Return<ServerLifecycleStreamReadyEvent, EReady | ECommit | ServerUpdateTerminalError> {
+  const maxCommitAttempts = 3;
   for (let attempt = 1; attempt <= maxCommitAttempts; attempt += 1) {
     const ready = yield* nextReady;
     if (ready.payload.environment.serverVersion === targetVersion) return ready;
@@ -1206,11 +1206,6 @@ export function createServerEnvironmentAtoms<R, E>(
         runStream(WS_METHODS.chatGptHandoffSubscribe, input),
       idleTtlMs: 0,
     }),
-    codexAuthCallbackState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:codex:auth-callback",
-      tag: WS_METHODS.codexAuthCallbackSubscribe,
-      idleTtlMs: 0,
-    }),
     cancelProviderAuth: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:auth-cancel",
       tag: WS_METHODS.providerAuthCancel,
@@ -1310,7 +1305,8 @@ export function createServerEnvironmentAtoms<R, E>(
     searchAcpRegistry: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:acp-registry:search",
       tag: WS_METHODS.serverSearchAcpRegistry,
-      // Reopening Add provider reuses recent results; submitting the same search refreshes it.
+      // Reopening Add provider reuses recent results. Submitting the same search asks the
+      // server again, which reuses a Registry index fetched in the last five minutes.
       staleTimeMs: 5 * 60_000,
     }),
     configProjection,
