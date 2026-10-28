@@ -25,127 +25,14 @@ import { EnvironmentId, MessageId, RunId } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import {
   computeStableMessagesTimelineRows,
-  computeMessageDurationStart,
   deriveMessagesTimelineRows,
-  timelineEntryTurnFoldRunId,
+  timelineTurnFoldRunIdsByEntryId,
   deriveMessagesTimelineRowsWithState,
   shouldCollapseUserMessage,
   resolveAssistantMessageCopyState,
   type MessagesTimelineRow,
   workEntryDisplayLabel,
 } from "./MessagesTimeline.logic";
-
-describe("computeMessageDurationStart", () => {
-  it("uses the previous completed assistant updatedAt for subsequent assistant responses", () => {
-    const result = computeMessageDurationStart([
-      {
-        id: "u1",
-        role: "user",
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-        streaming: false,
-      },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        updatedAt: "2026-01-01T00:00:30Z",
-        streaming: false,
-      },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:55Z",
-        updatedAt: "2026-01-01T00:00:55Z",
-        streaming: false,
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["a2", "2026-01-01T00:00:30Z"],
-      ]),
-    );
-  });
-
-  it("does not advance the boundary for a streaming message", () => {
-    const result = computeMessageDurationStart([
-      {
-        id: "u1",
-        role: "user",
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-        streaming: false,
-      },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        updatedAt: "2026-01-01T00:00:40Z",
-        streaming: true,
-      },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:55Z",
-        updatedAt: "2026-01-01T00:00:55Z",
-        streaming: false,
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["a2", "2026-01-01T00:00:00Z"],
-      ]),
-    );
-  });
-
-  it("resets the boundary on a new user message", () => {
-    const result = computeMessageDurationStart([
-      {
-        id: "u1",
-        role: "user",
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-        streaming: false,
-      },
-      {
-        id: "a1",
-        role: "assistant",
-        createdAt: "2026-01-01T00:00:30Z",
-        updatedAt: "2026-01-01T00:00:30Z",
-        streaming: false,
-      },
-      {
-        id: "u2",
-        role: "user",
-        createdAt: "2026-01-01T00:01:00Z",
-        updatedAt: "2026-01-01T00:01:00Z",
-        streaming: false,
-      },
-      {
-        id: "a2",
-        role: "assistant",
-        createdAt: "2026-01-01T00:01:20Z",
-        updatedAt: "2026-01-01T00:01:20Z",
-        streaming: false,
-      },
-    ]);
-
-    expect(result).toEqual(
-      new Map([
-        ["u1", "2026-01-01T00:00:00Z"],
-        ["a1", "2026-01-01T00:00:00Z"],
-        ["u2", "2026-01-01T00:01:00Z"],
-        ["a2", "2026-01-01T00:01:00Z"],
-      ]),
-    );
-  });
-});
 
 describe("resolveAssistantMessageCopyState", () => {
   it("copies the rendered representation of Codex directives", () => {
@@ -585,11 +472,7 @@ describe("deriveMessagesTimelineRows", () => {
         },
         "Context automatically compacted before cache expiry",
       ],
-      [
-        "onReturn",
-        { kind: "working", compacting: "Compacting after being idle…" },
-        "Context compacted after being idle",
-      ],
+      ["onReturn", { kind: "working", compacting: true }, "Context compacted before sending"],
       [undefined, { kind: "context-compaction", active: true }, undefined],
     ] as const) {
       const prompt = compactPrompt(reason);
@@ -742,9 +625,17 @@ describe("deriveMessagesTimelineRows", () => {
       },
     };
     const assistantItem = liveAssistant.item;
+    // The answer can come long after the turn starts; the row times the compaction itself.
+    const compactionStartedAt = DateTime.makeUnsafe(fixture.time(65));
     const compactionAt = (status: "running" | "completed") => ({
       ...liveAssistant,
-      item: { ...assistantItem, type: "compaction" as const, status, driver: null },
+      item: {
+        ...assistantItem,
+        type: "compaction" as const,
+        status,
+        driver: null,
+        startedAt: compactionStartedAt,
+      },
     });
     const rowsFor = (status: "running" | "completed", laterCompaction = false) =>
       deriveMessagesTimelineRows({
@@ -781,7 +672,7 @@ describe("deriveMessagesTimelineRows", () => {
       return rows.slice(rows.findIndex((row) => row.id.includes("live-user")) + 1);
     };
     expect(liveRows("running")).toMatchObject([
-      { kind: "working", compacting: "Compacting after 1h 5m idle…" },
+      { kind: "working", compacting: true, createdAt: DateTime.formatIso(compactionStartedAt) },
     ]);
     expect(liveRows("completed")).toMatchObject([
       { kind: "context-compaction", title: "Context compacted after 1h 5m idle" },
@@ -2154,7 +2045,8 @@ describe("deriveMessagesTimelineRows", () => {
       message("imported-answer", "assistant", 8),
     ];
     const foldInput = { timelineEntries, latestRun: null, isWorking: false };
-    const foldRunId = timelineEntryTurnFoldRunId(foldInput, "imported-update");
+    const foldRunIds = timelineTurnFoldRunIdsByEntryId(foldInput);
+    const foldRunId = foldRunIds.get("imported-update") ?? null;
     expect(foldRunId).not.toBeNull();
     const foldRow = deriveMessagesTimelineRows({
       ...foldInput,
@@ -2162,7 +2054,7 @@ describe("deriveMessagesTimelineRows", () => {
       supportsConversationRollback: false,
     }).find((row) => row.kind === "turn-fold");
     expect(foldRow?.kind === "turn-fold" ? foldRow.runId : null).toBe(foldRunId);
-    expect(timelineEntryTurnFoldRunId(foldInput, "imported-answer")).toBeNull();
+    expect(foldRunIds.get("imported-answer") ?? null).toBeNull();
     const expanded = deriveMessagesTimelineRows({
       ...foldInput,
       expandedRunIds: new Set([foldRunId!]),
