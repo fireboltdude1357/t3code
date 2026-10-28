@@ -1,4 +1,8 @@
-import { pendingGuestMessageCount } from "@t3tools/contracts";
+import {
+  countOlderSettledByProject,
+  pendingGuestMessageCount,
+  threadOwnerBotName,
+} from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -6728,7 +6732,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       // ISO strings in one format, so string order is time order.
       const older = sql`
         SELECT t.thread_id, t.project_id,
-          json_extract(t.payload_json, '$.settledAt') AS settled_at
+          json_extract(t.payload_json, '$.settledAt') AS settled_at,
+          json_extract(t.payload_json, '$.lineage.rootThreadId') AS root_thread_id
         FROM orchestration_v2_projection_threads t
         WHERE t.deleted_at IS NULL
           AND json_extract(t.payload_json, '$.archivedAt') IS NULL
@@ -6753,20 +6758,46 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY older.settled_at DESC, older.thread_id ASC
               LIMIT ${limit}
             `;
+      // One statement, so totals and bot rows share a snapshot. The prefix only narrows the bot
+      // rows; threadOwnerBotName decides, as snapshots do.
       const countRows =
         limit !== 0
           ? []
-          : yield* sql<{ readonly project_id: string; readonly count: number }>`
-              WITH older AS (${older})
-              SELECT older.project_id, COUNT(*) AS count FROM older
-              WHERE ${belowCursor}
-              GROUP BY older.project_id
+          : yield* sql<{
+              readonly project_id: string;
+              readonly count: number | null;
+              readonly thread_id: string | null;
+              readonly root_thread_id: string | null;
+            }>`
+              WITH older AS (${older}), below AS (SELECT * FROM older WHERE ${belowCursor})
+              SELECT project_id, COUNT(*) AS count, NULL AS thread_id, NULL AS root_thread_id
+              FROM below GROUP BY project_id
+              UNION ALL
+              SELECT project_id, NULL, thread_id, root_thread_id FROM below
+              WHERE substr(thread_id, 1, 4) = 'bot:' OR substr(root_thread_id, 1, 4) = 'bot:'
             `;
+      const totals = new Map<string, number>();
+      const botCounts = new Map<string, number>();
+      for (const row of countRows) {
+        if (row.count !== null) {
+          totals.set(row.project_id, row.count);
+        } else if (
+          row.thread_id !== null &&
+          row.root_thread_id !== null &&
+          threadOwnerBotName({
+            id: row.thread_id,
+            lineage: { rootThreadId: row.root_thread_id },
+          }) !== null
+        ) {
+          botCounts.set(row.project_id, (botCounts.get(row.project_id) ?? 0) + 1);
+        }
+      }
       return {
         threadIds: pageRows.map((row) => ThreadId.make(row.thread_id)),
-        counts: countRows.map((row) => ({
-          projectId: ProjectId.make(row.project_id),
-          count: row.count,
+        counts: Array.from(totals, ([projectId, count]) => ({
+          projectId: ProjectId.make(projectId),
+          count,
+          botCount: botCounts.get(projectId) ?? 0,
         })),
       };
     }, Effect.mapError(shellSnapshotReadError));
@@ -7035,10 +7066,6 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             return below ? [{ thread, settledAt }] : [];
           },
         );
-        const counts = new Map<ProjectId, number>();
-        for (const { thread } of limit === 0 ? older : []) {
-          counts.set(thread.projectId, (counts.get(thread.projectId) ?? 0) + 1);
-        }
         return {
           threadIds: older
             .toSorted((left, right) =>
@@ -7052,7 +7079,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             )
             .slice(0, limit)
             .map(({ thread }) => thread.id),
-          counts: Array.from(counts, ([projectId, count]) => ({ projectId, count })),
+          counts: limit === 0 ? countOlderSettledByProject(older.map(({ thread }) => thread)) : [],
         };
       }),
       readShellSnapshot: (options) =>
