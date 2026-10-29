@@ -469,6 +469,15 @@ if (context.update?.status === "pending") {
       freeBytes: 0,
       sawBackup: "false",
       afterRollback: "after trial",
+      reason: "candidate-exited:1:no-backup",
+    },
+    {
+      target: "renames a recorded migration",
+      migrations: [[1, "Renamed"]],
+      freeBytes: Number.MAX_SAFE_INTEGER,
+      sawBackup: "true",
+      afterRollback: "before trial",
+      reason: "candidate-exited:1",
     },
     {
       target: "adds a migration",
@@ -479,10 +488,11 @@ if (context.update?.status === "pending") {
       freeBytes: Number.MAX_SAFE_INTEGER,
       sawBackup: "true",
       afterRollback: "before trial",
+      reason: "candidate-exited:1",
     },
   ])(
     "backs up only when the target $target, and rolls back either way",
-    ({ migrations, freeBytes, sawBackup, afterRollback }) =>
+    ({ migrations, freeBytes, sawBackup, afterRollback, reason }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -563,7 +573,7 @@ if (process.argv.includes("__service-preflight")) {
         assert.equal(state.update?.status, "rolled-back");
         assert.equal(
           state.update?.status === "rolled-back" ? state.update.reason : undefined,
-          "candidate-exited:1",
+          reason,
         );
         assert.equal(yield* fs.readFileString(observedPath), sawBackup);
         const after = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });

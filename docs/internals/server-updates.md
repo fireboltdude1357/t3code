@@ -32,7 +32,7 @@ is authoritative and the service manager's ordinary restart policy applies.
 
 The prepared deadline is long because migrations can scale with the database
 and block the trial's main thread, so it cannot report progress. A missed
-deadline restores the snapshot, and the retry pays the same cost again. A
+deadline restores the snapshot, if one was taken, and the retry pays the same cost again. A
 crashed trial is caught when it exits; the deadline bounds only a stuck one.
 Client update waits must outlast the deadline, or a slow update shows as failed.
 
@@ -48,6 +48,16 @@ Rollback stops the trial before restoring. A durable restore marker makes an
 interrupted restore finish before either version boots. Keep the snapshot until
 commit, or until both restoration and the terminal rollback state are durable.
 Attachments and other files outside SQLite are outside this rollback boundary.
+
+The launcher skips the snapshot, and the disk check, when the target ships no
+migration that `effect_sql_migrations` lacks. It learns the target's migrations
+from its `__service-preflight` output before stopping the old child. A database
+snapshot on a filesystem without reflinks is a full copy made while no server
+runs, which took 8 minutes for a 43 GB database. If the check fails, times out,
+or meets an older target that doesn't report migrations, the launcher takes the
+snapshot. A rollback without a snapshot keeps the trial's writes. The previous
+version can open the schema, but it may not decode rows written in a new format,
+so the rollback reason ends in `:no-backup` to flag that case.
 
 ## Client acknowledgement
 

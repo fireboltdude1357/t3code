@@ -268,7 +268,7 @@ async function targetAddsMigrations(
         "--launcher-protocol",
         String(SERVICE_LAUNCHER_PROTOCOL),
       ],
-      { env: environment, timeout: MIGRATION_CHECK_TIMEOUT_MS },
+      { env: environment, timeout: MIGRATION_CHECK_TIMEOUT_MS, killSignal: "SIGKILL" },
     );
     const preflight: unknown = JSON.parse(stdout.trim());
     const migrations =
@@ -611,7 +611,7 @@ export class Launcher {
 
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
     try {
-      // Without a backup, rollback restores nothing: restore and its marker key off the backup directory.
+      // Without a backup, rollback keeps the trial's writes, which the previous version may not decode.
       if (pending.skipDatabaseBackup !== true) await backupDatabaseOnce(this.#baseDir, pending);
     } catch {
       await this.#returnToPrevious(pending, "failed", "db-backup-failed");
@@ -868,7 +868,11 @@ export class Launcher {
       await terminateChild(child.process);
     }
     await restoreDatabaseBackup(this.#baseDir, pending);
-    const outcome = terminalUpdate({ pending, status, reason });
+    const outcome = terminalUpdate({
+      pending,
+      status,
+      reason: pending.skipDatabaseBackup === true ? `${reason}:no-backup` : reason,
+    });
     const next: ServiceState = {
       ...this.#state,
       activeVersion: pending.fromVersion,
