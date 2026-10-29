@@ -95,6 +95,7 @@ import type * as ProviderContinuationRequests from "@t3tools/provider-core/serve
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
@@ -236,6 +237,21 @@ function makeClaudeTestTurnInput(input: {
 
 describe("ClaudeAdapterV2 runtime query policy", () => {
   it.each([
+    "-- --thinking-display omitted",
+    "--thinking-display summarized -- --thinking-display omitted",
+  ])("does not treat operands after -- as SDK flags: %s", (launchArgs) => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "thinking-thread",
+      resume: false,
+      cwd: "/workspace",
+      settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs },
+    });
+    assert.deepEqual(options.thinking, { type: "adaptive", display: "summarized" });
+    assert.equal(options.extraArgs?.["thinking-display"], "summarized");
+  });
+
+  it.each([
     ["--permission-mode acceptEdits", "acceptEdits"],
     ["--dangerously-skip-permissions", "bypassPermissions"],
     ["--dangerously-skip-permissions --permission-mode plan", "plan"],
@@ -251,6 +267,28 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.equal(options.permissionMode, expected);
     assert.isUndefined(options.extraArgs?.["permission-mode"]);
     assert.isUndefined(options.extraArgs?.["dangerously-skip-permissions"]);
+  });
+
+  it("passes every --add-dir launch directory to Claude", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-add-dir",
+      resume: false,
+      cwd: "/workspace",
+      attachmentsDir: "/attachments",
+      settings: {
+        ...AUTO_COMPACT_CLAUDE_SETTINGS,
+        launchArgs: "--add-dir ../apps ../lib --verbose --add-dir=/shared",
+      },
+    });
+    assert.deepEqual(options.additionalDirectories, [
+      "/workspace",
+      "/attachments",
+      "../apps",
+      "../lib",
+      "/shared",
+    ]);
+    assert.isUndefined(options.extraArgs?.["add-dir"]);
   });
 
   it("gives delegated children Claude's subagent prompt cache TTL", () => {
@@ -7177,7 +7215,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         driver: ProviderDriverKind.make("claudeAgent"),
         modelSelection: CLAUDE_MODEL_SELECTION,
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
-      const scenario = { name: transcript.scenario, transcript, ...materialized };
+      const scenario = {
+        name: transcript.scenario,
+        transcript,
+        ...materialized,
+        runtimePolicyOverride: { cwd: yield* checkpointWorkspace(transcript.scenario) },
+      };
       yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);
         assertBaseProjection({ result, transcript, runCount: 1, runStatuses: ["completed"] });
