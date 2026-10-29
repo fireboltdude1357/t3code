@@ -1,7 +1,11 @@
 import type { ClientSettings } from "@t3tools/contracts";
 
 import { updateClientSettings, useClientSettings } from "~/hooks/useSettings";
-import { useConnectedEnvironmentIds, useEnvironments } from "~/state/environments";
+import {
+  useConnectedEnvironmentIds,
+  useEnvironments,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
 import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
@@ -18,6 +22,7 @@ export function DefaultEnvironmentSettingsRow() {
   const savedEnvironmentId = useClientSettings(selectDefaultEnvironmentId);
   const { environments } = useEnvironments();
   const connectedEnvironmentIds = useConnectedEnvironmentIds();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const machines = environments
     .filter((environment) => environment.entry.target._tag !== "PrimaryConnectionTarget")
     .map((environment) => ({
@@ -42,9 +47,11 @@ export function DefaultEnvironmentSettingsRow() {
     <SettingsRow
       {...searchableSetting("default-machine")}
       description={
-        fallingBack
-          ? `${selectedLabel} isn't connected, so new work starts on this device for now.`
-          : "Where new projects and threads without a project start."
+        !fallingBack
+          ? "Where new projects and threads without a project start."
+          : primaryEnvironmentId === null
+            ? `${selectedLabel} isn't connected.`
+            : `${selectedLabel} isn't connected, so new work starts on this device for now.`
       }
       resetAction={
         savedEnvironmentId !== null ? (

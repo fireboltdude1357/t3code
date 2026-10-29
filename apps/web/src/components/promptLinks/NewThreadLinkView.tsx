@@ -198,13 +198,16 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
   };
 
   const cloneRepository = async (repository: PromptLinkRepository) => {
-    // A default machine the user picked wins; otherwise clone where they worked last.
+    // A default machine the user picked wins when it can clone; otherwise clone where they
+    // worked last.
+    const newProjectsRootFor = (id: EnvironmentId | null) =>
+      environments.find((entry) => entry.environmentId === id)?.serverConfig?.newProjectsRoot ??
+      null;
     const environmentId =
-      defaultEnvironmentId !== primaryEnvironmentId
+      defaultEnvironmentId !== primaryEnvironmentId && newProjectsRootFor(defaultEnvironmentId)
         ? defaultEnvironmentId
         : lastActiveEnvironmentId();
-    const environment = environments.find((entry) => entry.environmentId === environmentId);
-    const newProjectsRoot = environment?.serverConfig?.newProjectsRoot ?? null;
+    const newProjectsRoot = newProjectsRootFor(environmentId);
     if (environmentId === null || newProjectsRoot === null) {
       setState({
         status: "failed",
