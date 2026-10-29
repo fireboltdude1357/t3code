@@ -5,7 +5,6 @@ import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
 import { useEnvironments } from "~/state/environments";
-import { useNpmReleasePublished } from "~/state/npmRelease";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentUpdateStatesAtom } from "~/state/server";
 import { environmentSessionStatesAtom } from "~/state/session";
@@ -68,26 +67,35 @@ export function useUpdateEverything(
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
-  // A track switch's target came from npm already.
-  const {
-    targets: behindServers,
-    skipped: unreachable,
-    waitForNpm,
-  } = channelSwitch
-    ? { ...collectChannelSwitchTargets(machines, channelSwitch), waitForNpm: [] }
+  // A track switch's target came from the release feed already.
+  const { targets: behindServers, skipped: unreachable } = channelSwitch
+    ? collectChannelSwitchTargets(machines, channelSwitch)
     : collectServerUpdateTargets(machines, targetVersion, localUpdateVersion !== null);
-  const published = useNpmReleasePublished(waitForNpm.length > 0 ? targetVersion : null);
-  const servers = published
-    ? behindServers
-    : behindServers.filter((server) => !waitForNpm.includes(server));
+  // Fork: servers install fork releases from GitHub (cliReleaseDownloadBaseUrl)
+  // or their desktop app's feed. npm never has fork versions, so nothing waits on it.
+  // Fleet's fork-build.sh publishes only the linux-x64 CLI archive, so other
+  // boot-service servers are skipped instead of failing on a missing archive.
+  // Track-only hosts install nothing, so they need no archive.
+  const platformById = new Map(
+    machines.map((machine) => [machine.environmentId, machine.serverConfig?.environment.platform]),
+  );
+  const hasForkArchive = (server: (typeof behindServers)[number]) => {
+    const platform = platformById.get(server.environmentId);
+    return (
+      server.trackOnly === true ||
+      server.selfUpdate === "desktop-managed" ||
+      (platform?.os === "linux" && platform.arch === "x64")
+    );
+  };
+  const servers = behindServers.filter(hasForkArchive);
   const skipped: ReadonlyArray<SkippedMachine> = [
     ...unreachable,
     ...behindServers
-      .filter((server) => !servers.includes(server))
+      .filter((server) => !hasForkArchive(server))
       .map((server) => ({
         environmentId: server.environmentId,
         label: server.serverLabel,
-        reason: `t3@${targetVersion} is not on npm yet`,
+        reason: "fork builds have no CLI for this platform",
       })),
   ];
   // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
