@@ -32,15 +32,9 @@ const ATTR_DB_SYSTEM_NAME = "db.system.name";
 export interface SqliteClientConfig {
   readonly filename: string;
   readonly readonly?: boolean | undefined;
-  readonly allowExtension?: boolean | undefined;
-  readonly prepareCacheSize?: number | undefined;
-  readonly prepareCacheTTL?: Duration.Input | undefined;
   readonly spanAttributes?: Record<string, unknown> | undefined;
-  readonly transformResultNames?: ((str: string) => string) | undefined;
-  readonly transformQueryNames?: ((str: string) => string) | undefined;
   /** Ignored for in-memory databases, which cannot share a second connection. */
   readonly readerWorker?: boolean | undefined;
-  readonly readerStartupTimeout?: Duration.Input | undefined;
   /** Ignored for in-memory databases. */
   readonly checkpointWorker?: boolean | undefined;
 }
@@ -327,8 +321,8 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
       eval: true,
       workerData: {
         filename: options.filename,
-        allowExtension: options.allowExtension ?? false,
-        prepareCacheSize: options.prepareCacheSize ?? 200,
+        allowExtension: false,
+        prepareCacheSize: 200,
       },
     });
     let announce: (startup: ReaderStartup) => void = () => {};
@@ -446,9 +440,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
     Effect.promise(() => Promise.all(slots.map((reader) => reader?.worker.terminate()))),
   );
 
-  const startupTimeout = Duration.fromInputUnsafe(
-    options.readerStartupTimeout ?? Duration.seconds(10),
-  );
+  const startupTimeout = Duration.seconds(10);
 
   const turnOff = (slot: number, reader: Reader | undefined, reason: string) =>
     Effect.suspend(() => {
@@ -606,8 +598,9 @@ const initialize = () => {
 const atCeiling = (state) => state.log >= workerData.backpressureFrames;
 const exceedsSizeLimit = () =>
   journalSizeLimit >= 0 && statSync(workerData.filename + "-wal").size > journalSizeLimit;
-const schedule = (state, blocked) => {
-  if (blocked || state.log - state.checkpointed >= workerData.frames) {
+// Retry a WAL past its limits even with admission open, so it resets once a pinning reader closes.
+const schedule = (state, retry) => {
+  if (retry || state.log - state.checkpointed >= workerData.frames) {
     idle = setTimeout(() => check(undefined, undefined, true), workerData.idleMs);
   }
 };
@@ -617,8 +610,11 @@ const check = (id, nextJournalSizeLimit, force, nextGeneration = generation) => 
   if (Number.isSafeInteger(nextJournalSizeLimit)) journalSizeLimit = nextJournalSizeLimit;
   let state = frames.get();
   const oversized = exceedsSizeLimit();
+  let pinned = false;
   if (force || state.log - state.checkpointed >= workerData.frames || oversized) {
-    checkpoint.get();
+    const result = checkpoint.get();
+    // A reader's snapshot stopped the backfill; holding writes cannot let it catch up.
+    pinned = result.checkpointed < result.log;
     state = frames.get();
   }
   if (state.checkpointed === state.log && (atCeiling(state) || oversized)) {
@@ -632,24 +628,22 @@ const check = (id, nextJournalSizeLimit, force, nextGeneration = generation) => 
     });
     return;
   }
-  const blocked = (atCeiling(state) || oversized) && state.checkpointed < state.log;
+  const blocked = !pinned && (atCeiling(state) || oversized) && state.checkpointed < state.log;
   parentPort.postMessage({ type: "checkpoint", id, generation, ...state, blocked });
-  schedule(state, blocked);
+  schedule(state, atCeiling(state) || oversized);
 };
 const finishTruncate = (truncateId) => {
   if (pendingTruncate === undefined || pendingTruncate.truncateId !== truncateId) return;
   const pending = pendingTruncate;
   parentPort.postMessage({ type: "truncate-start", truncateId });
-  let busy;
   // Admission is paused here; a pinned reader must not make truncation wait.
   db.exec("PRAGMA busy_timeout = 0;");
   try {
-    busy = truncate.get().busy !== 0;
+    truncate.get();
   } finally {
     db.exec("PRAGMA busy_timeout = 5000;");
   }
   const state = frames.get();
-  const blocked = (atCeiling(state) && (busy || state.checkpointed < state.log)) || exceedsSizeLimit();
   pendingTruncate = undefined;
   parentPort.postMessage({
     type: "checkpoint",
@@ -657,13 +651,15 @@ const finishTruncate = (truncateId) => {
     generation: pending.generation,
     truncateId,
     ...state,
-    blocked,
+    // With writes held, only a reader can stop the reset, and holding them longer would not
+    // release it.
+    blocked: false,
   });
   while (pendingBarriers > 0) {
     pendingBarriers--;
     parentPort.postMessage("barrier");
   }
-  schedule(state, blocked);
+  schedule(state, atCeiling(state) || exceedsSizeLimit());
 };
 parentPort.on("message", (request) => {
   clearTimeout(idle);
@@ -749,9 +745,7 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
   const waiters: Array<Waiter> = [];
   let elected: Waiter | undefined;
   const gated = () =>
-    !stopped &&
-    !writer.isTransaction &&
-    (unknown || blocked || truncate !== undefined || log >= CHECKPOINT_BACKPRESSURE_FRAMES);
+    !stopped && !writer.isTransaction && (unknown || blocked || truncate !== undefined);
   const wake = () => {
     if (!gated() && elected === undefined) {
       elected = waiters.shift();
@@ -799,6 +793,8 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
       log = nextLog;
       checkpointed = nextCheckpointed;
       unknown = false;
+      // Past the ceiling, hold writes until the worker judges this WAL; a reader can pin it there.
+      if (log >= CHECKPOINT_BACKPRESSURE_FRAMES) blocked = true;
     } catch {
       unknown = true;
     }
@@ -934,11 +930,8 @@ const make = Effect.fn("makeWithDatabase")(function* (
 ): Effect.fn.Return<Client.SqlClient, SqlError, Scope.Scope | Reactivity.Reactivity> {
   yield* checkNodeSqliteCompat();
 
-  const compiler = Statement.makeCompilerSqlite(options.transformQueryNames);
+  const compiler = Statement.makeCompilerSqlite();
   const isFileDatabase = options.filename !== ":memory:" && options.filename !== "";
-  const transformRows = options.transformResultNames
-    ? Statement.defaultTransforms(options.transformResultNames).array
-    : undefined;
 
   const makeConnection = Effect.gen(function* () {
     const scope = yield* Effect.scope;
@@ -946,7 +939,7 @@ const make = Effect.fn("makeWithDatabase")(function* (
       try: () =>
         new NodeSqlite.DatabaseSync(options.filename, {
           readOnly: options.readonly ?? false,
-          allowExtension: options.allowExtension ?? false,
+          allowExtension: false,
         }),
       catch: (cause) =>
         new SqlError({
@@ -1060,10 +1053,9 @@ const make = Effect.fn("makeWithDatabase")(function* (
       });
 
     const prepareCache = yield* Cache.makeWith(prepare, {
-      capacity: options.prepareCacheSize ?? 200,
+      capacity: 200,
       // A transient prepare failure must not outlive the lock or missing schema.
-      timeToLive: (exit) =>
-        Exit.isSuccess(exit) ? (options.prepareCacheTTL ?? Duration.minutes(10)) : Duration.zero,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.minutes(10) : Duration.zero),
     });
 
     const statementFor = (sql: string, params: ReadonlyArray<unknown>) =>
@@ -1315,7 +1307,6 @@ const make = Effect.fn("makeWithDatabase")(function* (
       ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
       [ATTR_DB_SYSTEM_NAME, "sqlite"],
     ],
-    transformRows,
   });
   const withTransaction = client.withTransaction;
   return Object.assign(client, {
