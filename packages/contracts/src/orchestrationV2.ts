@@ -43,6 +43,7 @@ import {
 } from "./baseSchemas.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
+import { threadOwnerBotName } from "./botThreads.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
 import {
   OrchestrationSearchThreadsInput,
@@ -2156,8 +2157,24 @@ export function isOlderSettledThreadShell(
 export const OrchestrationV2OlderSettledCount = Schema.Struct({
   projectId: ProjectId,
   count: NonNegativeInt,
+  /** How many of `count` are a bot's work (`threadOwnerBotName`). Older servers omit it. */
+  botCount: Schema.optional(NonNegativeInt),
 });
 export type OrchestrationV2OlderSettledCount = typeof OrchestrationV2OlderSettledCount.Type;
+
+/** The per-project counts of older settled rows, for snapshots and count reads that hold them. */
+export function countOlderSettledByProject(
+  threads: Iterable<Pick<OrchestrationV2ThreadShell, "id" | "projectId" | "lineage">>,
+): Array<OrchestrationV2OlderSettledCount> {
+  const counts = new Map<ProjectId, { count: number; botCount: number }>();
+  for (const thread of threads) {
+    const entry = counts.get(thread.projectId) ?? { count: 0, botCount: 0 };
+    entry.count += 1;
+    if (threadOwnerBotName(thread) !== null) entry.botCount += 1;
+    counts.set(thread.projectId, entry);
+  }
+  return Array.from(counts, ([projectId, entry]) => ({ projectId, ...entry }));
+}
 
 /**
  * Snapshots that leave out older settled threads (`omitOlderSettled`) name the cut and count, per
