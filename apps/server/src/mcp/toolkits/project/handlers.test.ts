@@ -88,6 +88,7 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
               } as unknown as ThreadLaunch.ThreadLaunchResult),
           }),
           Layer.mock(Project.ProjectService)({}),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
           }),
