@@ -5,7 +5,6 @@ import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
 import { useEnvironments } from "~/state/environments";
-import { useNpmReleasePublished } from "~/state/npmRelease";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentUpdateStatesAtom } from "~/state/server";
 import { environmentSessionStatesAtom } from "~/state/session";
@@ -58,20 +57,29 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
     machines,
     targetVersion,
   );
-  // Desktop-managed servers use their app feed; only npm installs need to wait for publication.
-  const needsNpm = behindServers.some((server) => server.selfUpdate !== "desktop-managed");
-  const published = useNpmReleasePublished(needsNpm ? targetVersion : null);
-  const servers = published
-    ? behindServers
-    : behindServers.filter((server) => server.selfUpdate === "desktop-managed");
+  // Fork: servers install fork releases from GitHub (cliReleaseDownloadBaseUrl)
+  // or their desktop app's feed. npm never has fork versions, so nothing waits on it.
+  // Fleet's fork-build.sh publishes only the linux-x64 CLI archive, so other
+  // boot-service servers are skipped instead of failing on a missing archive.
+  const platformById = new Map(
+    machines.map((machine) => [machine.environmentId, machine.serverConfig?.environment.platform]),
+  );
+  const hasForkArchive = (server: (typeof behindServers)[number]) => {
+    const platform = platformById.get(server.environmentId);
+    return (
+      server.selfUpdate === "desktop-managed" ||
+      (platform?.os === "linux" && platform.arch === "x64")
+    );
+  };
+  const servers = behindServers.filter(hasForkArchive);
   const skipped: ReadonlyArray<SkippedMachine> = [
     ...unreachable,
     ...behindServers
-      .filter((server) => !servers.includes(server))
+      .filter((server) => !hasForkArchive(server))
       .map((server) => ({
         environmentId: server.environmentId,
         label: server.serverLabel,
-        reason: `t3@${targetVersion} is not on npm yet`,
+        reason: "fork builds have no CLI for this platform",
       })),
   ];
   const restarts = collectRestartingMachines(machines, servers, localUpdateVersion !== null);
