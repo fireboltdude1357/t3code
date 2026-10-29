@@ -591,6 +591,51 @@ if (process.argv.includes("__service-preflight")) {
       }),
   );
 
+  it.effect("does not flag a skipped backup when no trial ran", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-no-trial-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.0.0"),
+        "process.exit(0);",
+      );
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: "update-1",
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: path.join(root, "userdata", "state.sqlite"),
+            status: "pending",
+            skipDatabaseBackup: true,
+          },
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "failed");
+      assert.equal(
+        state.update?.status === "failed" ? state.update.reason : undefined,
+        "target-runtime-missing",
+      );
+    }),
+  );
+
   const requestRejectedUpdate = (backupSpaceProbe: Partial<BackupSpaceProbe>) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

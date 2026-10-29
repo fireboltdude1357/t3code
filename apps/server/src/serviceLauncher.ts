@@ -300,6 +300,11 @@ async function targetAddsMigrations(
   }
 }
 
+// A trial that ran without a backup leaves its writes behind, which the previous version may not decode.
+function trialRollbackReason(pending: PendingServiceUpdate, reason: string): string {
+  return pending.skipDatabaseBackup === true ? `${reason}:no-backup` : reason;
+}
+
 // Preserve completed backups; restarted trials may already have changed the live database.
 async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
   const backupDir = databaseBackupDir(baseDir, pending.id);
@@ -799,7 +804,12 @@ export class Launcher {
       return;
     }
     this.#timer = undefined;
-    await this.#returnToPrevious(pending, "rolled-back", "prepared-timeout", child);
+    await this.#returnToPrevious(
+      pending,
+      "rolled-back",
+      trialRollbackReason(pending, "prepared-timeout"),
+      child,
+    );
   }
 
   async #handleExit(
@@ -822,7 +832,7 @@ export class Launcher {
       await this.#returnToPrevious(
         pending,
         "rolled-back",
-        `candidate-exited:${String(code ?? signal ?? "unknown")}`,
+        trialRollbackReason(pending, `candidate-exited:${String(code ?? signal ?? "unknown")}`),
       );
       return;
     }
@@ -868,11 +878,7 @@ export class Launcher {
       await terminateChild(child.process);
     }
     await restoreDatabaseBackup(this.#baseDir, pending);
-    const outcome = terminalUpdate({
-      pending,
-      status,
-      reason: pending.skipDatabaseBackup === true ? `${reason}:no-backup` : reason,
-    });
+    const outcome = terminalUpdate({ pending, status, reason });
     const next: ServiceState = {
       ...this.#state,
       activeVersion: pending.fromVersion,

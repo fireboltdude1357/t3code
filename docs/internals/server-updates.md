@@ -32,32 +32,35 @@ is authoritative and the service manager's ordinary restart policy applies.
 
 The prepared deadline is long because migrations can scale with the database
 and block the trial's main thread, so it cannot report progress. A missed
-deadline restores the snapshot, if one was taken, and the retry pays the same cost again. A
+deadline restores the snapshot, if the update took one, and the retry pays the same cost again. A
 crashed trial is caught when it exits; the deadline bounds only a stuck one.
 Client update waits must outlast the deadline, or a slow update shows as failed.
 
 ## Database rollback
 
-Before stopping the old child, the launcher refuses an update whose snapshot will
-not fit on disk, so a full disk does not cause an outage. After the old child
-exits, the launcher snapshots SQLite's main file, WAL, and shared-memory file. This makes trial migrations reversible without down
-migrations. The snapshot is made once per update and survives launcher restarts;
-replacing it during a retry could capture changes from the failed trial.
+Before stopping the old child, the launcher decides whether the update needs a
+database snapshot. It runs the target's `__service-preflight`, which prints the
+target's migrations, and compares them with `effect_sql_migrations`. If the
+target ships no migration the database lacks, the update takes no snapshot. If
+the check fails, times out, or meets an older target that doesn't report
+migrations, the update takes one. A snapshot on a filesystem without reflinks is
+a full copy made while no server runs, so skipping it keeps updates short.
+
+An update that takes a snapshot is refused first if the snapshot will not fit on
+disk, so a full disk does not cause an outage. After the old child exits, the
+launcher snapshots SQLite's main file, WAL, and shared-memory file. This makes
+trial migrations reversible without down migrations. The snapshot is made once
+per update and survives launcher restarts; replacing it during a retry could
+capture changes from the failed trial.
 
 Rollback stops the trial before restoring. A durable restore marker makes an
 interrupted restore finish before either version boots. Keep the snapshot until
 commit, or until both restoration and the terminal rollback state are durable.
 Attachments and other files outside SQLite are outside this rollback boundary.
 
-The launcher skips the snapshot, and the disk check, when the target ships no
-migration that `effect_sql_migrations` lacks. It learns the target's migrations
-from its `__service-preflight` output before stopping the old child. A database
-snapshot on a filesystem without reflinks is a full copy made while no server
-runs, which took 8 minutes for a 43 GB database. If the check fails, times out,
-or meets an older target that doesn't report migrations, the launcher takes the
-snapshot. A rollback without a snapshot keeps the trial's writes. The previous
-version can open the schema, but it may not decode rows written in a new format,
-so the rollback reason ends in `:no-backup` to flag that case.
+A rollback without a snapshot keeps the trial's writes. The previous version can
+open the schema, but it may not decode rows written in a new format. When a
+trial ran without a snapshot, its rollback reason ends in `:no-backup`.
 
 ## Client acknowledgement
 
