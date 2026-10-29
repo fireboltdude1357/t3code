@@ -57,6 +57,7 @@ vi.mock(import("../../hooks/useScratchProject"), async (original) => ({
   ...(await original()),
   useScratchProject: (() => ({
     scratchEnvironmentId: () => "local",
+    scratchWorkspaceRootFor: () => "/scratch",
     openScratchProject: state.openScratchProject,
   })) as never,
 }));
