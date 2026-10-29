@@ -779,7 +779,12 @@ export class Launcher {
       pending.targetVersion !== child.version
     ) {
       if (child.role === "trial" && pending?.status === "pending") {
-        await this.#returnToPrevious(pending, "rolled-back", "invalid-prepared", child);
+        await this.#returnToPrevious(
+          pending,
+          "rolled-back",
+          trialRollbackReason(pending, "invalid-prepared"),
+          child,
+        );
         return;
       }
       throw new Error("Trial child reported prepared for an unexpected update.");
