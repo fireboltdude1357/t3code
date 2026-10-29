@@ -36,7 +36,7 @@ On app.t3.codes, the link first asks where to open it: the desktop or mobile app
 when it is connected to a machine, or the download page. Select **Remember my choice** to skip
 this step next time.
 
-- **No `repo`**: the draft opens without a project, on the machine you used last.
+- **No `repo`**: the draft opens without a project, on your default machine.
 - **`repo`**: the draft opens in your most recently used project for that repository. A fork
   counts only for its own owner. When you do not have the repository, choose **Clone** or **Use
   without project**.
