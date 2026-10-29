@@ -27,7 +27,7 @@ the project menu in that heading or from **New thread in...** in the command
 palette, or press `mod+alt+n`. On mobile, pick **No project** from the project
 list. On web and desktop, it starts on your default machine. That is this device
 unless you pick another in **Settings → Threads → New projects → Default
-machine**, which new projects also use when no thread is open. Before sending,
+machine**, which new projects also start on. Before sending,
 pick another machine from the machine menu to move the draft there. To move a
 draft into a project, pick the project in the heading.
 

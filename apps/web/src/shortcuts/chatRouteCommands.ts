@@ -41,6 +41,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
         ([environmentId, presentation]) => ({ ...presentation, environmentId }),
       ),
     defaultEnvironmentId: readDefaultEnvironmentId,
+    primaryEnvironmentId: () => appAtomRegistry.get(primaryEnvironmentIdAtom),
     registry: appAtomRegistry,
     handleNewThread,
   });
