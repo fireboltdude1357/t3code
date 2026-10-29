@@ -1320,6 +1320,21 @@ it.effect.each(["failed", "interrupted"] as const)(
         createdBy: "user",
         creationSource: "web",
       });
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`command:launch:late-queued-follow-up-${ending}:wake`),
+        threadId: launched.threadId,
+        messageId: MessageId.make(`message:launch:late-queued-follow-up-${ending}:wake`),
+        text: "Background task completed.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "provider",
+      });
+      const wake = (yield* threads.getThreadProjection(launched.threadId)).runs.at(-1)!;
+      assert.equal(wake.status, "queued");
+      assert.isTrue(wake.queueHeld);
+
       // Nor does the next one, though the run that message started is now the
       // latest and carries no workspace preparation.
       yield* threads.sendToThread({
@@ -1365,6 +1380,9 @@ it.effect("replays a server-allocated launch", () =>
       assert.equal(first.threadId, retry.threadId);
       assert.isFalse(first.resumed);
       assert.isTrue(retry.resumed);
+      // Clients drop their pending copy once the thread reaches the message's commit.
+      assert.isNumber(first.sequence);
+      assert.equal(retry.sequence, first.sequence);
       assert.equal(harness.runSetup.mock.calls.length, 1);
       assert.equal(retry.projection.messages.length, 1);
       assert.equal(retry.projection.runs.length, 1);
