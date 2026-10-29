@@ -31,6 +31,8 @@ export interface OlderSettled {
   readonly before: string;
   readonly beforeMs: number;
   readonly counts: ReadonlyMap<ProjectId, number>;
+  /** Who owns each project's older settled threads. */
+  readonly owners: ReadonlyMap<ProjectId, "bot" | "user">;
 }
 
 /** The scope's projects in one environment, or null for all of them. */
@@ -136,6 +138,18 @@ export function isListedSettledThread(
   frontier: OrchestrationV2OlderSettledCursor | null,
 ): boolean {
   return frontier === null || atOrAboveCursor(thread, frontier);
+}
+
+/** `OlderSettled.owners` from the server's counts. A missing `botCount` (an older server) counts
+    as the user's, so a picker never hides a project it can't prove belongs to bots. */
+export function olderSettledOwners(
+  counts: OrchestrationV2OlderSettledThreadsPage["counts"],
+): ReadonlyMap<ProjectId, "bot" | "user"> {
+  return new Map(
+    counts.flatMap(({ projectId, count, botCount }) =>
+      count === 0 ? [] : [[projectId, botCount === count ? "bot" : "user"] as const],
+    ),
+  );
 }
 
 /**
@@ -254,7 +268,10 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
 
   const countsOf = (source: {
     readonly counts: OrchestrationV2OlderSettledThreadsPage["counts"];
-  }) => new Map(source.counts.map(({ projectId, count }) => [projectId, count] as const));
+  }) => ({
+    counts: new Map(source.counts.map(({ projectId, count }) => [projectId, count] as const)),
+    owners: olderSettledOwners(source.counts),
+  });
 
   const olderSettledAtom = Atom.family((environmentId: EnvironmentId) => {
     let generation = -1;
@@ -274,7 +291,7 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
         fromSnapshot = {
           before: cut.before,
           beforeMs: DateTime.toEpochMillis(DateTime.makeUnsafe(cut.before)),
-          counts: countsOf(cut),
+          ...countsOf(cut),
         };
       }
       // Most shell updates move only the cursor; the key needs new rows or removals.
@@ -299,7 +316,7 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
       );
       if (read !== null && read !== lastReadPage) {
         lastReadPage = read;
-        lastRead = { ...fromSnapshot, counts: countsOf(read) };
+        lastRead = { ...fromSnapshot, ...countsOf(read) };
       }
       return lastRead ?? fromSnapshot;
     }).pipe(Atom.withLabel(`environment-older-settled:${environmentId}`));
