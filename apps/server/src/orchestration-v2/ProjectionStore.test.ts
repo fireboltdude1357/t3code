@@ -1400,7 +1400,9 @@ it.effect("SQL list older settled threads below a cursor", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;
     const now = yield* DateTime.now;
-    const id = (name: string) => ThreadId.make(`thread:older:${name}`);
+    // A bot's threads carry their own ids.
+    const id = (name: string) =>
+      ThreadId.make(name.startsWith("bot:") ? name : `thread:older:${name}`);
     const at = (day: number) => DateTime.makeUnsafe(Date.UTC(2026, 9, day));
     const createThread = (input: {
       readonly name: string;
@@ -1409,6 +1411,7 @@ it.effect("SQL list older settled threads below a cursor", () =>
       readonly subagent?: boolean;
       readonly archived?: boolean;
       readonly snoozedUntilDay?: number;
+      readonly root?: string;
     }) =>
       store.apply({
         id: EventId.make(`event:older:${input.name}`),
@@ -1431,7 +1434,7 @@ it.effect("SQL list older settled threads below a cursor", () =>
           lineage: {
             parentThreadId: input.subagent === true ? id("b") : null,
             relationshipToParent: input.subagent === true ? "subagent" : null,
-            rootThreadId: input.subagent === true ? id("b") : id(input.name),
+            rootThreadId: input.subagent === true ? id("b") : id(input.root ?? input.name),
           },
           forkedFrom: null,
           createdAt: now,
@@ -1448,6 +1451,14 @@ it.effect("SQL list older settled threads below a cursor", () =>
     yield* createThread({ name: "b", settledDay: 4 });
     yield* createThread({ name: "c", settledDay: 4 });
     yield* createThread({ name: "d", settledDay: 3, project: "project:b" });
+    yield* createThread({ name: "bot:medic:old", settledDay: 3, project: "project:c" });
+    yield* createThread({
+      name: "bot-child",
+      settledDay: 3,
+      project: "project:c",
+      root: "bot:medic:old",
+    });
+    yield* createThread({ name: "bot:Medic:user", settledDay: 3, project: "project:b" });
     yield* createThread({ name: "snoozed", settledDay: 2, snoozedUntilDay: 30 });
     yield* createThread({ name: "recent", settledDay: 20 });
     yield* createThread({ name: "unsettled", settledDay: null });
@@ -1465,27 +1476,36 @@ it.effect("SQL list older settled threads below a cursor", () =>
     assert.sameDeepMembers(
       [...(yield* list(before, 0)).counts],
       [
-        { projectId: ProjectId.make("project:a"), count: 4 },
-        { projectId: ProjectId.make("project:b"), count: 1 },
+        { projectId: ProjectId.make("project:a"), count: 4, botCount: 0 },
+        { projectId: ProjectId.make("project:b"), count: 2, botCount: 0 },
+        { projectId: ProjectId.make("project:c"), count: 2, botCount: 2 },
       ],
     );
     // A cursor without an id is strict, as the snapshot's cut is: the day-4 tie is not counted.
     assert.sameDeepMembers(
       [...(yield* list({ settledAt: DateTime.formatIso(at(4)) }, 0)).counts],
       [
-        { projectId: ProjectId.make("project:a"), count: 1 },
-        { projectId: ProjectId.make("project:b"), count: 1 },
+        { projectId: ProjectId.make("project:a"), count: 1, botCount: 0 },
+        { projectId: ProjectId.make("project:b"), count: 2, botCount: 0 },
+        { projectId: ProjectId.make("project:c"), count: 2, botCount: 2 },
       ],
     );
     // The cursor is the last row: the tie on day 4 continues by id.
     const next = yield* list({ settledAt: DateTime.formatIso(at(4)), threadId: id("b") }, 10);
-    assert.deepEqual(next.threadIds, [id("c"), id("d"), id("snoozed")]);
+    assert.deepEqual(next.threadIds, [
+      id("c"),
+      id("bot:Medic:user"),
+      id("bot:medic:old"),
+      id("bot-child"),
+      id("d"),
+      id("snoozed"),
+    ]);
     assert.deepEqual(yield* list(before, 25, []), { threadIds: [], counts: [] });
     yield* assertShellIndexCoversShells();
     const scoped = yield* list(before, 0, [ProjectId.make("project:b")]);
     assert.deepEqual(scoped, {
       threadIds: [],
-      counts: [{ projectId: ProjectId.make("project:b"), count: 1 }],
+      counts: [{ projectId: ProjectId.make("project:b"), count: 2, botCount: 0 }],
     });
   }).pipe(Effect.provide(layerTest)),
 );
