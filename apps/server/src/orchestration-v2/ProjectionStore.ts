@@ -1962,10 +1962,51 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       END
     `;
 
+    type TimelineIndexItem = Pick<
+      OrchestrationV2TurnItem,
+      "id" | "threadId" | "runId" | "nodeId" | "parentItemId" | "type" | "status" | "ordinal"
+    > & {
+      readonly inputIntent?: Extract<
+        OrchestrationV2TurnItem,
+        { type: "user_message" }
+      >["inputIntent"];
+      readonly createdBy?: "user" | "agent" | "system";
+      readonly messageId?: MessageId;
+      readonly runStatus?: string | undefined;
+      readonly attemptId?: string | null;
+      readonly attemptStatus?: string | null;
+      readonly persistentOutput?: boolean;
+      readonly deferredWork?: OrchestrationV2TurnItem["deferredWork"];
+    };
+    type TimelineIndexRow = {
+      readonly sourceThreadId: ThreadId;
+      readonly sourceItemId: TurnItemId;
+      readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
+      readonly item: TimelineIndexItem;
+      readonly synthetic?: OrchestrationV2TurnItem;
+    };
+    type TimelineIndex = {
+      readonly records: ProjectionRecords<"runs" | "attempts">;
+      /** The thread and every fork source the index read. */
+      readonly threadIds: ReadonlyArray<ThreadId>;
+      readonly local: ReadonlyArray<TimelineIndexRow>;
+      readonly visible: ReadonlyArray<TimelineIndexRow>;
+    };
+    // Keyed by thread and output mode; a few cover clients scrolling side by side without pinning
+    // every thread.
+    const TIMELINE_INDEX_CACHE_LIMIT = 8;
+    const timelineIndexes = new Map<
+      string,
+      { readonly sequence: number; readonly index: TimelineIndex }
+    >();
+
     const apply: ProjectionStoreV2Shape["apply"] =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(
         function* (event) {
+          for (const [key, cached] of timelineIndexes) {
+            if (cached.index.threadIds.includes(event.threadId)) timelineIndexes.delete(key);
+          }
           switch (event.type) {
             case "thread.pull-request-link-updated": {
               const thread = yield* getThread(event.threadId);
@@ -5583,41 +5624,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ),
         );
 
-    type TimelineIndexItem = Pick<
-      OrchestrationV2TurnItem,
-      "id" | "threadId" | "runId" | "nodeId" | "parentItemId" | "type" | "status" | "ordinal"
-    > & {
-      readonly inputIntent?: Extract<
-        OrchestrationV2TurnItem,
-        { type: "user_message" }
-      >["inputIntent"];
-      readonly createdBy?: "user" | "agent" | "system";
-      readonly messageId?: MessageId;
-      readonly runStatus?: string | undefined;
-      readonly attemptId?: string | null;
-      readonly attemptStatus?: string | null;
-      readonly persistentOutput?: boolean;
-      readonly deferredWork?: OrchestrationV2TurnItem["deferredWork"];
-    };
-    type TimelineIndexRow = {
-      readonly sourceThreadId: ThreadId;
-      readonly sourceItemId: TurnItemId;
-      readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
-      readonly item: TimelineIndexItem;
-      readonly synthetic?: OrchestrationV2TurnItem;
-    };
     const readTimelineIndex: (
       threadId: ThreadId,
       seen: ReadonlySet<ThreadId>,
       includePersistentOutput?: boolean,
-    ) => Effect.Effect<
-      {
-        readonly records: ProjectionRecords<"runs" | "attempts">;
-        readonly local: ReadonlyArray<TimelineIndexRow>;
-        readonly visible: ReadonlyArray<TimelineIndexRow>;
-      },
-      ProjectionStoreV2Error
-    > = Effect.fn("ProjectionStore.readTimelineIndex")(
+    ) => Effect.Effect<TimelineIndex, ProjectionStoreV2Error> = Effect.fn(
+      "ProjectionStore.readTimelineIndex",
+    )(
       function* (threadId: ThreadId, seen: ReadonlySet<ThreadId>, includePersistentOutput = false) {
         const records = yield* getThreadRecords(threadId, ["runs", "attempts"]);
         const rows = yield* sql<{
@@ -5687,7 +5700,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         });
         const visible = local.filter((row) => isVisible(row.item));
         const fork = records.thread.forkedFrom;
-        if (fork?.type !== "run" || seen.has(fork.threadId)) return { records, local, visible };
+        if (fork?.type !== "run" || seen.has(fork.threadId))
+          return { records, threadIds: [threadId], local, visible };
         const source = yield* readTimelineIndex(
           fork.threadId,
           new Set([...seen, threadId]),
@@ -5725,6 +5739,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         });
         return {
           records,
+          threadIds: [threadId, ...source.threadIds],
           local,
           visible: [
             ...inherited,
@@ -5749,6 +5764,40 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ),
     );
 
+    // Paging through a long thread asks for this index once per page, and building it scans the
+    // whole thread and its fork sources. A committed projection write appends a thread event in
+    // the same transaction, so the newest event across those threads identifies the snapshot the
+    // index came from; apply also drops entries it touches, covering writes replayed without a new
+    // event. Call inside the read transaction so the index and that sequence share one snapshot.
+    // Without the hint SQLite walks every V2 event newer than these threads on each page.
+    const latestThreadEventSequence = (threadId: ThreadId, threadIds: ReadonlyArray<ThreadId>) =>
+      sql<{ sequence: number }>`SELECT COALESCE(MAX(sequence), 0) AS sequence
+        FROM orchestration_events INDEXED BY idx_orchestration_events_agent_stream_sequence
+        WHERE application_event_version = 2
+        AND aggregate_kind = 'thread' AND stream_id IN ${sql.in(threadIds)}`.pipe(
+        Effect.map((rows) => rows[0]?.sequence ?? 0),
+        Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })),
+      );
+    const readSnapshotTimelineIndex = Effect.fn("ProjectionStore.readSnapshotTimelineIndex")(
+      function* (threadId: ThreadId, includePersistentOutput = false) {
+        const key = `${includePersistentOutput ? "work" : "chat"}:${threadId}`;
+        const cached = timelineIndexes.get(key);
+        if (
+          cached !== undefined &&
+          (yield* latestThreadEventSequence(threadId, cached.index.threadIds)) === cached.sequence
+        )
+          return cached.index;
+        const index = yield* readTimelineIndex(threadId, new Set(), includePersistentOutput);
+        const sequence = yield* latestThreadEventSequence(threadId, index.threadIds);
+        timelineIndexes.delete(key);
+        timelineIndexes.set(key, { sequence, index });
+        const oldest = timelineIndexes.keys().next();
+        if (timelineIndexes.size > TIMELINE_INDEX_CACHE_LIMIT && oldest.done !== true)
+          timelineIndexes.delete(oldest.value);
+        return index;
+      },
+    );
+
     const { searchThread, searchThreadStream } = yield* makeThreadFind((threadId) =>
       readTimelineIndex(threadId, new Set()).pipe(Effect.map((index) => index.visible)),
     );
@@ -5763,7 +5812,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sql
         .withTransaction(
           Effect.gen(function* () {
-            const index = yield* readTimelineIndex(threadId, new Set(), workMode !== undefined);
+            const index = yield* readSnapshotTimelineIndex(threadId, workMode !== undefined);
             if (index.records.thread.deletedAt !== null)
               return yield* new ProjectionStoreThreadNotFoundError({ threadId });
             const revisions = yield* sql<{
@@ -5880,7 +5929,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sql
         .withTransaction(
           Effect.gen(function* () {
-            const index = yield* readTimelineIndex(threadId, new Set());
+            const index = yield* readSnapshotTimelineIndex(threadId);
             const matching = index.visible
               .map((row, position) => ({ ...row, position }))
               .filter((row) =>
