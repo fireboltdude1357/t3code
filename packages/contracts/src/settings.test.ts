@@ -248,6 +248,21 @@ describe("ClientSettings notifications", () => {
   });
 });
 
+describe("ClientSettings default machine", () => {
+  it("starts on this device for settings saved before the choice existed", () => {
+    expect(decodeClientSettings({}).defaultEnvironmentId).toBeNull();
+  });
+
+  it("keeps a chosen machine through patches and persistence, and clears it with null", () => {
+    const preference = { defaultEnvironmentId: "environment-wsl" };
+    expect(decodeClientSettingsPatch(preference)).toEqual(preference);
+    expect(encodeClientSettings(decodeClientSettings(preference))).toMatchObject(preference);
+    expect(decodeClientSettingsPatch({ defaultEnvironmentId: null })).toEqual({
+      defaultEnvironmentId: null,
+    });
+  });
+});
+
 describe("ClientSettings quit confirmation", () => {
   it.each([
     [true, "hold"],
