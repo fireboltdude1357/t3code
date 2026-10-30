@@ -25,7 +25,11 @@ const layerShellEnvironment = (prepared = true) =>
   });
 
 const layerBackendConfiguration = (prepared = true) =>
-  DesktopBackendConfiguration.layer.pipe(Layer.provide(layerShellEnvironment(prepared)));
+  DesktopBackendConfiguration.layer.pipe(
+    Layer.provide(layerShellEnvironment(prepared)),
+    // Without this the layer reads APPIMAGE and T3CODE_DISABLE_AUTO_UPDATE from the shell running the tests.
+    Layer.provide(DesktopConfig.layerTest({})),
+  );
 
 const layerServerExposure = Layer.succeed(DesktopServerExposure.DesktopServerExposure, {
   getState: Effect.die("unexpected getState"),
@@ -105,6 +109,7 @@ const withHarness = <A, E, R>(
     | DesktopBackendConfiguration.DesktopBackendConfiguration
   >,
   prepared = true,
+  environmentOptions?: Parameters<typeof layerEnvironment>[1],
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -119,7 +124,7 @@ const withHarness = <A, E, R>(
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(DesktopWslEnvironment.layerTest()),
           Layer.provideMerge(DesktopWslServerTree.layerTest()),
-          Layer.provideMerge(layerEnvironment(baseDir)),
+          Layer.provideMerge(layerEnvironment(baseDir, environmentOptions)),
         ),
       ),
     );
@@ -266,6 +271,34 @@ describe("DesktopBackendConfiguration", () => {
         );
       }),
     ),
+  );
+
+  it.effect("resolvePrimary tells the backend whether this Linux package can update itself", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-backend-config-resources-",
+      });
+      yield* fileSystem.writeFileString(
+        `${resourcesPath}/app-update.yml`,
+        "owner: pingdotgg\nrepo: t3code\nprovider: github\n",
+      );
+      const resolvePrimary = withHarness(
+        Effect.gen(function* () {
+          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+          return yield* configuration.resolvePrimary;
+        }),
+        true,
+        { platform: "linux", resourcesPath },
+      );
+
+      const distroPackage = yield* resolvePrimary;
+      yield* fileSystem.writeFileString(`${resourcesPath}/package-type`, "deb\n");
+      const debPackage = yield* resolvePrimary;
+
+      assert.equal(distroPackage.bootstrap.desktopAppUpdate, false);
+      assert.equal(debPackage.bootstrap.desktopAppUpdate, true);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("resolvePrimary starts from server.asar without materializing the WSL tree", () =>
