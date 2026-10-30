@@ -279,6 +279,43 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.live("reports no usage limits for a Codex login without a ChatGPT account", () =>
+    Effect.gen(function* () {
+      if (yield* HostProcess.isWindows) return;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const fixtures = yield* makeTildeProviderFixtures();
+      yield* fileSystem.writeFileString(
+        fixtures.codexScriptPath,
+        JSON.stringify({
+          rootThreadId: "probe-thread",
+          notifications: [],
+          // A custom model provider with `requires_openai_auth=false` and no
+          // `codex login`: Codex rejects the usage read for this account.
+          account: null,
+          failRateLimitsRead: true,
+        }),
+      );
+      const codexId = ProviderInstanceId.make("codex_proxy");
+      const { registry } = yield* makeProviderInstanceRegistry<CodexDriverEnv>({
+        drivers: [CodexDriver],
+        configMap: {
+          [codexId]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            environment: [
+              { name: "T3_CODEX_COLLAB_SCRIPT", value: fixtures.codexScriptPath, sensitive: false },
+            ],
+            config: makeCodexConfig({ enabled: true, binaryPath: fixtures.codexBinaryPath }),
+          },
+        },
+      });
+      const codex = yield* registry.getInstance(codexId);
+      expect(codex).toBeDefined();
+      const snapshot = yield* codex!.snapshot.refresh;
+      expect(snapshot.usageLimits?.unavailable?.reason).toBe("unsupported");
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.live("runs Claude instance probes in the server state dir, not the server cwd", () =>
     Effect.gen(function* () {
       if (yield* HostProcess.isWindows) return;
