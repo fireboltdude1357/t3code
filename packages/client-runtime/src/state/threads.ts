@@ -23,7 +23,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { HttpClient } from "effect/http";
-import { Atom } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
@@ -957,17 +957,20 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     return entry.value;
   });
 
+  // The shell entry the last failed load used. It outlives resubscriptions, so
+  // a reconnect or wakeup does not retry an entry that already missed.
+  let retriedWith: EnvironmentThreadShell | null = null;
+
   yield* markSynchronizing;
   yield* Effect.forkScoped(
     subscribeDynamic(
       ORCHESTRATION_V2_WS_METHODS.subscribeThread,
       Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (session) {
         let current = yield* SubscriptionRef.get(state);
-        let retriedWith: EnvironmentThreadShell | null = null;
         // A prior definitive miss (or delete event) already cleared this thread.
         // Do not open the socket until the shell lists the thread.
         if (current.status === "deleted") {
-          retriedWith = yield* awaitListed(null);
+          retriedWith = yield* awaitListed(retriedWith);
           current = yield* SubscriptionRef.get(state);
         }
 
@@ -977,7 +980,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* Ref.set(resumingLive, false);
 
         if (Option.isNone(current.data)) {
-          const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
+          // Read the connection on every attempt, since its credentials can
+          // change while a 404 waits on the shell.
+          const loadSnapshot = SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({
                 onSome: Effect.succeed,
@@ -990,9 +995,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                   ),
               }),
             ),
+            Effect.flatMap((prepared) => snapshotLoader.load(prepared, threadId)),
           );
-          let httpResult: ThreadSnapshotLoader.ThreadSnapshotLoadResult =
-            yield* snapshotLoader.load(prepared, threadId);
+          let httpResult: ThreadSnapshotLoader.ThreadSnapshotLoadResult = yield* loadSnapshot;
           while (httpResult._tag === "missing") {
             // Definitive HTTP 404: clear any stale cache and do not open a
             // socket subscription until the shell lists the thread.
@@ -1000,7 +1005,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             retriedWith = yield* awaitListed(retriedWith);
             yield* Ref.set(awaitingCompletion, true);
             yield* markSynchronizing;
-            httpResult = yield* snapshotLoader.load(prepared, threadId);
+            httpResult = yield* loadSnapshot;
           }
           switch (httpResult._tag) {
             case "present": {
@@ -1116,7 +1121,12 @@ export function createEnvironmentThreadStateAtoms<R, E>(
         (get) => {
           get.mount(resumeAtom);
           const resume = get.once(resumeAtom);
-          const shellEntry = get.stream(options.threadShellAtom({ environmentId, threadId }));
+          // `get.stream` would keep each wait's subscription until the atom is
+          // disposed. `toStream` releases it when the wait ends.
+          const shellEntry = AtomRegistry.toStream(
+            get.registry,
+            options.threadShellAtom({ environmentId, threadId }),
+          );
           const live = threadStateChanges(environmentId, threadId, resume, shellEntry);
           return resume.snapshot === undefined
             ? live

@@ -2030,6 +2030,14 @@ describe("EnvironmentThreads", () => {
       yield* awaitThreadState(harness.observed, (value) => value.status === "deleted");
       expect(yield* Ref.get(harness.loaderCalls)).toBe(2);
 
+      // Resubscribing must not retry the entry that already missed.
+      yield* Queue.offer(harness.wakeups, "application-active");
+      yield* harness.replaceSession;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(2);
+
       yield* Ref.set(harness.httpSnapshot, {
         _tag: "present",
         snapshot: { projection: BASE_PROJECTION, snapshotSequence: CACHED_SNAPSHOT_SEQUENCE },
