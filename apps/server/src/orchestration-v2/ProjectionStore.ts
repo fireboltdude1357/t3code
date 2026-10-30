@@ -422,11 +422,19 @@ export interface ProjectionRecordFilter {
   readonly messageIds?: ReadonlyArray<MessageId>;
   readonly messageRunIds?: ReadonlyArray<RunId>;
   readonly turnItemRunIds?: ReadonlyArray<RunId | null>;
+  readonly turnItemNodeIds?: ReadonlyArray<NodeId>;
   readonly runIds?: ReadonlyArray<RunId>;
   readonly subagentIds?: ReadonlyArray<NodeId>;
+  readonly subagentRunIds?: ReadonlyArray<RunId>;
+  readonly nodeIds?: ReadonlyArray<NodeId>;
   readonly turnItemTypes?: ReadonlyArray<OrchestrationV2TurnItem["type"]>;
   readonly turnItemStatuses?: ReadonlyArray<OrchestrationV2TurnItem["status"]>;
   readonly omitSettledLeafNodes?: boolean;
+  /**
+   * Skips ended subagents whose completion was acknowledged, delivered or disposed, unless their
+   * run is active or `except` names them.
+   */
+  readonly omitSettledSubagents?: true | { readonly except: ReadonlyArray<NodeId> };
 }
 
 // A fork inherits its source's history before it has messages of its own,
@@ -526,6 +534,7 @@ export interface ProjectionStoreV2Shape {
     options: ProjectionTimelinePageOptions,
   ) => Effect.Effect<ProjectionTimelinePage, ProjectionStoreV2Error>;
   readonly getMessageCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
+  readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
   readonly getNextTurnItemOrdinal: (
     threadId: ThreadId,
   ) => Effect.Effect<number, ProjectionStoreV2Error>;
@@ -594,6 +603,10 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<ProjectionCacheExpiryCompactionCandidate>,
     ProjectionStoreV2Error
   >;
+  /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
+  readonly getLimitRecoveryWakeAt: (
+    now: DateTime.Utc,
+  ) => Effect.Effect<number | null, ProjectionStoreV2Error>;
   readonly getSettlementCandidates: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
@@ -2250,6 +2263,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 started_at,
                 completed_at,
                 updated_at,
+                completion_delivery_state,
                 payload_json
               )
               VALUES (
@@ -2267,6 +2281,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ${nullableStringField(payload, "startedAt")},
                 ${nullableStringField(payload, "completedAt")},
                 ${stringField(payload, "updatedAt")},
+                ${event.payload.completionDelivery?.state ?? null},
                 ${payloadJson}
               )
               ON CONFLICT(subagent_id)
@@ -2284,6 +2299,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 started_at = excluded.started_at,
                 completed_at = excluded.completed_at,
                 updated_at = excluded.updated_at,
+                completion_delivery_state = COALESCE(
+                  excluded.completion_delivery_state,
+                  orchestration_v2_projection_subagents.completion_delivery_state
+                ),
                 payload_json = CASE
                   WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
                     AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
@@ -3124,7 +3143,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         const boundedTurnItemRows: ReadonlyArray<WindowPayloadRow> =
           (fields !== undefined && !fields.includes("turnItems")) ||
           (window === undefined &&
-            matchesNothing(filter?.turnItemTypes, filter?.turnItemStatuses, filter?.turnItemRunIds))
+            matchesNothing(
+              filter?.turnItemTypes,
+              filter?.turnItemStatuses,
+              filter?.turnItemRunIds,
+              filter?.turnItemNodeIds,
+            ))
             ? []
             : window === undefined
               ? yield* sql<PayloadRow>`
@@ -3134,6 +3158,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ${filter?.turnItemTypes === undefined ? sql`` : sql`AND type IN (SELECT value FROM json_each(${encodeIdList(filter.turnItemTypes)}))`}
                   ${filter?.turnItemStatuses === undefined ? sql`` : sql`AND status IN (SELECT value FROM json_each(${encodeIdList(filter.turnItemStatuses)}))`}
                   ${filter?.turnItemRunId === undefined ? sql`` : sql`AND run_id = ${filter.turnItemRunId}`}
+                  ${filter?.turnItemNodeIds === undefined ? sql`` : sql`AND node_id IN (SELECT value FROM json_each(${encodeIdList(filter.turnItemNodeIds)}))`}
                   ${filter?.turnItemRunIds === undefined ? sql`` : sql`AND (run_id IN (SELECT value FROM json_each(${encodeIdList(filter.turnItemRunIds.filter((id): id is RunId => id !== null))})) OR (${filter.turnItemRunIds.includes(null) ? 1 : 0} = 1 AND run_id IS NULL))`}
                 ORDER BY ordinal ASC, turn_item_id ASC
               `
@@ -3360,13 +3385,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 OR run_id IN (SELECT value FROM json_each(${cohortRunIds})))
             ORDER BY run_id ASC, attempt_ordinal ASC
           `,
-          fields !== undefined && !fields.includes("nodes")
+          (fields !== undefined && !fields.includes("nodes")) ||
+          (window === undefined && matchesNothing(filter?.nodeIds))
             ? Effect.succeed([])
             : window === undefined
               ? sql<PayloadRow>`
             SELECT payload_json
             FROM orchestration_v2_projection_nodes AS node
             WHERE node.thread_id = ${threadId}
+              ${filter?.nodeIds === undefined ? sql`` : sql`AND node.node_id IN (SELECT value FROM json_each(${encodeIdList(filter.nodeIds)}))`}
               ${
                 filter?.omitSettledLeafNodes === true
                   ? sql`AND NOT (
@@ -3397,14 +3424,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ),
                 ),
           (fields !== undefined && !fields.includes("subagents")) ||
-          (window === undefined && matchesNothing(filter?.subagentIds))
+          (window === undefined &&
+            (matchesNothing(filter?.subagentIds) || matchesNothing(filter?.subagentRunIds)))
             ? Effect.succeed([])
             : window === undefined
               ? sql<PayloadRow>`
             SELECT payload_json
-            FROM orchestration_v2_projection_subagents
+            FROM orchestration_v2_projection_subagents AS subagent
             WHERE thread_id = ${threadId}
               ${filter?.subagentIds === undefined ? sql`` : sql`AND subagent_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentIds)}))`}
+              ${filter?.subagentRunIds === undefined ? sql`` : sql`AND run_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentRunIds)}))`}
+              ${
+                filter?.omitSettledSubagents !== undefined
+                  ? sql`AND (${
+                      filter.omitSettledSubagents === true
+                        ? sql`0`
+                        : sql`subagent_id IN (SELECT value FROM json_each(${encodeIdList(filter.omitSettledSubagents.except)}))`
+                    } OR NOT (
+                      subagent.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+                      AND COALESCE(subagent.completion_delivery_state, '')
+                        IN ('acknowledged', 'delivered', 'disposed')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM orchestration_v2_projection_runs AS run
+                        WHERE run.run_id = subagent.run_id
+                          AND run.status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+                      )
+                    ))`
+                  : sql``
+              }
             ORDER BY COALESCE(started_at, ''), subagent_id ASC
           `
               : sql<PayloadRow>`
@@ -4082,6 +4129,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           usageUpdatedAt: row.usage_updated_at,
           promptCacheTtlMs: row.prompt_cache_ttl_ms ?? undefined,
         }));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
+    const getLimitRecoveryWakeAt = Effect.fn("ProjectionStore.getLimitRecoveryWakeAt")(
+      function* (now: DateTime.Utc) {
+        const nowIso = DateTime.formatIso(now);
+        const rows = yield* sql<{
+          readonly reset_ms: number | null;
+          readonly snooze_ms: number | null;
+        }>`
+          SELECT
+            MIN(CASE WHEN julianday(reset_at) > julianday(${nowIso})
+              THEN (julianday(reset_at) - 2440587.5) * 86400000 END) AS reset_ms,
+            MIN(CASE WHEN julianday(snoozed_until) > julianday(${nowIso})
+              THEN (julianday(snoozed_until) - 2440587.5) * 86400000 END) AS snooze_ms
+          FROM (
+            SELECT json_extract(payload_json, '$.limitRecovery.resetAt') AS reset_at,
+              json_extract(payload_json, '$.snoozedUntil') AS snoozed_until
+            FROM orchestration_v2_projection_threads
+            WHERE deleted_at IS NULL
+              AND json_extract(payload_json, '$.limitRecovery.autoResume') = 1
+          )
+        `;
+        const wakes = [rows[0]?.reset_ms, rows[0]?.snooze_ms].filter(
+          (value): value is number => value != null,
+        );
+        return wakes.length === 0 ? null : Math.round(Math.min(...wakes));
       },
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
@@ -5427,6 +5502,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.map((rows) => rows[0]?.count ?? 0),
         Effect.mapError(controlReadError(threadId)),
       );
+    const getSubagentCount: ProjectionStoreV2Shape["getSubagentCount"] = (threadId) =>
+      sql<{
+        count: number;
+      }>`SELECT COUNT(*) AS count FROM orchestration_v2_projection_subagents WHERE thread_id = ${threadId}`.pipe(
+        Effect.map((rows) => rows[0]?.count ?? 0),
+        Effect.mapError(controlReadError(threadId)),
+      );
     const getNextTurnItemOrdinal: ProjectionStoreV2Shape["getNextTurnItemOrdinal"] = (threadId) =>
       sql<{ ordinal: number | null }>`SELECT MAX(ordinal) AS ordinal
         FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}`.pipe(
@@ -5461,6 +5543,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         AND type = 'dynamic_tool'
         AND (payload_json LIKE '%htmlRender%' OR payload_json LIKE ${`%${MCP_APP_OUTPUT_KEY}%`})
     `,
+        sql<{ id: string }>`
+      SELECT DISTINCT json_extract(attachment.value, '$.id') AS id
+      FROM orchestration_v2_projection_turn_items AS item,
+        json_each(item.payload_json, '$.questionAnswer.attachmentsByQuestionId') AS question,
+        json_each(question.value) AS attachment
+      WHERE item.thread_id = ${threadId}
+        AND item.type = 'user_input_request'
+    `,
         // A guest's waiting files are pending uploads that no message row holds yet.
         sql<{ id: string }>`
       SELECT DISTINCT json_extract(attachment.value, '$.id') AS id
@@ -5471,10 +5561,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         AND json_extract(message.value, '$.status') = 'pending'
     `,
       ]).pipe(
-        Effect.map(([messages, renders, guestFiles]) => [
+        Effect.map(([messages, renders, answerFiles, guestFiles]) => [
           ...new Set([
             ...messages.map((row) => row.id),
             ...guestFiles.map((row) => row.id),
+            ...answerFiles.map((row) => row.id),
             ...threadHtmlRenderAttachmentIds(
               threadId,
               renders.map((row) => {
@@ -7176,6 +7267,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       hasUnpairedRunInterruptRequest: readOnReader(hasUnpairedRunInterruptRequest),
       isNodeStored: readOnReader(isNodeStored),
       getMessageCount: readOnReader(getMessageCount),
+      getSubagentCount: readOnReader(getSubagentCount),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
       getTurnItem: readOnReader(getTurnItem),
       getThreadRecords: (threadId, fields, filter) =>
@@ -7185,6 +7277,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getProviderControlContext: readOnReader(getProviderControlContext),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
       getCacheExpiryCompactionCandidates: readOnReader(getCacheExpiryCompactionCandidates),
+      getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),
       getUnreadableThreadIds: readOnReader(getUnreadableThreadIds),
       getThreadSnapshot: readOnReader(getThreadSnapshot),

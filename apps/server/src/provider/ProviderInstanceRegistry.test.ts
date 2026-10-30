@@ -23,6 +23,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -201,6 +202,61 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     Layer.provideMerge(layerBase),
   );
 
+  it.effect.each(["replacement", "removal"] as const)(
+    "hides retired instances during reconcile (%s)",
+    (scenario) =>
+      Effect.gen(function* () {
+        let closed = 0;
+        const replacementStarted = yield* Deferred.make<void>();
+        const releaseReplacement = yield* Deferred.make<void>();
+        const driver: typeof CodexDriver = {
+          ...CodexDriver,
+          create: (input) =>
+            Effect.gen(function* () {
+              if (input.displayName === "Second") {
+                yield* Deferred.succeed(replacementStarted, undefined);
+                yield* Deferred.await(releaseReplacement);
+              }
+              const instance = yield* CodexDriver.create(input);
+              yield* Effect.addFinalizer(() => Effect.sync(() => closed++));
+              return instance;
+            }),
+        };
+        const retiredId = ProviderInstanceId.make("retired");
+        const siblingId = ProviderInstanceId.make("sibling");
+        const nextId = scenario === "replacement" ? retiredId : ProviderInstanceId.make("new");
+        const entry = {
+          driver: CodexDriver.driverKind,
+          enabled: false,
+          config: makeCodexConfig({}),
+        };
+        const { registry, mutator } = yield* makeProviderInstanceRegistry({
+          drivers: [driver],
+          configMap: { [retiredId]: entry, [siblingId]: entry },
+        });
+        const sibling = yield* registry.getInstance(siblingId);
+        const reconcile = yield* mutator
+          .reconcile({
+            [siblingId]: entry,
+            [nextId]: {
+              ...entry,
+              displayName: "Second",
+              config: makeCodexConfig({ customModels: ["replacement-model"] }),
+            },
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(replacementStarted);
+        expect(closed).toBe(1);
+        expect(yield* registry.getInstance(retiredId)).toBeUndefined();
+        expect(yield* registry.listInstances).toEqual([sibling]);
+        yield* Deferred.succeed(releaseReplacement, undefined);
+        yield* Fiber.join(reconcile);
+        expect((yield* registry.getInstance(nextId))?.displayName).toBe("Second");
+        expect(yield* registry.getInstance(siblingId)).toBe(sibling);
+        expect(closed).toBe(1);
+      }).pipe(Effect.provide(layerTest)),
+  );
+
   it.live("treats an explicit in-config enabled:false as disabling despite the envelope", () =>
     Effect.gen(function* () {
       const staleId = ProviderInstanceId.make("codex_stale");
@@ -276,6 +332,52 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         installed: true,
         version: "2.1.219",
       });
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live.each([
+    // A custom model provider with `requires_openai_auth=false` and no
+    // `codex login`: Codex rejects the usage read for this account.
+    {
+      name: "a custom provider without a ChatGPT login",
+      requiresOpenaiAuth: false,
+      reason: "unsupported",
+    },
+    // Signed out of ChatGPT: usage stays readable once the user signs in.
+    { name: "a signed-out ChatGPT login", requiresOpenaiAuth: true, reason: "probeFailed" },
+  ])("reports Codex usage for $name as $reason", ({ requiresOpenaiAuth, reason }) =>
+    Effect.gen(function* () {
+      if (yield* HostProcess.isWindows) return;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const fixtures = yield* makeTildeProviderFixtures();
+      yield* fileSystem.writeFileString(
+        fixtures.codexScriptPath,
+        JSON.stringify({
+          rootThreadId: "probe-thread",
+          notifications: [],
+          account: null,
+          requiresOpenaiAuth,
+          failRateLimitsRead: true,
+        }),
+      );
+      const codexId = ProviderInstanceId.make("codex_no_account");
+      const { registry } = yield* makeProviderInstanceRegistry<CodexDriverEnv>({
+        drivers: [CodexDriver],
+        configMap: {
+          [codexId]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            environment: [
+              { name: "T3_CODEX_COLLAB_SCRIPT", value: fixtures.codexScriptPath, sensitive: false },
+            ],
+            config: makeCodexConfig({ enabled: true, binaryPath: fixtures.codexBinaryPath }),
+          },
+        },
+      });
+      const codex = yield* registry.getInstance(codexId);
+      expect(codex).toBeDefined();
+      const snapshot = yield* codex!.snapshot.refresh;
+      expect(snapshot.usageLimits?.unavailable?.reason).toBe(reason);
     }).pipe(Effect.provide(layerTest)),
   );
 
