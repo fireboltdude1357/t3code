@@ -279,7 +279,17 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  it.live("reports no usage limits for a Codex login without a ChatGPT account", () =>
+  it.live.each([
+    // A custom model provider with `requires_openai_auth=false` and no
+    // `codex login`: Codex rejects the usage read for this account.
+    {
+      name: "a custom provider without a ChatGPT login",
+      requiresOpenaiAuth: false,
+      reason: "unsupported",
+    },
+    // Signed out of ChatGPT: usage stays readable once the user signs in.
+    { name: "a signed-out ChatGPT login", requiresOpenaiAuth: true, reason: "probeFailed" },
+  ])("reports Codex usage for $name as $reason", ({ requiresOpenaiAuth, reason }) =>
     Effect.gen(function* () {
       if (yield* HostProcess.isWindows) return;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -289,13 +299,12 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         JSON.stringify({
           rootThreadId: "probe-thread",
           notifications: [],
-          // A custom model provider with `requires_openai_auth=false` and no
-          // `codex login`: Codex rejects the usage read for this account.
           account: null,
+          requiresOpenaiAuth,
           failRateLimitsRead: true,
         }),
       );
-      const codexId = ProviderInstanceId.make("codex_proxy");
+      const codexId = ProviderInstanceId.make("codex_no_account");
       const { registry } = yield* makeProviderInstanceRegistry<CodexDriverEnv>({
         drivers: [CodexDriver],
         configMap: {
@@ -312,7 +321,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       const codex = yield* registry.getInstance(codexId);
       expect(codex).toBeDefined();
       const snapshot = yield* codex!.snapshot.refresh;
-      expect(snapshot.usageLimits?.unavailable?.reason).toBe("unsupported");
+      expect(snapshot.usageLimits?.unavailable?.reason).toBe(reason);
     }).pipe(Effect.provide(layerTest)),
   );
 

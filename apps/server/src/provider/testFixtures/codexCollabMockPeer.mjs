@@ -74,7 +74,7 @@ rl.on("line", (line) => {
       id,
       result: {
         account: "account" in script ? script.account : { type: "apiKey" },
-        requiresOpenaiAuth: false,
+        requiresOpenaiAuth: script.requiresOpenaiAuth ?? false,
       },
     });
     return;
