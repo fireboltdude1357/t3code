@@ -1,0 +1,21 @@
+# Patches the fork merges onto each upstream nightly, in this order.
+# Format: <name> <fork branch> [<owner>/<repo>#<pr> the branch follows]
+# See docs/operations/fork-nightly.md.
+
+release           patch/release
+bots              patch/bots
+cache-compaction  patch/cache-expiry-compaction  pingdotgg/t3code#18713
+mobile-launch-crash  patch/mobile-launch-crash
+mobile-fork-identity  patch/mobile-fork-identity
+reclaimable-cpu  patch/reclaimable-cpu
+full-access-never-asks  patch/full-access-never-asks
+v2-transcript-cache  patch/v2-transcript-cache  pingdotgg/t3code#24707
+sqlite-reader-pool  patch/sqlite-reader-pool  pingdotgg/t3code#24762
+desktop-update-capability  patch/desktop-update-capability
+pr-read-cache-lock  patch/pr-read-cache-lock
+wal-pinned-writes  patch/wal-pinned-writes  pingdotgg/t3code#23496
+streamed-write-timestamps  patch/streamed-write-timestamps  pingdotgg/t3code#25162
+timeline-index-reuse  patch/timeline-index-reuse  pingdotgg/t3code#24422
+launcher-skip-backup  patch/launcher-skip-backup
+default-machine  patch/default-machine
+codex-usage-chatgpt-only  patch/codex-usage-chatgpt-only
