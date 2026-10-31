@@ -12,6 +12,7 @@ import {
   filterCommandPaletteGroups,
   reduceCommandPaletteUiState,
   resolveAddProjectEntry,
+  sortAddProjectEnvironmentOptions,
   createCommandPaletteSearchState,
   reduceCommandPaletteSearchState,
   type CommandPaletteUiState,
@@ -131,6 +132,28 @@ describe("resolveAddProjectEntry", () => {
       kind: "choose-source",
       environmentId: local,
     });
+  });
+});
+
+describe("sortAddProjectEnvironmentOptions", () => {
+  const thisDevice = { environmentId: EnvironmentId.make("mac"), isPrimary: true, label: "Mac" };
+  const wsl = { environmentId: EnvironmentId.make("wsl"), isPrimary: false, label: "WSL" };
+  const box = { environmentId: EnvironmentId.make("box"), isPrimary: false, label: "Box" };
+  const order = (lead: EnvironmentId | null) =>
+    sortAddProjectEnvironmentOptions([wsl, box, thisDevice], lead).map(
+      (option) => option.environmentId,
+    );
+
+  it("lists this device first, then the rest by name, when no machine leads", () => {
+    expect(order(null)).toEqual([thisDevice.environmentId, box.environmentId, wsl.environmentId]);
+  });
+
+  it("puts the machine new work lands on ahead of this device", () => {
+    expect(order(wsl.environmentId)).toEqual([
+      wsl.environmentId,
+      thisDevice.environmentId,
+      box.environmentId,
+    ]);
   });
 });
 
