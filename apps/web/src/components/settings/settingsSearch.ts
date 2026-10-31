@@ -650,6 +650,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new worktrees start remote origin latest fetched branch local"],
   },
   {
+    id: "default-machine",
+    title: "Default machine",
+    to: "/settings/threads",
+    searchTerms: ["environment server remote new project thread without project scratch"],
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/threads",
