@@ -70,9 +70,9 @@ export function useUpdateEverything(
   // A track switch's target came from the release feed already.
   const { targets: behindServers, skipped: unreachable } = channelSwitch
     ? collectChannelSwitchTargets(machines, channelSwitch)
-    : collectServerUpdateTargets(machines, targetVersion, localUpdateVersion !== null);
+    : collectServerUpdateTargets(machines, targetVersion);
   // Fork: servers install fork releases from GitHub (cliReleaseDownloadBaseUrl)
-  // or their desktop app's feed. npm never has fork versions, so nothing waits on it.
+  // or their desktop app's feed.
   // Fleet's fork-build.sh publishes only the linux-x64 CLI archive, so other
   // boot-service servers are skipped instead of failing on a missing archive.
   // Track-only hosts install nothing, so they need no archive.
