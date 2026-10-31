@@ -16,6 +16,7 @@ import {
   type ServerConfig,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { makeBotProjectKeysAtom } from "@t3tools/client-runtime/state/thread-inbox";
 import {
   guessThreadLinkRef,
   hasThreadLinks,
@@ -34,7 +35,7 @@ import { projectGlyphImageAtom, projectGlyphKey } from "../native/ProjectChipIco
 import { projectFaviconUrlAtom } from "./assets";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
-import { environmentThreadDetails, environmentThreadShells } from "./threads";
+import { environmentThreadDetails, environmentThreadShells, olderSettledThreads } from "./threads";
 
 const EMPTY_PROJECT_ATOM = Atom.make<EnvironmentProject | null>(null).pipe(
   Atom.withLabel("mobile-project:empty"),
@@ -171,6 +172,17 @@ export function useProjects(): ReadonlyArray<EnvironmentProject> {
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsAtom);
+}
+
+const botProjectKeysAtom = makeBotProjectKeysAtom({
+  projectsAtom: environmentProjects.projectsAtom,
+  threadShellsAtom: environmentThreadShells.threadShellsAtom,
+  olderSettledAtom: olderSettledThreads.olderSettledAtom,
+});
+
+/** Projects only bots work in, as `environmentId:projectId` keys. */
+export function useBotProjectKeys(): ReadonlySet<string> {
+  return useAtomValue(botProjectKeysAtom);
 }
 
 export function useNavigationThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
