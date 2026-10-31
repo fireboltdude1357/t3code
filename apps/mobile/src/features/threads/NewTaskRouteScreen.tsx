@@ -10,6 +10,7 @@ import {
   type StaticScreenProps,
 } from "@react-navigation/native";
 import { SymbolView } from "../../components/ui/AppSymbol";
+import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { isBotProjectRow } from "@t3tools/client-runtime/state/thread-inbox";
 import {
@@ -178,7 +179,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const serverConfigs = useServerConfigs();
   const botProjects = useBotProjectKeys();
   // Projects only bots work in stay out; their work lists under Bots.
-  const listScopes = projectScopes.filter(
+  const listScopes = pickableProjectGroups(projectScopes).filter(
     (scope) =>
       !scope.projects.every((project) =>
         isScratchProject(project, serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot),
