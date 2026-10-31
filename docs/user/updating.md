@@ -22,10 +22,13 @@ restart from the update button when you are ready. A server still restarting
 finishes on its own, and the button keeps showing it after the desktop app
 restarts.
 
-Each server checks that it can install the release before it restarts. If the
-release is not available to a server yet, its update fails, the server keeps
-running, and you can retry. The confirmation lists each machine it skips and
-why, such as a machine that is offline or needs a manual update. Use
+Fork builds update servers from the fork's GitHub releases, which carry the
+CLI for Linux x64 only. Servers on other platforms update by hand or through
+their desktop app. Each server checks that it can install the release before it
+restarts. If the release is not available to a server yet, its update fails,
+the server keeps running, and you can retry. The confirmation lists each
+machine it skips and why, such as a machine that is offline or needs a manual
+update. Use
 **Settings → Environments** for those.
 
 If a desktop app restarts on its old version, T3 Code tells you the update did
