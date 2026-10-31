@@ -248,6 +248,13 @@ describe("omitOlderSettledShells", () => {
       sideChat,
       row("old", 30),
       row("b-old", 40),
+      row("b-bot-child", 40, {
+        lineage: {
+          parentThreadId: ThreadId.make("bot:medic:1"),
+          relationshipToParent: null,
+          rootThreadId: ThreadId.make("bot:medic:1"),
+        },
+      }),
       row("unsettled", null),
     ]);
     expect(result.threads.map((thread) => thread.id)).toEqual([
@@ -259,8 +266,8 @@ describe("omitOlderSettledShells", () => {
       before: DateTime.formatIso(DateTime.makeUnsafe(100 * DAY - 2.4 * DAY)),
       asOfSequence: 7,
       counts: [
-        { projectId: "project-a", count: 1 },
-        { projectId: "project-b", count: 1 },
+        { projectId: "project-a", count: 1, botCount: 0 },
+        { projectId: "project-b", count: 2, botCount: 1 },
       ],
     });
   });
@@ -314,7 +321,7 @@ describe("omitOlderSettledShells", () => {
       "side-chat-parent",
       "side-chat",
     ]);
-    expect(result.olderSettled.counts).toEqual([{ projectId: "project-a", count: 5 }]);
+    expect(result.olderSettled.counts).toEqual([{ projectId: "project-a", count: 5, botCount: 0 }]);
   });
 });
 

@@ -8,10 +8,10 @@ import type {
   OrchestrationV2ThreadShellSnapshot,
   OrchestrationV2ShellStreamItem,
   OrchestrationV2StoredEvent,
-  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import {
+  countOlderSettledByProject,
   isListedThreadLineage,
   isLiveSubagentShell,
   isOlderSettledThreadShell,
@@ -110,19 +110,15 @@ function shellTrimFacts(rows: ReadonlyArray<ShellTrimRow>): ShellTrimFacts {
   settledTimes.sort((left, right) => right - left);
   // With fewer than 25, the oldest one is the cut, so nothing is older.
   const olderSettledBeforeMs = settledTimes[NEWEST_SETTLED_KEPT - 1] ?? settledTimes.at(-1);
-  const counts = new Map<ProjectId, number>();
-  if (olderSettledBeforeMs !== undefined) {
-    for (const row of rows) {
-      if (isOlderSettledThreadShell(row, olderSettledBeforeMs)) {
-        counts.set(row.projectId, (counts.get(row.projectId) ?? 0) + 1);
-      }
-    }
-  }
+  const older =
+    olderSettledBeforeMs === undefined
+      ? []
+      : rows.filter((row) => isOlderSettledThreadShell(row, olderSettledBeforeMs));
   return {
     subagentParentIds,
     subagentThreadIds,
     olderSettledBeforeMs,
-    olderSettledCounts: Array.from(counts, ([projectId, count]) => ({ projectId, count })),
+    olderSettledCounts: countOlderSettledByProject(older),
   };
 }
 
