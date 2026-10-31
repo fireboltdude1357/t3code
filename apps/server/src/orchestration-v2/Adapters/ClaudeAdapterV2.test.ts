@@ -96,6 +96,7 @@ import type * as ProviderContinuationRequests from "@t3tools/provider-core/serve
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
@@ -7752,7 +7753,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         driver: ProviderDriverKind.make("claudeAgent"),
         modelSelection: CLAUDE_MODEL_SELECTION,
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
-      const scenario = { name: transcript.scenario, transcript, ...materialized };
+      const scenario = {
+        name: transcript.scenario,
+        transcript,
+        ...materialized,
+        runtimePolicyOverride: { cwd: yield* checkpointWorkspace(transcript.scenario) },
+      };
       yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);
         assertBaseProjection({ result, transcript, runCount: 1, runStatuses: ["completed"] });
