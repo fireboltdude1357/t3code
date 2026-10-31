@@ -40,6 +40,7 @@ import {
   settledShelfFrontier,
   unloadedOlderSettledCount,
   wantedOlderSettledPages,
+  olderSettledOwners,
   type OlderSettled,
   type OlderSettledPages,
 } from "./olderSettledThreads.ts";
@@ -52,6 +53,7 @@ const older: OlderSettled = {
   before,
   beforeMs: 50 * DAY,
   counts: new Map([[project, 3]]),
+  owners: new Map(),
 };
 
 const row = (
@@ -563,4 +565,20 @@ describe("createOlderSettledThreadAtoms", () => {
       yield* Deferred.await(second.stopped);
     }),
   );
+});
+
+it("olderSettledOwners counts a project without botCount as the user's", () => {
+  const other = ProjectId.make("project-b");
+  const unknown = ProjectId.make("project-c");
+  const owners = olderSettledOwners([
+    { projectId: project, count: 2, botCount: 2 },
+    { projectId: other, count: 2, botCount: 1 },
+    { projectId: unknown, count: 2 },
+    { projectId: ProjectId.make("project-d"), count: 0, botCount: 0 },
+  ]);
+  expect([...owners]).toEqual([
+    [project, "bot"],
+    [other, "user"],
+    [unknown, "user"],
+  ]);
 });
