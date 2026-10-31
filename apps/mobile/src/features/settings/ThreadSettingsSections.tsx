@@ -80,6 +80,7 @@ export function AutoSettleSettingsRows(props: {
     patch: Partial<AutoSettleSettings> & {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
+      cacheExpiryCompactionMinTokens?: number | null;
     },
   ) => props.write(patch);
 
@@ -117,6 +118,36 @@ export function AutoSettleSettingsRows(props: {
             value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
             disabled={disabled}
             onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
+          />
+        </SettingsSection>
+      ) : null}
+      {!projectSelected ? (
+        <SettingsSection title="Context">
+          <SettingsSwitchRow
+            icon="clock"
+            label="Compact before cache expires"
+            value={
+              displayTargets.every(
+                (target) => target.settings.cacheExpiryCompactionMinTokens !== null,
+              )
+                ? true
+                : displayTargets.every(
+                      (target) => target.settings.cacheExpiryCompactionMinTokens === null,
+                    )
+                  ? false
+                  : null
+            }
+            disabled={disabled}
+            onValueChange={(value) =>
+              // Turning it on reuses a minimum a target already has, or 150k.
+              writeToAll({
+                cacheExpiryCompactionMinTokens: value
+                  ? (displayTargets.find(
+                      (target) => target.settings.cacheExpiryCompactionMinTokens !== null,
+                    )?.settings.cacheExpiryCompactionMinTokens ?? 150_000)
+                  : null,
+              })
+            }
           />
         </SettingsSection>
       ) : null}
