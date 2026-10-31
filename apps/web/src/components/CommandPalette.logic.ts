@@ -800,6 +800,21 @@ export interface AddProjectEnvironmentOption {
   readonly status: string;
 }
 
+/**
+ * Orders the machines a project can be added to or created on. The machine
+ * new work lands on leads, so a single-step add or new project starts there,
+ * then this device, then the rest by name.
+ */
+export function sortAddProjectEnvironmentOptions<
+  TOption extends Pick<AddProjectEnvironmentOption, "environmentId" | "isPrimary" | "label">,
+>(options: ReadonlyArray<TOption>, leadEnvironmentId: EnvironmentId | null): TOption[] {
+  const rank = (option: TOption) =>
+    option.environmentId === leadEnvironmentId ? 0 : option.isPrimary ? 1 : 2;
+  return options.toSorted(
+    (left, right) => rank(left) - rank(right) || left.label.localeCompare(right.label),
+  );
+}
+
 export type AddProjectCloneFlow =
   | {
       readonly step: "repository";
