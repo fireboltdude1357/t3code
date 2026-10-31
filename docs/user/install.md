@@ -151,6 +151,12 @@ component stack that store crash reports leave out. Copy the report and paste it
 into a GitHub issue. Error messages can quote values from the app, so read it over
 before sharing.
 
+If connecting, loading the thread list, or opening a thread is slow, open the same
+screen afterwards. **Connection timings** shows how long each step took since the
+app started. **Copy connection report** copies one line per step. Each line has a
+trace ID you can search for in the server's `server.trace.ndjson` to find the matching
+server request.
+
 ## Providers
 
 Open **Settings → Providers** in the web or desktop app, select the environment,

@@ -38,6 +38,7 @@ import {
 } from "./shellReducer.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
+import { makeShellSyncTiming } from "./syncTimings.ts";
 
 export type EnvironmentShellStatus = "empty" | "cached" | "synchronizing" | "live";
 
@@ -87,6 +88,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const snapshotLoader = yield* ShellSnapshotLoader.ShellSnapshotLoader;
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
+  yield* Effect.annotateCurrentSpan("environment.id", environmentId);
   const cached = yield* cache.loadShell(environmentId).pipe(
     Effect.catch((error) =>
       Effect.logWarning("Could not load cached environment shell.").pipe(
@@ -99,6 +101,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     ),
   );
   const cachedSnapshot = Option.map(cached, withoutDeferredPullRequests);
+  const syncTiming = yield* makeShellSyncTiming(environmentId, Option.isSome(cachedSnapshot));
   const state = yield* SubscriptionRef.make<EnvironmentShellState>({
     ...EMPTY_SHELL_STATE,
     snapshot: cachedSnapshot,
@@ -220,6 +223,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         if (Option.isSome(next.snapshot)) {
           next = { ...next, status: "live", error: Option.none() };
         }
+        yield* syncTiming.live(next.snapshot);
         continue;
       }
       const authoritative =
@@ -381,6 +385,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         let canResume = hasAuthoritativeSnapshot;
         let current = yield* SubscriptionRef.get(state);
         if (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot)) {
+          yield* syncTiming.sessionStarted;
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({
@@ -413,6 +418,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
                 : httpSnapshot.value.threads.map((thread) => thread.id),
             );
             yield* applyItems([{ kind: "snapshot", snapshot }], pendingLinkIds);
+            yield* syncTiming.httpApplied;
             canResume = true;
             current = yield* SubscriptionRef.get(state);
             if (Option.isSome(current.snapshot)) {
