@@ -72,7 +72,10 @@ rl.on("line", (line) => {
   if (method === "account/read") {
     write({
       id,
-      result: { account: script.account ?? { type: "apiKey" }, requiresOpenaiAuth: false },
+      result: {
+        account: "account" in script ? script.account : { type: "apiKey" },
+        requiresOpenaiAuth: script.requiresOpenaiAuth ?? false,
+      },
     });
     return;
   }
