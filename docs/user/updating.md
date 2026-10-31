@@ -24,8 +24,11 @@ restarts.
 
 Fork builds update servers from the fork's GitHub releases, which carry the
 CLI for Linux x64 only. Servers on other platforms update by hand or through
-their desktop app. The confirmation lists each machine it skips and why, such
-as a machine that is offline or needs a manual update. Use
+their desktop app. Each server checks that it can install the release before it
+restarts. If the release is not available to a server yet, its update fails,
+the server keeps running, and you can retry. The confirmation lists each
+machine it skips and why, such as a machine that is offline or needs a manual
+update. Use
 **Settings → Environments** for those.
 
 If a desktop app restarts on its old version, T3 Code tells you the update did
@@ -142,6 +145,16 @@ could not start" window instead of the app. If a newer version is available,
 choose **Update** to install it. If not, the window links to the last version
 that started on your computer. Download and install it to go back. Use **Copy
 details** to include the error in a bug report.
+
+## Registries and proxies
+
+Each server checks T3 Code releases, and providers installed with npm, through
+its own npm, so the checks use npm's configured registry, authentication, and
+proxy settings. Providers installed with Homebrew or pnpm check through those
+tools.
+Configure npm on the server's machine. If that registry cannot be reached, the
+release shows as unavailable; T3 Code does not try the public registry instead.
+Machines without npm check the public npm registry directly.
 
 ## Update providers
 
