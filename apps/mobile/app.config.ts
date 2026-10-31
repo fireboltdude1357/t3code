@@ -16,6 +16,9 @@ const runtimeVersionPolicy =
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+// The fork app ID prefix is also the Android package, which allows no hyphens
+// and needs every segment to start with a letter.
+const APP_ID_PREFIX_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
 
 // Compiled into the native project. Without a relay, Observe's native side could dispatch to
 // Expo's own ingest before observe.ts turns it off; `.invalid` never resolves (RFC 6761).
@@ -33,6 +36,24 @@ if (
 ) {
   throw new Error(
     "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.t3code when T3CODE_IOS_PERSONAL_TEAM=1.",
+  );
+}
+
+// Fork identity. Forks that build with their own Expo account and Apple team
+// set these in .env.local; when unset, everything resolves to the upstream
+// T3 Tools identity, so upstream builds are unchanged.
+const easOwner = repoEnv.T3CODE_EAS_OWNER?.trim() || "pingdotgg";
+const easProjectId =
+  repoEnv.T3CODE_EAS_PROJECT_ID?.trim() || "d763fcb8-d37c-41ea-a773-b54a0ab4a454";
+const appleTeamId = repoEnv.T3CODE_IOS_APPLE_TEAM_ID?.trim() || "ARK85ZXQ4Z";
+// Replaces the com.t3tools.t3code base while keeping the per-variant suffix,
+// so a fork's dev/preview/production installs stay distinct from each other
+// and from the store app.
+const appIdPrefix = repoEnv.T3CODE_APP_ID_PREFIX?.trim() || undefined;
+
+if (appIdPrefix && !APP_ID_PREFIX_PATTERN.test(appIdPrefix)) {
+  throw new Error(
+    "T3CODE_APP_ID_PREFIX must be a reverse-DNS identifier such as com.example.t3code, with no hyphens and each segment starting with a letter.",
   );
 }
 
@@ -116,9 +137,15 @@ function resolveAppVariant(value: string | undefined): AppVariant {
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
+const variantAppIdSuffix = { development: ".dev", preview: ".preview", production: "" }[
+  APP_VARIANT
+];
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
-  : variant.iosBundleIdentifier;
+  : appIdPrefix
+    ? `${appIdPrefix}${variantAppIdSuffix}`
+    : variant.iosBundleIdentifier;
+const androidPackage = appIdPrefix ? `${appIdPrefix}${variantAppIdSuffix}` : variant.androidPackage;
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -238,7 +265,7 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   updates: {
     enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    url: `https://u.expo.dev/${easProjectId}`,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -248,13 +275,17 @@ const config: ExpoConfig = {
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
     // Avoid Personal Team fallback: it cannot sign App Groups, Apple sign-in or push entitlements.
-    appleTeamId: "ARK85ZXQ4Z",
+    appleTeamId,
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
       `webcredentials:${variant.relyingParty}`,
     ],
     entitlements: {
-      "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
+      // Only a fork app ID moves the group. Personal-team builds keep upstream's
+      // group so an update doesn't lose their saved connections.
+      "keychain-access-groups": [
+        `$(AppIdentifierPrefix)${appIdPrefix ? iosBundleIdentifier : variant.iosBundleIdentifier}`,
+      ],
     },
     infoPlist: {
       UISupportedInterfaceOrientations: [
@@ -286,7 +317,7 @@ const config: ExpoConfig = {
   },
   android: {
     icon: variant.assets.appIcon,
-    package: variant.androidPackage,
+    package: androidPackage,
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
@@ -457,11 +488,11 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: easProjectId,
       observe: { endpointUrl: observeEndpointUrl },
     },
   },
-  owner: "pingdotgg",
+  owner: easOwner,
   experiments: {
     // Metro only runs babel-plugin-react-compiler when this is set; see src/reactCompilerCoverage.test.ts.
     reactCompiler: true,
