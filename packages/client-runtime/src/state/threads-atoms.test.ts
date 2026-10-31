@@ -32,8 +32,9 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { presentThreadShell, type EnvironmentThreadShell } from "./models.ts";
 import { createEnvironmentThreadDetailAtoms } from "./threadDetail.ts";
-import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
+import { v2Projection, v2ThreadId, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
 import { createEnvironmentThreadStateAtoms, type EnvironmentThreadState } from "./threads.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
@@ -54,7 +55,9 @@ const SNAPSHOT: OrchestrationV2ThreadDetailSnapshot = { snapshotSequence: 7, pro
 const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?: {
   readonly snapshot?: OrchestrationV2ThreadDetailSnapshot;
   readonly snapshotUnavailable?: boolean;
+  readonly snapshotMissing?: boolean;
 }) {
+  let snapshotMissing = options?.snapshotMissing ?? false;
   const subscriptions = yield* Queue.unbounded<{
     readonly afterSequence: number | undefined;
     readonly events: Queue.Queue<OrchestrationV2ThreadStreamItem>;
@@ -191,6 +194,9 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
           load: () =>
             Effect.sync(() => {
               httpLoads += 1;
+              if (snapshotMissing) {
+                return { _tag: "missing" as const };
+              }
               if (options?.snapshotUnavailable === true) {
                 return { _tag: "unavailable" as const };
               }
@@ -212,7 +218,8 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
       ),
     ),
   );
-  const raw = createEnvironmentThreadStateAtoms(runtime);
+  const shellAtom = Atom.make<EnvironmentThreadShell | null>(null);
+  const raw = createEnvironmentThreadStateAtoms(runtime, { threadShellAtom: () => shellAtom });
   const details = createEnvironmentThreadDetailAtoms(raw.stateAtom);
   const ref = { environmentId: TARGET.environmentId, threadId: THREAD_ID };
   const stateAtom = details.stateAtom(ref);
@@ -226,6 +233,10 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
     registry,
     makeRegistry,
     rawAtoms: raw,
+    shellAtom,
+    createThread: () => {
+      snapshotMissing = false;
+    },
     stateAtom,
     details,
     ref,
@@ -260,6 +271,27 @@ describe("createEnvironmentThreadStateAtoms", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
+
+  it.effect("loads a thread that 404ed before the environment shell listed it", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ snapshotMissing: true });
+      const unmount = h.registry.mount(h.stateAtom);
+      yield* observeState(h.registry, h.stateAtom, (state) => state.status === "deleted");
+
+      h.createThread();
+      h.registry.set(h.shellAtom, presentThreadShell(TARGET.environmentId, v2ThreadShell));
+      const first = yield* Queue.take(h.subscriptions);
+      yield* Queue.offer(first.events, { kind: "synchronized" });
+      const state = yield* observeState(
+        h.registry,
+        h.stateAtom,
+        (value) => value.status === "live",
+      );
+      expect(Option.getOrThrow(state.data).thread.title).toBe("Cached thread");
+      expect(h.counts().httpLoads).toBe(2);
+      unmount();
+    }),
+  );
 
   it.effect("keeps warm data and resumes a completed cursor without loading another snapshot", () =>
     Effect.gen(function* () {
