@@ -1547,22 +1547,13 @@ describe("ClaudeAdapterV2 resume compaction", () => {
               Effect.map((event) => ({ type: "approval", event }) as const),
             ),
           );
-          assert.equal(safety.type, askRule ? "approval" : "decision");
-          if (safety.type === "decision") {
-            assert.equal(safety.result?.behavior, "deny");
-            if (safety.result?.behavior === "deny") {
-              assert.include(safety.result.message, reason);
-              assert.notInclude(safety.result.message, "\u001b[");
-            }
-          } else if (
-            Option.isSome(safety.event) &&
-            safety.event.value.type === "runtime_request.updated"
-          ) {
-            yield* runtime.respondToRuntimeRequest({
-              requestId: safety.event.value.runtimeRequest.id,
-              decision: "decline",
-            });
-            assert.equal((yield* Fiber.join(safetyDecision))?.behavior, "deny");
+          // Full access allows ask rules without asking; removal safety checks still deny.
+          assert.equal(safety.type, "decision");
+          if (safety.type !== "decision") return;
+          assert.equal(safety.result?.behavior, askRule ? "allow" : "deny");
+          if (safety.result?.behavior === "deny") {
+            assert.include(safety.result.message, reason);
+            assert.notInclude(safety.result.message, "\u001b[");
           }
           yield* Fiber.interrupt(safetyRequest);
         }
