@@ -24,6 +24,7 @@ import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { resolveAutoUpdateDisabledReason } from "../updates/autoUpdateSupport.ts";
+import * as DesktopUpdatePolicy from "../updates/DesktopUpdatePolicy.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
 
@@ -728,6 +729,7 @@ export const make = Effect.gen(function* () {
   const wslEnvironment = yield* DesktopWslEnvironment.DesktopWslEnvironment;
   const wslServerTree = yield* DesktopWslServerTree.DesktopWslServerTree;
   const settings = yield* DesktopAppSettings.DesktopAppSettings;
+  const updatePolicy = yield* DesktopUpdatePolicy.DesktopUpdatePolicy;
   const crypto = yield* Crypto.Crypto;
   // Random generation yields; serialize it so concurrent backends cannot capture distinct bootstrap secrets.
   const secretRef = yield* SynchronizedRef.make(Option.none<string>());
@@ -792,6 +794,7 @@ export const make = Effect.gen(function* () {
     const autoUpdateDisabledReason = yield* resolveAutoUpdateDisabledReason(config).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+      Effect.provideService(DesktopUpdatePolicy.DesktopUpdatePolicy, updatePolicy),
     );
     return yield* resolvePrimaryStartConfig({
       ...shared,

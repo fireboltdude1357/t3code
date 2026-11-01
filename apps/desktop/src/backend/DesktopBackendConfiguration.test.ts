@@ -12,9 +12,11 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
+import * as DesktopUpdatePolicy from "../updates/DesktopUpdatePolicy.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
@@ -32,6 +34,7 @@ const layerBackendConfiguration = (prepared = true) =>
     Layer.provide(layerShellEnvironment(prepared)),
     // Without this the layer reads APPIMAGE and T3CODE_DISABLE_AUTO_UPDATE from the shell running the tests.
     Layer.provide(DesktopConfig.layerTest({})),
+    Layer.provide(DesktopUpdatePolicy.layerTest()),
   );
 
 const layerServerExposure = Layer.succeed(DesktopServerExposure.DesktopServerExposure, {
@@ -1005,6 +1008,7 @@ describe("DesktopBackendConfiguration", () => {
         Layer.provideMerge(DesktopAppSettings.layerTest()),
         Layer.provideMerge(DesktopWslServerTree.layerTest()),
         Layer.provideMerge(DesktopWslEnvironment.layer),
+        Layer.provideMerge(DesktopManagedPolicy.layerTest()),
         Layer.provideMerge(
           Layer.succeed(
             ChildProcessSpawner.ChildProcessSpawner,

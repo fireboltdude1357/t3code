@@ -3437,6 +3437,8 @@ export function permissionResultFromDecision(input: {
   readonly toolUseID: string;
   readonly suggestions?: Parameters<CanUseTool>[2]["suggestions"];
   readonly feedback?: string;
+  /** Under an administrator's ceiling, T3 Code's mode is the only one; Claude cannot switch it. */
+  readonly managedCeiling?: boolean;
 }): PermissionResult {
   if (input.decision === "accept" || input.decision === "acceptForSession") {
     return {
@@ -3447,7 +3449,12 @@ export function permissionResultFromDecision(input: {
         input.decision === "acceptForSession" ? "user_permanent" : "user_temporary",
       ...(input.decision === "acceptForSession"
         ? {
-            updatedPermissions: toSessionPermissionUpdates(input.toolName, input.suggestions),
+            updatedPermissions: toSessionPermissionUpdates(
+              input.toolName,
+              input.managedCeiling === true
+                ? input.suggestions?.filter((suggestion) => suggestion.type !== "setMode")
+                : input.suggestions,
+            ),
           }
         : {}),
     };
@@ -3769,37 +3776,46 @@ function claudeUsageLimitResetAt(resetsAt: unknown): string | null {
     : null;
 }
 
+function gatewayCooldownResetAt(
+  cooldown: RegExpExecArray | null,
+  completedAt: DateTime.Utc,
+): string | undefined {
+  if (cooldown === null) return undefined;
+  const seconds =
+    Number(cooldown[1] ?? 0) * 3_600 + Number(cooldown[2] ?? 0) * 60 + Number(cooldown[3] ?? 0);
+  const resetMs = DateTime.toEpochMillis(completedAt) + seconds * 1_000;
+  return seconds > 0 && resetMs < 8.64e15
+    ? DateTime.formatIso(DateTime.makeUnsafe(resetMs))
+    : undefined;
+}
+
 function providerFailureFromResult(
   message: SDKResultMessage,
   completedAt: DateTime.Utc,
   failureHint?: string,
   usageLimited = false,
 ): OrchestrationV2ProviderFailure | null {
-  const gatewayLimit =
+  const gatewayResetAt =
     failureHint === undefined &&
     message.subtype === "success" &&
     message.is_error &&
     message.terminal_reason === "api_error" &&
     message.api_error_status === 503
-      ? /^API Error: 503 \[[^\]\r\n]+\] \[429\]: \{"type":"error","error":\{"type":"rate_limit_error",[^\r\n]*\} \(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(
-          message.result,
+      ? gatewayCooldownResetAt(
+          /^API Error: 503 \[[^\]\r\n]+\] \[429\]: \{"type":"error","error":\{"type":"rate_limit_error",[^\r\n]*\} \(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(
+            message.result,
+          ),
+          completedAt,
         )
-      : null;
-  if (gatewayLimit) {
-    const seconds =
-      Number(gatewayLimit[1] ?? 0) * 3_600 +
-      Number(gatewayLimit[2] ?? 0) * 60 +
-      Number(gatewayLimit[3] ?? 0);
-    const resetMs = DateTime.toEpochMillis(completedAt) + seconds * 1_000;
-    if (seconds > 0 && resetMs < 8.64e15) {
-      return makeProviderFailure({
-        class: "usage_limit",
-        message: "Claude API rate limit reached. Try again later.",
-        code: "api_error_429",
-        retryable: true,
-        resetAt: DateTime.formatIso(DateTime.makeUnsafe(resetMs)),
-      });
-    }
+      : undefined;
+  if (gatewayResetAt !== undefined) {
+    return makeProviderFailure({
+      class: "usage_limit",
+      message: "Claude API rate limit reached. Try again later.",
+      code: "api_error_429",
+      retryable: true,
+      resetAt: gatewayResetAt,
+    });
   }
   const failureClass =
     (message.subtype === "success" && message.api_error_status === 429) || usageLimited
@@ -3828,6 +3844,14 @@ function providerFailureFromResult(
     return null;
   }
   const apiErrorStatus = message.api_error_status ?? null;
+  // API-key sessions get no rate_limit_info, so a gateway's 429 carries its reset only as text.
+  const resetAt =
+    apiErrorStatus === 429 && message.result.startsWith("API Error:")
+      ? gatewayCooldownResetAt(
+          /\(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(message.result),
+          completedAt,
+        )
+      : undefined;
   return makeProviderFailure({
     message: listedError ?? structuredError ?? failureHint ?? message.result,
     code:
@@ -3836,6 +3860,7 @@ function providerFailureFromResult(
         : `api_error_${apiErrorStatus}`,
     class: failureClass,
     retryable: apiErrorStatus === 429 || apiErrorStatus === 529 ? true : null,
+    resetAt: resetAt ?? null,
   });
 }
 
@@ -9108,6 +9133,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           for (const { toolResult, output } of claudeToolResultEntriesFromMessage(message)) {
+            // A foreground fork's stream opens with a placeholder result for its own launch call.
+            if (parentToolUseIdFromSdkMessage(message) === toolResult.tool_use_id) continue;
             const subagent = yield* resolveSubagentByToolUseId(context, toolResult.tool_use_id);
             const runHandles = parseClaudeWorkflowRunHandles(claudeNativeToolOutputValue(output));
             if (subagent !== undefined && runHandles !== undefined) {
@@ -9875,6 +9902,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...resolvedDecision,
             toolInput,
             toolUseID: callbackOptions.toolUseID,
+            managedCeiling: context.input.runtimePolicy.maxRuntimeMode !== undefined,
             ...(callbackOptions.suggestions === undefined
               ? {}
               : { suggestions: callbackOptions.suggestions }),

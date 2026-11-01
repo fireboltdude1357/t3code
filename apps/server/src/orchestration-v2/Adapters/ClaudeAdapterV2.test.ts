@@ -860,6 +860,32 @@ describe("ClaudeAdapterV2 session permissions", () => {
         destination: "session",
       },
     ]);
+
+    // Under an administrator's ceiling a suggested mode switch is dropped; the rule stays.
+    const managed = ClaudeAdapterV2.permissionResultFromDecision({
+      toolName: "Edit",
+      decision: "acceptForSession",
+      toolInput: {},
+      toolUseID: "tool-2",
+      managedCeiling: true,
+      suggestions: [
+        { type: "setMode", mode: "acceptEdits", destination: "session" },
+        {
+          type: "addRules",
+          rules: [{ toolName: "Edit" }],
+          behavior: "allow",
+          destination: "session",
+        },
+      ],
+    });
+    assert.deepEqual(managed.behavior === "allow" ? managed.updatedPermissions : undefined, [
+      {
+        type: "addRules",
+        rules: [{ toolName: "Edit" }],
+        behavior: "allow",
+        destination: "session",
+      },
+    ]);
   });
 
   it("adds a whole-tool session rule when Claude offers no suggestion", () => {
@@ -6436,6 +6462,59 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       } else {
         assert.isUndefined(terminal.failure.resetAt);
       }
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    { cooldown: " (reset after 1h2m3s)", seconds: 3723 },
+    { cooldown: " (reset after 4m 6s) (last error: rate limited)", seconds: 246 },
+    { cooldown: "", seconds: 0 },
+  ])("keeps a gateway's reset on a direct 429 with cooldown '$cooldown'", (input) =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const now = yield* DateTime.now;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-direct-gateway-limit"),
+          text: "Continue.",
+          attachments: [],
+        }),
+      );
+      // An API-key session reports a gateway 429 only as text, with no rate_limit_info.
+      const result = `API Error: Request rejected (429) · All credentials for model claude-opus-5-5 are cooling down${input.cooldown}`;
+      yield* Queue.offerAll(harness.sdkMessages, [
+        makeAssistantErrorFrame({
+          uuid: "00000000-0000-4000-8000-000000000654",
+          error: "rate_limit",
+          text: result,
+        }),
+        makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000000655",
+          result,
+          terminalReason: "api_error",
+          isError: true,
+          apiErrorStatus: 429,
+        }),
+      ]);
+      const terminal = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(terminal.status, "failed");
+      if (terminal.status !== "failed") return;
+      assert.equal(terminal.failure.class, "usage_limit");
+      assert.equal(
+        terminal.failure.resetAt,
+        input.seconds > 0
+          ? DateTime.formatIso(
+              DateTime.makeUnsafe(DateTime.toEpochMillis(now) + input.seconds * 1_000),
+            )
+          : null,
+      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -12986,6 +13065,67 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
         yield* harness.awaitTerminal(1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps a foreground fork running past the placeholder result for its own launch", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-foreground-fork"),
+            text: "Fork this.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeSubagentTaskStartedFrame({
+            taskId: "agent-fork",
+            toolUseId: "toolu-fork",
+            uuid: "00000000-0000-4000-8000-000000000901",
+          }),
+        );
+        // Claude Code opens a foreground fork's own stream with a placeholder result for its launch.
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "user",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "toolu-fork",
+                  content: "Fork started — that fork is you.",
+                },
+              ],
+            },
+            parent_tool_use_id: "toolu-fork",
+            uuid: "00000000-0000-4000-8000-000000000902",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeSubagentNotificationFrame({
+            taskId: "agent-fork",
+            toolUseId: "toolu-fork",
+            summary: "FORK-DONE",
+            uuid: "00000000-0000-4000-8000-000000000903",
+          }),
+        );
+        let settled = yield* Queue.take(harness.subagentReceipts);
+        while (settled.subagent.status === "running") {
+          settled = yield* Queue.take(harness.subagentReceipts);
+        }
+        assert.equal(settled.subagent.result, "FORK-DONE");
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
