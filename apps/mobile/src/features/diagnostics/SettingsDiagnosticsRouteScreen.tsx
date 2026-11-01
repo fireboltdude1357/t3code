@@ -285,8 +285,8 @@ function ConnectionTimingsSection() {
       </SettingsSection>
       <Text className="px-2 text-sm leading-normal text-foreground-muted">
         Timings stay in memory on this device and clear when the app closes. The report covers the
-        latest {connectionTimingLog.capacity} steps. Each line has a trace ID that matches the
-        server&apos;s trace log.
+        latest {connectionTimingLog.capacity} steps. Search the server&apos;s trace log for an HTTP
+        request&apos;s trace ID to find that request.
       </Text>
     </View>
   );

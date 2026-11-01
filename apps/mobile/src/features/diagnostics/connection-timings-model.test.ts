@@ -64,7 +64,7 @@ describe("connection timings", () => {
     }).pipe((effect) => traced(effect, log));
   });
 
-  it("keeps only the newest records, newest first", () => {
+  it("keeps the last records to finish, latest start first", () => {
     const log = makeConnectionTimingLog(3);
     const record = (startedAtMs: number): ConnectionTimingRecord => ({
       phase: { span: "environment.websocket.open", label: "Socket open", keep: [] },
@@ -80,6 +80,8 @@ describe("connection timings", () => {
     for (const startedAtMs of [1, 2, 3, 4, 5]) log.push(record(startedAtMs), null);
     expect(log.records().map((entry) => entry.startedAtMs)).toEqual([5, 4, 3]);
     expect(log.records()).toBe(log.records());
+    log.push(record(0), null);
+    expect(log.records().map((entry) => entry.startedAtMs)).toEqual([5, 4, 0]);
     log.clear();
     expect(log.records()).toEqual([]);
   });

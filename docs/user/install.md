@@ -153,9 +153,9 @@ before sharing.
 
 If connecting, loading the thread list, or opening a thread is slow, open the same
 screen afterwards. **Connection timings** shows how long each step took since the
-app started. **Copy connection report** copies one line per step. Each line has a
-trace ID you can search for in the server's `server.trace.ndjson` to find the matching
-server request.
+app started. **Copy connection report** copies one line per step. Search the server's
+`server.trace.ndjson` for an HTTP request line's trace ID to find that request on the
+server.
 
 ## Providers
 

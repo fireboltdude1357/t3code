@@ -168,7 +168,7 @@ function timingRecord(
 export interface ConnectionTimingLog {
   readonly capacity: number;
   readonly push: (record: ConnectionTimingRecord, environmentLabel: string | null) => void;
-  /** Newest first. Returns the same array until the log changes. */
+  /** Latest start first. Returns the same array until the log changes. */
   readonly records: () => ReadonlyArray<ConnectionTimingRecord>;
   readonly labelFor: (environmentId: string) => string | null;
   readonly clear: () => void;
@@ -181,7 +181,6 @@ export function makeConnectionTimingLog(capacity: number): ConnectionTimingLog {
   const labels = new Map<string, string>();
   const listeners = new Set<() => void>();
   let next = 0;
-  let size = 0;
   let newestFirst: ReadonlyArray<ConnectionTimingRecord> | undefined;
   const changed = () => {
     newestFirst = undefined;
@@ -192,7 +191,6 @@ export function makeConnectionTimingLog(capacity: number): ConnectionTimingLog {
     push: (record, environmentLabel) => {
       ring[next] = record;
       next = (next + 1) % capacity;
-      if (size < capacity) size++;
       if (environmentLabel !== null && record.environmentId !== null) {
         labels.set(record.environmentId, environmentLabel);
       }
@@ -201,18 +199,17 @@ export function makeConnectionTimingLog(capacity: number): ConnectionTimingLog {
     records: () => {
       if (newestFirst !== undefined) return newestFirst;
       const records: ConnectionTimingRecord[] = [];
-      for (let offset = 1; offset <= size; offset++) {
+      for (let offset = 1; offset <= capacity; offset++) {
         const record = ring[(next - offset + capacity) % capacity];
         if (record !== undefined) records.push(record);
       }
-      newestFirst = records;
-      return records;
+      newestFirst = records.sort((a, b) => b.startedAtMs - a.startedAtMs);
+      return newestFirst;
     },
     labelFor: (environmentId) => labels.get(environmentId) ?? null,
     clear: () => {
       ring.fill(undefined);
       next = 0;
-      size = 0;
       changed();
     },
     subscribe: (listener) => {
