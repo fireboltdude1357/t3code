@@ -93,7 +93,13 @@ describe("connection timings", () => {
           phase: {
             span: "EnvironmentShellState.live",
             label: "Thread list live",
-            keep: ["shell.source", "shell.cached", "shell.threads", "shell.projects"],
+            keep: [
+              "shell.resume",
+              "shell.source",
+              "shell.cached",
+              "shell.threads",
+              "shell.projects",
+            ],
           },
           startedAtMs: Date.UTC(2026, 9, 31, 17, 44, 12, 345),
           durationMs: 812.4,
