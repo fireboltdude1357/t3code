@@ -42,8 +42,9 @@ server starts: production and explicitly configured homes use
 worktree uses `~/.t3/dev/logs/server.trace.ndjson`.
 
 The mobile app also sends its connection timings to the environment each one is about. That server
-appends one line per step to `client-timings.ndjson` in the same logs directory, kept as the current file
-plus 5 rotated files of 1 MB each, so they outlast the trace file's rotation.
+appends one line per step to `client-timings.ndjson` in the same logs directory. It keeps the current
+file plus 5 rotated files of 1 MB each, so timings outlast the trace file's rotation. A reconnect
+during a send can save a record twice, so count records by `spanId`.
 
 Important fields common to both record types:
 
