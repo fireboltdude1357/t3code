@@ -28,6 +28,37 @@ const startMilestone = Effect.fnUntraced(function* (name: string, attributes: At
   return span;
 });
 
+/** One span per session: a retry on the same session keeps it, a new session abandons it. */
+const makeSessionMilestone = Effect.fnUntraced(function* (name: string, attributes: Attributes) {
+  let pending: { readonly span: Tracer.Span; readonly session: object } | undefined;
+  const take = () => {
+    const span = pending?.span;
+    pending = undefined;
+    return span;
+  };
+  const abandonPending = Effect.suspend(() => {
+    const span = take();
+    return span === undefined ? Effect.void : abandon(span);
+  });
+  yield* Effect.addFinalizer(() => abandonPending);
+  return {
+    // Untraced for the same reason as startMilestone.
+    start: Effect.fnUntraced(function* (session: object, extra?: Attributes) {
+      if (pending?.session === session) return false;
+      yield* abandonPending;
+      const span = yield* Effect.makeSpan(name, { attributes: { ...attributes, ...extra } });
+      pending = { span, session };
+      return true;
+    }),
+    reach: (extra: () => Attributes) =>
+      Effect.suspend(() => {
+        const span = take();
+        return span === undefined ? Effect.void : reach(span, extra());
+      }),
+    abandon: abandonPending,
+  };
+});
+
 export type ThreadContentSource = "memory" | "cache" | "http" | "socket";
 
 const threadSize = (thread: OrchestrationV2ThreadProjection) => ({
@@ -35,60 +66,60 @@ const threadSize = (thread: OrchestrationV2ThreadProjection) => ({
   "thread.items": thread.visibleTurnItems.length,
 });
 
-/** Times one thread open: to the first projection shown, and to the first completion marker. */
+/** Times a thread open to its first projection shown, and each subscription to its completion marker. */
 export const makeThreadOpenTiming = Effect.fnUntraced(function* (
   environmentId: string,
   threadId: string,
 ) {
   const attributes = { "environment.id": environmentId, "thread.id": threadId };
   const firstContent = yield* startMilestone("EnvironmentThreadState.firstContent", attributes);
-  const live = yield* startMilestone("EnvironmentThreadState.live", attributes);
-  let source: ThreadContentSource | undefined;
+  const live = yield* makeSessionMilestone("EnvironmentThreadState.live", attributes);
+  let subscribed = false;
   return {
-    content: (from: ThreadContentSource, thread: OrchestrationV2ThreadProjection) => {
-      source ??= from;
-      return reach(firstContent, { "thread.source": from, ...threadSize(thread) });
-    },
-    live: (thread: Option.Option<OrchestrationV2ThreadProjection>) =>
-      reach(live, {
-        "thread.source": source ?? "none",
-        ...(Option.isSome(thread) ? threadSize(thread.value) : {}),
+    content: (source: ThreadContentSource, thread: OrchestrationV2ThreadProjection) =>
+      reach(firstContent, { "thread.source": source, ...threadSize(thread) }),
+    subscriptionStarted: (session: object) =>
+      Effect.suspend(() => {
+        const resume = subscribed;
+        subscribed = true;
+        return live.start(session, { "thread.resume": resume });
       }),
+    live: (thread: Option.Option<OrchestrationV2ThreadProjection>) =>
+      live.reach(() => (Option.isSome(thread) ? threadSize(thread.value) : {})),
+    missing: Effect.andThen(abandon(firstContent), live.abandon),
   };
 });
 
-/** Times each new session's shell, from its first subscription to the completion marker. */
+/** Times each session's shell, from its first subscription to the completion marker. */
 export const makeShellSyncTiming = Effect.fnUntraced(function* (
   environmentId: string,
   cachedShown: boolean,
 ) {
-  let pending: { readonly span: Tracer.Span; source: "http" | "socket" } | undefined;
-  yield* Effect.addFinalizer(() => (pending === undefined ? Effect.void : abandon(pending.span)));
+  const live = yield* makeSessionMilestone("EnvironmentShellState.live", {
+    "environment.id": environmentId,
+    "shell.cached": cachedShown,
+  });
+  let source: "http" | "socket" = "socket";
   return {
-    sessionStarted: Effect.gen(function* () {
-      if (pending !== undefined) yield* abandon(pending.span);
-      const span = yield* Effect.makeSpan("EnvironmentShellState.live", {
-        attributes: { "environment.id": environmentId, "shell.cached": cachedShown },
-      });
-      pending = { span, source: "socket" };
-    }),
+    sessionStarted: (session: object) =>
+      live.start(session).pipe(
+        Effect.map((started) => {
+          if (started) source = "socket";
+        }),
+      ),
     httpApplied: Effect.sync(() => {
-      if (pending !== undefined) pending.source = "http";
+      source = "http";
     }),
+    disconnected: live.abandon,
     live: (snapshot: Option.Option<OrchestrationV2ShellSnapshot>) =>
-      Effect.suspend(() => {
-        if (pending === undefined) return Effect.void;
-        const { span, source } = pending;
-        pending = undefined;
-        return reach(span, {
-          "shell.source": source,
-          ...(Option.isSome(snapshot)
-            ? {
-                "shell.threads": snapshot.value.threads.length,
-                "shell.projects": snapshot.value.projects.length,
-              }
-            : {}),
-        });
-      }),
+      live.reach(() => ({
+        "shell.source": source,
+        ...(Option.isSome(snapshot)
+          ? {
+              "shell.threads": snapshot.value.threads.length,
+              "shell.projects": snapshot.value.projects.length,
+            }
+          : {}),
+      })),
   };
 });

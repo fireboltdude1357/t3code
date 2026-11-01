@@ -171,6 +171,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         status: shellStatusForSnapshot(current.snapshot),
       })),
     ),
+    Effect.andThen(syncTiming.disconnected),
     Effect.andThen(flushLiveShellSnapshot.pipe(Effect.forkScoped)),
     Effect.asVoid,
   );
@@ -385,7 +386,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         let canResume = hasAuthoritativeSnapshot;
         let current = yield* SubscriptionRef.get(state);
         if (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot)) {
-          yield* syncTiming.sessionStarted;
+          yield* syncTiming.sessionStarted(session);
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({

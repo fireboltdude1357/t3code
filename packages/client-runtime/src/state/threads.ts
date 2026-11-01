@@ -248,6 +248,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   if (Option.isSome(initialState.data)) {
     yield* openTiming.content(retained ? "memory" : "cache", initialState.data.value);
   }
+  if (initialState.status === "deleted") yield* openTiming.missing;
   const canLoadHistory = Option.isSome(httpClient) && Option.isSome(historyController);
   const acceptsBoundedSocketSnapshots = yield* Ref.make(canLoadHistory);
   const lastSequence = yield* SubscriptionRef.make(initialSequence);
@@ -455,6 +456,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
     yield* Ref.set(awaitingCompletion, false);
+    yield* openTiming.missing;
     yield* SubscriptionRef.set(state, {
       data: Option.none(),
       status: "deleted",
@@ -613,7 +615,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           ? { ...current, status: "live" as const, error: Option.none() }
           : current,
       );
-      yield* openTiming.live(synchronized.data);
+      if (synchronized.status === "live") yield* openTiming.live(synchronized.data);
       return;
     }
 
@@ -956,6 +958,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
         yield* Effect.ignore(session.initialConfig);
         yield* Ref.set(awaitingCompletion, true);
+        yield* openTiming.subscriptionStarted(session);
         yield* markSynchronizing;
         yield* Ref.set(resumingLive, false);
 

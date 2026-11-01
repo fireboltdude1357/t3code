@@ -57,7 +57,7 @@ const PHASES = [
   {
     span: "EnvironmentThreadState.live",
     label: "Thread live",
-    keep: ["thread.source", "thread.messages", "thread.items", "thread.id"],
+    keep: ["thread.resume", "thread.messages", "thread.items", "thread.id"],
   },
 ] as const satisfies ReadonlyArray<PhaseSpec>;
 

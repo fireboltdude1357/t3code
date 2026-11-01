@@ -26,61 +26,79 @@ const capture = () => {
 };
 
 describe("syncTimings", () => {
-  it.effect("thread open ends each milestone once, with the first content source", () => {
+  it.effect("thread open times first content once and each session's catch-up", () => {
     const { tracer, ended } = capture();
+    const [first, second] = [{}, {}];
     return Effect.gen(function* () {
       yield* Effect.scoped(
         Effect.gen(function* () {
           const timing = yield* makeThreadOpenTiming("env-1", "thread-1");
+          yield* timing.subscriptionStarted(first);
+          yield* timing.subscriptionStarted(first);
           yield* timing.content("cache", v2Projection);
           yield* timing.content("socket", v2Projection);
           yield* timing.live(Option.some(v2Projection));
+          yield* timing.subscriptionStarted(first);
+          yield* timing.subscriptionStarted(second);
           yield* timing.live(Option.some(v2Projection));
         }),
       );
-      yield* Effect.scoped(makeThreadOpenTiming("env-1", "thread-2"));
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const timing = yield* makeThreadOpenTiming("env-1", "thread-2");
+          yield* timing.subscriptionStarted(first);
+          yield* timing.missing;
+        }),
+      );
 
       const firstContent = ended("EnvironmentThreadState.firstContent");
-      const live = ended("EnvironmentThreadState.live");
       expect(firstContent).toHaveLength(2);
-      expect(live).toHaveLength(2);
       expect(firstContent[0]?.attributes).toMatchObject({
         "environment.id": "env-1",
         "thread.source": "cache",
         "thread.messages": v2Projection.messages.length,
       });
-      expect(live[0]?.attributes["thread.source"]).toBe("cache");
-      expect(Exit.isSuccess(live[0]!.exit)).toBe(true);
-      expect(Exit.hasInterrupts(live[1]!.exit)).toBe(true);
+      expect(Exit.hasInterrupts(firstContent[1]!.exit)).toBe(true);
+      const live = ended("EnvironmentThreadState.live");
+      expect(
+        live.map(({ attributes, exit }) => [attributes["thread.resume"], Exit.isSuccess(exit)]),
+      ).toEqual([
+        [false, true],
+        [true, false],
+        [true, true],
+        [false, false],
+      ]);
     }).pipe(Effect.provideService(Tracer.Tracer, tracer));
   });
 
-  it.effect("a new session or a closed scope abandons the pending shell sync", () => {
+  it.effect("shell sync spans a session's retries and ends on a new session or disconnect", () => {
     const { tracer, ended } = capture();
+    const [first, second, third] = [{}, {}, {}];
     return Effect.gen(function* () {
       yield* Effect.scoped(
         Effect.gen(function* () {
           const timing = yield* makeShellSyncTiming("env-1", true);
-          yield* timing.sessionStarted;
-          yield* timing.sessionStarted;
+          yield* timing.sessionStarted(first);
+          yield* timing.sessionStarted(first);
           yield* timing.httpApplied;
           yield* timing.live(Option.some(v2ShellSnapshot));
           yield* timing.live(Option.some(v2ShellSnapshot));
-          yield* timing.sessionStarted;
+          yield* timing.sessionStarted(second);
+          yield* timing.disconnected;
+          yield* timing.sessionStarted(third);
         }),
       );
 
       const live = ended("EnvironmentShellState.live");
-      expect(live).toHaveLength(3);
-      expect(Exit.hasInterrupts(live[0]!.exit)).toBe(true);
-      expect(Exit.hasInterrupts(live[2]!.exit)).toBe(true);
-      expect(live[1]?.attributes).toEqual({
+      expect(live.map(({ exit }) => Exit.isSuccess(exit))).toEqual([true, false, false]);
+      expect(live[0]?.attributes).toEqual({
         "environment.id": "env-1",
         "shell.cached": true,
         "shell.source": "http",
         "shell.threads": v2ShellSnapshot.threads.length,
         "shell.projects": v2ShellSnapshot.projects.length,
       });
+      expect(live[1]?.attributes["shell.source"]).toBeUndefined();
     }).pipe(Effect.provideService(Tracer.Tracer, tracer));
   });
 });
