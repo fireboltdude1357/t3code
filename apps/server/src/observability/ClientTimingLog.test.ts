@@ -5,10 +5,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ClientTimingLog from "./ClientTimingLog.ts";
 
 it.layer(NodeServices.layer)("ClientTimingLog", (it) => {
-  it.effect("writes one line per record with the session and app that sent it", () =>
+  it.effect("writes one line per record with the session, server and app that sent it", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -17,7 +18,7 @@ it.layer(NodeServices.layer)("ClientTimingLog", (it) => {
         "client-timings.ndjson",
       );
       const log = yield* ClientTimingLog.make(filePath);
-      const app = { platform: "ios", version: "1.2.3", build: "45" };
+      const app = { platform: "ios", version: "1.2.3", build: "45", updateId: "update-1" };
       const record = {
         span: "EnvironmentShellState.live",
         startedAtMs: 1_000,
@@ -44,11 +45,13 @@ it.layer(NodeServices.layer)("ClientTimingLog", (it) => {
         .trimEnd()
         .split("\n")
         .map((line) => JSON.parse(line));
+      const server = { version: packageJson.version, load1m: expect.any(Number) };
       expect(lines).toEqual([
-        { receivedAt: "1970-01-01T00:00:00.000Z", sessionId: "session-1", app, ...record },
+        { receivedAt: "1970-01-01T00:00:00.000Z", sessionId: "session-1", server, app, ...record },
         {
           receivedAt: "1970-01-01T00:00:00.000Z",
           sessionId: "session-1",
+          server,
           app,
           ...record,
           spanId: "b",
