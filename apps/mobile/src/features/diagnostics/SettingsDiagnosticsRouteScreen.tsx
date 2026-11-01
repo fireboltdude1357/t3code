@@ -1,7 +1,5 @@
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import * as Application from "expo-application";
-import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
@@ -20,6 +18,7 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
+import { appIdentity } from "./app-identity";
 import {
   formatStartupCrashReport,
   parseStartupCrashRecords,
@@ -65,15 +64,6 @@ const UNAVAILABLE_CRASH_LOG_ATOM = Atom.make(
 function useCrashLogState(): CrashLogState {
   const result = useAtomValue(Updates.isEnabled ? crashLogAtom : UNAVAILABLE_CRASH_LOG_ATOM);
   return AsyncResult.isSuccess(result) ? result.value : { status: "loading" };
-}
-
-function appIdentity() {
-  return {
-    version: Constants.expoConfig?.version ?? "0.0.0",
-    // EAS assigns build numbers remotely, so expo-constants never sees them;
-    // only the installed binary knows its own.
-    build: Application.nativeBuildVersion ?? "dev",
-  };
 }
 
 export function SettingsDiagnosticsRouteScreen() {
@@ -284,9 +274,10 @@ function ConnectionTimingsSection() {
         />
       </SettingsSection>
       <Text className="px-2 text-sm leading-normal text-foreground-muted">
-        Timings stay in memory on this device and clear when the app closes. The report covers the
-        latest {connectionTimingLog.capacity} steps. Search the server&apos;s trace log for an HTTP
-        request&apos;s trace ID to find that request.
+        This screen keeps the latest {connectionTimingLog.capacity} steps in memory until the app
+        closes. Each step is also sent to the environment it is about, which saves it in its logs as
+        client-timings.ndjson. Clearing timings clears only this screen. Search the server&apos;s
+        trace log for an HTTP request&apos;s trace ID to find that request.
       </Text>
     </View>
   );

@@ -1,3 +1,4 @@
+import type { ClientTimingRecord } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -223,6 +224,65 @@ export function makeConnectionTimingLog(capacity: number): ConnectionTimingLog {
 
 export const connectionTimingLog = makeConnectionTimingLog(200);
 
+export interface ConnectionTimingOutbox {
+  readonly capacity: number;
+  /** Keeps a record for its environment; a record with no environment stays local. */
+  readonly enqueue: (record: ConnectionTimingRecord) => void;
+  /** Removes and returns up to `max` of the environment's oldest records. */
+  readonly take: (environmentId: string, max: number) => ReadonlyArray<ConnectionTimingRecord>;
+  /** Returns an unsent batch ahead of records queued since it was taken. */
+  readonly requeue: (environmentId: string, batch: ReadonlyArray<ConnectionTimingRecord>) => void;
+  readonly subscribe: (environmentId: string, listener: () => void) => () => void;
+}
+
+/** Records waiting to reach the environment they describe, at most `capacity` per environment. */
+export function makeConnectionTimingOutbox(capacity: number): ConnectionTimingOutbox {
+  const queues = new Map<string, ReadonlyArray<ConnectionTimingRecord>>();
+  const listeners = new Map<string, Set<() => void>>();
+  const store = (environmentId: string, records: ReadonlyArray<ConnectionTimingRecord>) => {
+    queues.set(environmentId, records.length > capacity ? records.slice(-capacity) : records);
+  };
+  return {
+    capacity,
+    enqueue: (record) => {
+      if (record.environmentId === null) return;
+      store(record.environmentId, [...(queues.get(record.environmentId) ?? []), record]);
+      for (const listener of listeners.get(record.environmentId) ?? []) listener();
+    },
+    take: (environmentId, max) => {
+      const queued = queues.get(environmentId) ?? [];
+      store(environmentId, queued.slice(max));
+      return queued.slice(0, max);
+    },
+    requeue: (environmentId, batch) => {
+      store(environmentId, [...batch, ...(queues.get(environmentId) ?? [])]);
+    },
+    subscribe: (environmentId, listener) => {
+      const environmentListeners = listeners.get(environmentId) ?? new Set();
+      listeners.set(environmentId, environmentListeners);
+      environmentListeners.add(listener);
+      return () => {
+        environmentListeners.delete(listener);
+      };
+    },
+  };
+}
+
+export const connectionTimingOutbox = makeConnectionTimingOutbox(200);
+
+export function toClientTimingRecord(record: ConnectionTimingRecord): ClientTimingRecord {
+  return {
+    span: record.phase.span,
+    startedAtMs: record.startedAtMs,
+    durationMs: record.durationMs,
+    outcome: record.outcome,
+    failure: record.failure,
+    traceId: record.traceId,
+    spanId: record.spanId,
+    attributes: Object.fromEntries(record.attributes),
+  };
+}
+
 /**
  * Wraps a tracer so registered spans land in `log` when they end. Spans pass
  * through untouched; an unregistered span costs one map lookup.
@@ -230,6 +290,7 @@ export const connectionTimingLog = makeConnectionTimingLog(200);
 export function recordConnectionTimings(
   delegate: Tracer.Tracer,
   log: ConnectionTimingLog = connectionTimingLog,
+  outbox: ConnectionTimingOutbox = connectionTimingOutbox,
 ): Tracer.Tracer {
   return Tracer.make({
     span(options) {
@@ -240,10 +301,9 @@ export function recordConnectionTimings(
       span.end = (endTime, exit) => {
         end(endTime, exit);
         if ("within" in phase && !hasAncestor(span, phase.within)) return;
-        log.push(
-          timingRecord(phase, span, options.startTime, endTime, exit),
-          findAttribute(span, ["environment.label"]),
-        );
+        const record = timingRecord(phase, span, options.startTime, endTime, exit);
+        log.push(record, findAttribute(span, ["environment.label"]));
+        outbox.enqueue(record);
       };
       return span;
     },

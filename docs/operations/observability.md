@@ -41,6 +41,10 @@ server starts: production and explicitly configured homes use
 `<worktree>/.t3/userdata/logs/server.trace.ndjson`, and an implicit dev run outside a linked
 worktree uses `~/.t3/dev/logs/server.trace.ndjson`.
 
+The mobile app also sends its connection timings to the environment each one is about. That server
+appends one line per step to `client-timings.ndjson` in the same logs directory, kept for 5 files of
+1 MB, so they outlast the trace file's rotation.
+
 Important fields common to both record types:
 
 - `type`: `effect-span` or `otlp-span`

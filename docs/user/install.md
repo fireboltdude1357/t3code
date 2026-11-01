@@ -157,6 +157,10 @@ app started. **Copy connection report** copies one line per step. Search the ser
 `server.trace.ndjson` for an HTTP request line's trace ID to find that request on the
 server.
 
+The app also sends each timing to the environment it is about, which saves it in
+`client-timings.ndjson` in its logs directory. **Clear timings** clears only this
+screen. Timings already waiting to be sent are still sent.
+
 ## Providers
 
 Open **Settings → Providers** in the web or desktop app, select the environment,

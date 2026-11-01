@@ -6,20 +6,38 @@ import {
   type ConnectionTimingRecord,
   formatConnectionTimingReport,
   makeConnectionTimingLog,
+  makeConnectionTimingOutbox,
   recordConnectionTimings,
 } from "./connection-timings-model";
 
 const traced = <A, E>(
   effect: Effect.Effect<A, E>,
   log: ReturnType<typeof makeConnectionTimingLog>,
+  outbox = makeConnectionTimingOutbox(10),
 ) =>
   effect.pipe(
-    Effect.provideService(Tracer.Tracer, recordConnectionTimings(Tracer.nativeTracer, log)),
+    Effect.provideService(Tracer.Tracer, recordConnectionTimings(Tracer.nativeTracer, log, outbox)),
   );
+
+const timing = (
+  startedAtMs: number,
+  environmentId: string | null = null,
+): ConnectionTimingRecord => ({
+  phase: { span: "environment.websocket.open", label: "Socket open", keep: [] },
+  startedAtMs,
+  durationMs: 1,
+  outcome: "ok",
+  failure: null,
+  environmentId,
+  traceId: "t",
+  spanId: `s${startedAtMs}`,
+  attributes: [],
+});
 
 describe("connection timings", () => {
   it.effect("records registered spans with their environment, outcome, and trace", () => {
     const log = makeConnectionTimingLog(10);
+    const outbox = makeConnectionTimingOutbox(10);
     return Effect.gen(function* () {
       yield* Effect.void.pipe(
         Effect.withSpan("environment.initialSync"),
@@ -61,29 +79,38 @@ describe("connection timings", () => {
       });
       expect(request).toMatchObject({ outcome: "failed", failure: "RemoteUnavailable" });
       expect(log.labelFor("env-1")).toBe("Desk");
-    }).pipe((effect) => traced(effect, log));
+
+      // Only records about an environment are sent, and clearing the screen keeps them queued.
+      log.clear();
+      expect(outbox.take("env-1", 10)).toEqual([initialSync, establish]);
+    }).pipe((effect) => traced(effect, log, outbox));
   });
 
   it("keeps the last records to finish, latest start first", () => {
     const log = makeConnectionTimingLog(3);
-    const record = (startedAtMs: number): ConnectionTimingRecord => ({
-      phase: { span: "environment.websocket.open", label: "Socket open", keep: [] },
-      startedAtMs,
-      durationMs: 1,
-      outcome: "ok",
-      failure: null,
-      environmentId: null,
-      traceId: "t",
-      spanId: `s${startedAtMs}`,
-      attributes: [],
-    });
-    for (const startedAtMs of [1, 2, 3, 4, 5]) log.push(record(startedAtMs), null);
+    for (const startedAtMs of [1, 2, 3, 4, 5]) log.push(timing(startedAtMs), null);
     expect(log.records().map((entry) => entry.startedAtMs)).toEqual([5, 4, 3]);
     expect(log.records()).toBe(log.records());
-    log.push(record(0), null);
+    log.push(timing(0), null);
     expect(log.records().map((entry) => entry.startedAtMs)).toEqual([5, 4, 0]);
     log.clear();
     expect(log.records()).toEqual([]);
+  });
+
+  it("queues each environment's newest records and returns an unsent batch ahead of newer ones", () => {
+    const outbox = makeConnectionTimingOutbox(3);
+    const started = (records: ReadonlyArray<ConnectionTimingRecord>) =>
+      records.map((record) => record.startedAtMs);
+    for (const startedAtMs of [1, 2, 3, 4]) outbox.enqueue(timing(startedAtMs, "env-1"));
+    outbox.enqueue(timing(10, "env-2"));
+
+    const batch = outbox.take("env-1", 2);
+    expect(started(batch)).toEqual([2, 3]);
+    outbox.enqueue(timing(5, "env-1"));
+    outbox.requeue("env-1", batch);
+    expect(started(outbox.take("env-1", 10))).toEqual([3, 4, 5]);
+    expect(started(outbox.take("env-2", 10))).toEqual([10]);
+    expect(outbox.take("env-1", 10)).toEqual([]);
   });
 
   it("formats one greppable line per record", () => {
