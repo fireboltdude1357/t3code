@@ -1,3 +1,4 @@
+import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { useAtomValue } from "@effect/atom-react";
 import {
   createEnvironmentThreadDetailAtoms,
@@ -45,6 +46,10 @@ export const environmentThreads = createEnvironmentThreadStateAtoms(connectionAt
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
   environmentThreads.stateAtom,
 );
+export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
+  childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,
+  pendingRequestsAtom: environmentThreadDetails.pendingRequestsAtom,
+});
 
 // Long enough for the opened screen to subscribe; its subscription keeps the thread after this.
 const OPENING_THREAD_HOLD_MS = 3_000;
