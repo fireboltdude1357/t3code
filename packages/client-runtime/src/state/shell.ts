@@ -385,8 +385,11 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         const hasAuthoritativeSnapshot = (yield* Ref.get(lastAuthoritativeSession)) === session;
         let canResume = hasAuthoritativeSnapshot;
         let current = yield* SubscriptionRef.get(state);
+        yield* syncTiming.subscriptionStarted(
+          session,
+          hasAuthoritativeSnapshot && Option.isSome(current.snapshot),
+        );
         if (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot)) {
-          yield* syncTiming.sessionStarted(session);
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({

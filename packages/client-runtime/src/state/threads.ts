@@ -387,6 +387,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
     }));
+    yield* openTiming.disconnected;
   });
   const setStreamError = (message: string) =>
     Ref.set(awaitingCompletion, false).pipe(

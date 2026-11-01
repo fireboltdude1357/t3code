@@ -41,6 +41,8 @@ describe("syncTimings", () => {
           yield* timing.subscriptionStarted(first);
           yield* timing.subscriptionStarted(second);
           yield* timing.live(Option.some(v2Projection));
+          yield* timing.subscriptionStarted(second);
+          yield* timing.disconnected;
         }),
       );
       yield* Effect.scoped(
@@ -66,6 +68,7 @@ describe("syncTimings", () => {
         [false, true],
         [true, false],
         [true, true],
+        [true, false],
         [false, false],
       ]);
     }).pipe(Effect.provideService(Tracer.Tracer, tracer));
@@ -78,27 +81,31 @@ describe("syncTimings", () => {
       yield* Effect.scoped(
         Effect.gen(function* () {
           const timing = yield* makeShellSyncTiming("env-1", true);
-          yield* timing.sessionStarted(first);
-          yield* timing.sessionStarted(first);
+          yield* timing.subscriptionStarted(first, false);
+          yield* timing.subscriptionStarted(first, false);
           yield* timing.httpApplied;
           yield* timing.live(Option.some(v2ShellSnapshot));
           yield* timing.live(Option.some(v2ShellSnapshot));
-          yield* timing.sessionStarted(second);
+          yield* timing.subscriptionStarted(first, true);
+          yield* timing.live(Option.none());
+          yield* timing.subscriptionStarted(second, false);
           yield* timing.disconnected;
-          yield* timing.sessionStarted(third);
+          yield* timing.subscriptionStarted(third, false);
         }),
       );
 
       const live = ended("EnvironmentShellState.live");
-      expect(live.map(({ exit }) => Exit.isSuccess(exit))).toEqual([true, false, false]);
+      expect(live.map(({ exit }) => Exit.isSuccess(exit))).toEqual([true, true, false, false]);
       expect(live[0]?.attributes).toEqual({
         "environment.id": "env-1",
         "shell.cached": true,
+        "shell.resume": false,
         "shell.source": "http",
         "shell.threads": v2ShellSnapshot.threads.length,
         "shell.projects": v2ShellSnapshot.projects.length,
       });
-      expect(live[1]?.attributes["shell.source"]).toBeUndefined();
+      expect(live[1]?.attributes).toMatchObject({ "shell.resume": true, "shell.source": "socket" });
+      expect(live[2]?.attributes["shell.source"]).toBeUndefined();
     }).pipe(Effect.provideService(Tracer.Tracer, tracer));
   });
 });

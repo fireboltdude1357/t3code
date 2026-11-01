@@ -86,11 +86,12 @@ export const makeThreadOpenTiming = Effect.fnUntraced(function* (
       }),
     live: (thread: Option.Option<OrchestrationV2ThreadProjection>) =>
       live.reach(() => (Option.isSome(thread) ? threadSize(thread.value) : {})),
+    disconnected: live.abandon,
     missing: Effect.andThen(abandon(firstContent), live.abandon),
   };
 });
 
-/** Times each session's shell, from its first subscription to the completion marker. */
+/** Times each shell subscription to its completion marker; same-session retries share one span. */
 export const makeShellSyncTiming = Effect.fnUntraced(function* (
   environmentId: string,
   cachedShown: boolean,
@@ -101,8 +102,8 @@ export const makeShellSyncTiming = Effect.fnUntraced(function* (
   });
   let source: "http" | "socket" = "socket";
   return {
-    sessionStarted: (session: object) =>
-      live.start(session).pipe(
+    subscriptionStarted: (session: object, resume: boolean) =>
+      live.start(session, { "shell.resume": resume }).pipe(
         Effect.map((started) => {
           if (started) source = "socket";
         }),

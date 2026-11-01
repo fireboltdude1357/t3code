@@ -47,7 +47,7 @@ const PHASES = [
   {
     span: "EnvironmentShellState.live",
     label: "Thread list live",
-    keep: ["shell.source", "shell.cached", "shell.threads", "shell.projects"],
+    keep: ["shell.resume", "shell.source", "shell.cached", "shell.threads", "shell.projects"],
   },
   {
     span: "EnvironmentThreadState.firstContent",
