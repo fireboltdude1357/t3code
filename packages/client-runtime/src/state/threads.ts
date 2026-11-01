@@ -363,6 +363,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
   yield* runCachePersistence(persistence, persist).pipe(Effect.forkScoped);
 
+  const endStaleSyncTiming = SubscriptionRef.get(supervisor.session).pipe(
+    Effect.flatMap(openTiming.sessionChanged),
+  );
   const setConnecting = SubscriptionRef.update(state, (current) =>
     current.status === "deleted" || Option.isSome(current.error)
       ? current
@@ -371,7 +374,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           status: "synchronizing" as const,
           error: Option.none(),
         },
-  );
+  ).pipe(Effect.andThen(endStaleSyncTiming));
   const setReady = SubscriptionRef.update(state, (current) =>
     current.status === "live" || current.status === "deleted" || Option.isSome(current.error)
       ? current
@@ -387,7 +390,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
     }));
-    yield* openTiming.disconnected;
+    yield* endStaleSyncTiming;
   });
   const setStreamError = (message: string) =>
     Ref.set(awaitingCompletion, false).pipe(

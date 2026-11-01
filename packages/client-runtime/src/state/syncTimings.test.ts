@@ -42,7 +42,8 @@ describe("syncTimings", () => {
           yield* timing.subscriptionStarted(second);
           yield* timing.live(Option.some(v2Projection));
           yield* timing.subscriptionStarted(second);
-          yield* timing.disconnected;
+          yield* timing.sessionChanged(Option.some(second));
+          yield* timing.sessionChanged(Option.none());
         }),
       );
       yield* Effect.scoped(
@@ -89,7 +90,8 @@ describe("syncTimings", () => {
           yield* timing.subscriptionStarted(first, true);
           yield* timing.live(Option.none());
           yield* timing.subscriptionStarted(second, false);
-          yield* timing.disconnected;
+          yield* timing.sessionChanged(Option.some(second));
+          yield* timing.sessionChanged(Option.some(third));
           yield* timing.subscriptionStarted(third, false);
         }),
       );

@@ -56,6 +56,13 @@ const makeSessionMilestone = Effect.fnUntraced(function* (name: string, attribut
         return span === undefined ? Effect.void : reach(span, extra());
       }),
     abandon: abandonPending,
+    /** Abandons the pending span unless its session is still the current one. */
+    sessionChanged: (current: Option.Option<object>) =>
+      Effect.suspend(() =>
+        pending === undefined || Option.contains(current, pending.session)
+          ? Effect.void
+          : abandonPending,
+      ),
   };
 });
 
@@ -86,7 +93,7 @@ export const makeThreadOpenTiming = Effect.fnUntraced(function* (
       }),
     live: (thread: Option.Option<OrchestrationV2ThreadProjection>) =>
       live.reach(() => (Option.isSome(thread) ? threadSize(thread.value) : {})),
-    disconnected: live.abandon,
+    sessionChanged: live.sessionChanged,
     missing: Effect.andThen(abandon(firstContent), live.abandon),
   };
 });
@@ -111,7 +118,7 @@ export const makeShellSyncTiming = Effect.fnUntraced(function* (
     httpApplied: Effect.sync(() => {
       source = "http";
     }),
-    disconnected: live.abandon,
+    sessionChanged: live.sessionChanged,
     live: (snapshot: Option.Option<OrchestrationV2ShellSnapshot>) =>
       live.reach(() => ({
         "shell.source": source,

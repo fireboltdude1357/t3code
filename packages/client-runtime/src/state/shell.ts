@@ -164,6 +164,9 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
 
   yield* runCachePersistence(persistence, persist).pipe(Effect.forkScoped);
 
+  const endStaleSyncTiming = SubscriptionRef.get(supervisor.session).pipe(
+    Effect.flatMap(syncTiming.sessionChanged),
+  );
   const setDisconnected = Ref.set(awaitingCompletion, false).pipe(
     Effect.andThen(
       SubscriptionRef.update(state, (current) => ({
@@ -171,7 +174,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         status: shellStatusForSnapshot(current.snapshot),
       })),
     ),
-    Effect.andThen(syncTiming.disconnected),
+    Effect.andThen(endStaleSyncTiming),
     Effect.andThen(flushLiveShellSnapshot.pipe(Effect.forkScoped)),
     Effect.asVoid,
   );
@@ -455,7 +458,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     Stream.runForEach((connectionState) => {
       switch (connectionProjectionPhase(connectionState)) {
         case "synchronizing":
-          return setSynchronizing;
+          return Effect.andThen(setSynchronizing, endStaleSyncTiming);
         case "disconnected":
           return setDisconnected;
         case "ready":
