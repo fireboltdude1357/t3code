@@ -18,10 +18,12 @@ import serverPackageJson from "../../../server/package.json" with { type: "json"
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopCliShim from "../app/DesktopCliShim.ts";
+import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import { resolveAutoUpdateDisabledReason } from "../updates/autoUpdateSupport.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
 
@@ -486,6 +488,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       readonly resourceMonitorPath: Option.Option<string>;
       readonly cliPath: Option.Option<string>;
       readonly shellEnvironmentPrepared: boolean;
+      readonly desktopAppUpdate: boolean;
     },
   ): Effect.fn.Return<
     DesktopBackendManager.DesktopBackendStartConfig,
@@ -505,6 +508,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       desktopBootstrapToken: input.bootstrapToken,
       desktopBootstrapSecret: input.bootstrapSecret,
       shellEnvironmentPrepared: input.shellEnvironmentPrepared,
+      desktopAppUpdate: input.desktopAppUpdate,
       tailscaleServeEnabled: backendExposure.tailscaleServeEnabled,
       tailscaleServePort: backendExposure.tailscaleServePort,
       desktopTelemetryFd: 4,
@@ -715,6 +719,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const config = yield* DesktopConfig.DesktopConfig;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -783,11 +788,16 @@ export const make = Effect.gen(function* () {
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
     );
     const shellEnvironmentPrepared = yield* shellEnvironment.installIntoProcess;
+    const autoUpdateDisabledReason = yield* resolveAutoUpdateDisabledReason(config).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+    );
     return yield* resolvePrimaryStartConfig({
       ...shared,
       resourceMonitorPath,
       cliPath,
       shellEnvironmentPrepared,
+      desktopAppUpdate: Option.isNone(autoUpdateDisabledReason),
     }).pipe(
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
       Effect.provideService(DesktopServerExposure.DesktopServerExposure, serverExposure),
