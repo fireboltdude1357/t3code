@@ -12,6 +12,7 @@ import {
   type EnvironmentThreadStatus,
   type ThreadHistoryMeta,
 } from "@t3tools/client-runtime/state/threads";
+import { makeBotProjectKeysAtom } from "@t3tools/client-runtime/state/thread-inbox";
 import {
   arrayElementsEqual,
   parseThreadKey,
@@ -35,7 +36,7 @@ import {
   allEnvironmentProjectSnapshotsReadyAtom,
   allEnvironmentShellsBootstrappedAtom,
 } from "./shell";
-import { environmentThreadDetails, environmentThreadShells } from "./threads";
+import { environmentThreadDetails, environmentThreadShells, olderSettledThreads } from "./threads";
 import { waitForAtomValue } from "./waitForAtomValue";
 
 const EMPTY_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
@@ -105,6 +106,17 @@ export function useThreadShells(enabled = true): ReadonlyArray<EnvironmentThread
   return useAtomValue(
     enabled ? environmentThreadShells.threadShellsAtom : EMPTY_THREAD_SHELLS_ATOM,
   );
+}
+
+const botProjectKeysAtom = makeBotProjectKeysAtom({
+  projectsAtom: environmentProjects.projectsAtom,
+  threadShellsAtom: environmentThreadShells.threadShellsAtom,
+  olderSettledAtom: olderSettledThreads.olderSettledAtom,
+});
+
+/** Projects only bots work in, as `environmentId:projectId` keys. */
+export function useBotProjectKeys(): ReadonlySet<string> {
+  return useAtomValue(botProjectKeysAtom);
 }
 
 export function useAllEnvironmentShellsBootstrapped(): boolean {
