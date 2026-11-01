@@ -2,8 +2,8 @@
 
 Permission modes control when an agent needs your approval to act. Choose a mode in the message
 composer; it applies to that thread. A new thread names its mode under the composer. In a thread
-on your default mode, open **Permissions** from the effort menu or press `mod+shift+a`. A thread on
-another mode, or a model without an effort menu, shows the mode next to the model.
+on your default mode, open the model picker and choose **Permissions** at its bottom, or press
+`mod+shift+a`. A thread on another mode shows the mode next to the model.
 
 Set the default for new threads in **Settings → Threads → New threads → Permissions**.
 Projects can override the environment default. New threads use this setting rather than the
@@ -18,7 +18,8 @@ and modes you choose in a draft keep their permissions.
 | **Full access**       | Allows commands and edits without approval prompts.                                   |
 
 Approve or reject requests in the conversation to let the agent continue. Permission modes do
-not prevent the agent from asking questions about the task.
+not prevent the agent from asking questions about the task. Subagent approval requests appear in
+the parent conversation with the subagent's name, so you can respond without switching threads.
 
 ## Provider differences
 
@@ -42,7 +43,9 @@ by the permission mode. See [ACP Registry permissions](./providers-acp.md#permis
 
 Claude asks in **Full access** only when it is not running in bypass permissions, such as when its
 settings disable bypass. In Full access, T3 Code approves the requests Claude still forwards,
-including ask rules from your Claude settings.
+including ask rules from your Claude settings. Dangerous-removal safety checks are the exception:
+they reject the command with the original warning. Claude can use a safe rewrite when the warning
+supplies one; otherwise it continues without the removal and tells you what it skipped.
 While a Claude approval is pending, type a text reply to decline that request and give feedback
 directly to the agent that asked, including a subagent. Other pending requests stay unanswered.
 
