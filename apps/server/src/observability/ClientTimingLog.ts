@@ -4,6 +4,9 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as NodeOS from "node:os";
+
+import packageJson from "../../package.json" with { type: "json" };
 
 import * as ServerConfig from "../config.ts";
 
@@ -35,9 +38,12 @@ export const make = Effect.fn("ClientTimingLog.make")(function* (filePath: strin
     append: Effect.fn("ClientTimingLog.append")(function* ({ sessionId, report }) {
       if (sink === undefined || report.records.length === 0) return;
       const receivedAt = DateTime.formatIso(yield* DateTime.now);
+      const [load1m = 0] = NodeOS.loadavg();
+      const server = { version: packageJson.version, load1m: Math.round(load1m * 100) / 100 };
       const lines = report.records
         .map(
-          (record) => `${JSON.stringify({ receivedAt, sessionId, app: report.app, ...record })}\n`,
+          (record) =>
+            `${JSON.stringify({ receivedAt, sessionId, server, app: report.app, ...record })}\n`,
         )
         .join("");
       yield* sink

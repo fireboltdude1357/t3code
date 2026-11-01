@@ -30,6 +30,7 @@ export const ClientTimingReport = Schema.Struct({
     platform: Schema.String,
     version: Schema.String,
     build: Schema.String,
+    updateId: Schema.optional(Schema.String),
   }),
   records: Schema.Array(ClientTimingRecord).check(
     Schema.isMaxLength(CLIENT_TIMING_REPORT_MAX_RECORDS),

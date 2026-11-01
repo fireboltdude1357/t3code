@@ -44,7 +44,9 @@ worktree uses `~/.t3/dev/logs/server.trace.ndjson`.
 The mobile app also sends its connection timings to the environment each one is about. That server
 appends one line per step to `client-timings.ndjson` in the same logs directory. It keeps the current
 file plus 5 rotated files of 1 MB each, so timings outlast the trace file's rotation. A reconnect
-during a send can save a record twice, so count records by `spanId`.
+during a send can save a record twice, so count records by `spanId`. Each line carries the server's
+version and 1-minute load average in `server`, and the app's version, native build and running OTA
+`updateId` in `app`. An absent `updateId` means the app ran the bundle embedded in its binary.
 
 Important fields common to both record types:
 
