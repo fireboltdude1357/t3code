@@ -10,7 +10,7 @@ export function appIdentity() {
     // EAS assigns build numbers remotely, so expo-constants never sees them;
     // only the installed binary knows its own.
     build: Application.nativeBuildVersion ?? "dev",
-    // Absent when the app runs the bundle embedded in its binary.
-    ...(Updates.updateId ? { updateId: Updates.updateId } : {}),
+    // The embedded bundle has an update ID too; only an OTA update's is sent.
+    ...(Updates.updateId && !Updates.isEmbeddedLaunch ? { updateId: Updates.updateId } : {}),
   };
 }
