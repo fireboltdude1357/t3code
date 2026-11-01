@@ -24,7 +24,7 @@ const timing = (startedAtMs: number): ConnectionTimingRecord => ({
 });
 
 it.effect(
-  "sends after a quiet period, keeps a failed batch, and stops when the server rejects the method",
+  "sends 5 s after new timings, keeps a failed batch, and stops when the server rejects the method",
   () =>
     Effect.gen(function* () {
       const outbox = makeConnectionTimingOutbox(200);
@@ -56,4 +56,22 @@ it.effect(
         Array.from({ length: 11 }, (_, index) => 50 + index),
       );
     }),
+);
+
+it.effect("sends timings that keep arriving less than 5 s apart", () =>
+  Effect.gen(function* () {
+    const outbox = makeConnectionTimingOutbox(200);
+    const sent = yield* Queue.unbounded<number>();
+    yield* sendWhileConnected("env-1", outbox, (records) => Queue.offer(sent, records.length)).pipe(
+      Stream.runDrain,
+      Effect.forkChild,
+    );
+
+    yield* TestClock.adjust("5 seconds");
+    outbox.enqueue(timing(0));
+    yield* TestClock.adjust("4 seconds");
+    outbox.enqueue(timing(1));
+    yield* TestClock.adjust("1 second");
+    expect(yield* Queue.take(sent)).toBe(2);
+  }),
 );

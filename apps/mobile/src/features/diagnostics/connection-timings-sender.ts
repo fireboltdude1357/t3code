@@ -21,7 +21,7 @@ import {
   toClientTimingRecord,
 } from "./connection-timings-model";
 
-const SEND_DEBOUNCE = "5 seconds";
+const SEND_DELAY = "5 seconds";
 
 type DrainResult = "idle" | "failed" | "stopped";
 
@@ -57,8 +57,8 @@ export function sendWhileConnected<E, R>(
     { bufferSize: 1, strategy: "sliding" },
   );
   return Stream.concat(Stream.succeed(undefined), enqueued).pipe(
-    Stream.debounce(SEND_DEBOUNCE),
-    Stream.mapEffect(() => drain),
+    // Waits from the first new timing, not the last, so a steady stream still goes out.
+    Stream.mapEffect(() => Effect.andThen(Effect.sleep(SEND_DELAY), drain)),
     Stream.takeUntil((result) => result === "stopped"),
   );
 }
