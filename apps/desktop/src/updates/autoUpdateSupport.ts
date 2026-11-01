@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 const decodeAppUpdateYmlConfig = Schema.decodeUnknownEffect(AppUpdateYmlConfig);
@@ -26,6 +27,7 @@ function hasUpdateProvider(raw: string): Effect.Effect<boolean> {
 }
 
 function getAutoUpdateDisabledReason(args: {
+  policy: DesktopUpdatePolicy.UpdatePolicy;
   isDevelopment: boolean;
   isPackaged: boolean;
   platform: NodeJS.Platform;
@@ -34,6 +36,9 @@ function getAutoUpdateDisabledReason(args: {
   disabledByEnv: boolean;
   hasUpdateFeedConfig: boolean;
 }): string | null {
+  if (args.policy.mode === "off") {
+    return args.policy.message ?? "Updates are turned off on this machine.";
+  }
   if (!args.hasUpdateFeedConfig) {
     return "Automatic updates are not available because no update feed is configured.";
   }
@@ -55,9 +60,12 @@ export const resolveAutoUpdateDisabledReason = Effect.fn(
 )(function* (config: Config.Success<typeof DesktopConfig.DesktopConfig>) {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
+  const policy = yield* DesktopUpdatePolicy.DesktopUpdatePolicy;
 
+  // Any user can set the mock flag, so it never replaces an administrator's update source.
   const hasUpdateFeedConfig =
-    config.mockUpdates ||
+    (config.mockUpdates && policy.message === null) ||
+    policy.feedUrl !== undefined ||
     (yield* fileSystem.readFileString(environment.appUpdateYmlPath, "utf-8").pipe(
       Effect.flatMap(hasUpdateProvider),
       Effect.orElseSucceed(() => false),
@@ -76,6 +84,7 @@ export const resolveAutoUpdateDisabledReason = Effect.fn(
 
   return Option.fromNullishOr(
     getAutoUpdateDisabledReason({
+      policy,
       isDevelopment: environment.isDevelopment,
       isPackaged: environment.isPackaged,
       platform: environment.platform,
