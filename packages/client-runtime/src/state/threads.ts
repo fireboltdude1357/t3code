@@ -1002,6 +1002,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             // Definitive HTTP 404: clear any stale cache and do not open a
             // socket subscription until the shell lists the thread.
             yield* setDeleted();
+            // A 404 also means "not created yet". Only a delete event may outlive this mount.
+            if (resumeCache?.owner === owner) resumeCache.snapshot = undefined;
             retriedWith = yield* awaitListed(retriedWith);
             yield* Ref.set(awaitingCompletion, true);
             yield* markSynchronizing;
