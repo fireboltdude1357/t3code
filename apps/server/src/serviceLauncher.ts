@@ -6,6 +6,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 
 import type {
@@ -30,6 +31,8 @@ import {
 } from "./cloud/serviceProtocol.ts";
 
 const HANDOFF_DELAY_MS = 2_000;
+// The requesting server gives up on the launcher's reply after 30 seconds.
+const MIGRATION_CHECK_TIMEOUT_MS = 10_000;
 /**
  * Migrations count toward it and can scale with the database: tens of GB on a cold page cache
  * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
@@ -240,6 +243,66 @@ export async function databaseBackupBlocker(
   if (free >= needed) return undefined;
   const gb = (bytes: number) => (bytes / GIB).toFixed(1);
   return `Not enough free disk space to back up the database before updating: ${gb(needed)} GB needed, ${gb(free)} GB free. Free up disk space and try again. The server was not stopped.`;
+}
+
+const isMigrationEntry = (entry: unknown): entry is readonly [number, string] =>
+  Array.isArray(entry) &&
+  entry.length === 2 &&
+  typeof entry[0] === "number" &&
+  typeof entry[1] === "string";
+
+// Older targets omit their migrations from preflight; any failure here means "back up".
+async function targetAddsMigrations(
+  baseDir: string,
+  targetVersion: string,
+  dbPath: string,
+  environment: Readonly<NodeJS.ProcessEnv>,
+): Promise<boolean> {
+  try {
+    const { stdout } = await NodeUtil.promisify(NodeChildProcess.execFile)(
+      runtimePaths(baseDir, targetVersion).entryPath,
+      [
+        "__service-preflight",
+        "--database-path",
+        dbPath,
+        "--launcher-protocol",
+        String(SERVICE_LAUNCHER_PROTOCOL),
+      ],
+      { env: environment, timeout: MIGRATION_CHECK_TIMEOUT_MS, killSignal: "SIGKILL" },
+    );
+    const preflight: unknown = JSON.parse(stdout.trim());
+    const migrations =
+      typeof preflight === "object" && preflight !== null && "migrations" in preflight
+        ? preflight.migrations
+        : undefined;
+    if (
+      !Array.isArray(migrations) ||
+      migrations.length === 0 ||
+      !migrations.every(isMigrationEntry)
+    ) {
+      return true;
+    }
+
+    const database = new NodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const applied = new Set(
+        database
+          .prepare("SELECT migration_id, name FROM effect_sql_migrations")
+          .all()
+          .map((row) => `${String(row.migration_id)}_${String(row.name)}`),
+      );
+      return migrations.some(([id, name]) => !applied.has(`${id}_${name}`));
+    } finally {
+      database.close();
+    }
+  } catch {
+    return true;
+  }
+}
+
+// A trial that ran without a backup leaves its writes behind, which the previous version may not decode.
+function trialRollbackReason(pending: PendingServiceUpdate, reason: string): string {
+  return pending.skipDatabaseBackup === true ? `${reason}:no-backup` : reason;
 }
 
 // Preserve completed backups; restarted trials may already have changed the live database.
@@ -553,7 +616,8 @@ export class Launcher {
 
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
     try {
-      await backupDatabaseOnce(this.#baseDir, pending);
+      // Without a backup, rollback keeps the trial's writes, which the previous version may not decode.
+      if (pending.skipDatabaseBackup !== true) await backupDatabaseOnce(this.#baseDir, pending);
     } catch {
       await this.#returnToPrevious(pending, "failed", "db-backup-failed");
       return;
@@ -661,15 +725,19 @@ export class Launcher {
       await reject("The requested target runtime is missing or incomplete.");
       return;
     }
-    // Failed checks must refuse updates rather than stop the server with unknown backup capacity.
-    const backupBlocker = await databaseBackupBlocker(
+    const backupDatabase = await targetAddsMigrations(
       this.#baseDir,
+      message.targetVersion,
       message.dbPath,
-      this.#backupSpaceProbe,
-    ).catch(
-      (error: unknown) =>
-        `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
+      this.#environment,
     );
+    // Failed checks must refuse updates rather than stop the server with unknown backup capacity.
+    const backupBlocker = backupDatabase
+      ? await databaseBackupBlocker(this.#baseDir, message.dbPath, this.#backupSpaceProbe).catch(
+          (error: unknown) =>
+            `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
+        )
+      : undefined;
     if (!child.process.connected) return;
     if (backupBlocker !== undefined) {
       await reject(backupBlocker);
@@ -682,6 +750,7 @@ export class Launcher {
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,
       status: "pending",
+      ...(backupDatabase ? {} : { skipDatabaseBackup: true }),
     };
     const next: ServiceState = { ...this.#state, update: pending };
     await writeServiceState(this.#statePath, next);
@@ -710,7 +779,12 @@ export class Launcher {
       pending.targetVersion !== child.version
     ) {
       if (child.role === "trial" && pending?.status === "pending") {
-        await this.#returnToPrevious(pending, "rolled-back", "invalid-prepared", child);
+        await this.#returnToPrevious(
+          pending,
+          "rolled-back",
+          trialRollbackReason(pending, "invalid-prepared"),
+          child,
+        );
         return;
       }
       throw new Error("Trial child reported prepared for an unexpected update.");
@@ -735,7 +809,12 @@ export class Launcher {
       return;
     }
     this.#timer = undefined;
-    await this.#returnToPrevious(pending, "rolled-back", "prepared-timeout", child);
+    await this.#returnToPrevious(
+      pending,
+      "rolled-back",
+      trialRollbackReason(pending, "prepared-timeout"),
+      child,
+    );
   }
 
   async #handleExit(
@@ -758,7 +837,7 @@ export class Launcher {
       await this.#returnToPrevious(
         pending,
         "rolled-back",
-        `candidate-exited:${String(code ?? signal ?? "unknown")}`,
+        trialRollbackReason(pending, `candidate-exited:${String(code ?? signal ?? "unknown")}`),
       );
       return;
     }
