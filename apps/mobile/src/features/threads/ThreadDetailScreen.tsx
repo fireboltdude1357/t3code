@@ -772,7 +772,7 @@ function ThreadDetailBody(
         accessibilityLabel: `Open ${childInput.hasPendingApprovals ? "approval" : "question"} from ${childInput.title}`,
         onPress: () => {
           Keyboard.dismiss();
-          openLinkedThread({ environmentId: props.environmentId, threadId: childInput.id });
+          openLinkedThread({ environmentId: childInput.environmentId, threadId: childInput.id });
         },
       };
     }
@@ -1722,6 +1722,14 @@ function ThreadDetailBody(
                           reportedModelSelection,
                         )}
                         status={props.providerSubagentStatus ?? null}
+                        inspect={
+                          providerSubagentProvider?.driver === "antigravity"
+                            ? {
+                                environmentId: props.environmentId,
+                                threadId: props.selectedThread.id,
+                              }
+                            : null
+                        }
                         onOpenParent={
                           props.selectedThread.lineage.parentThreadId === null
                             ? null
