@@ -41,6 +41,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as CodexInstallation from "./provider/CodexInstallation.ts";
 import * as DeviceService from "./device/DeviceService.ts";
@@ -453,9 +454,12 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       shell("live", "parent", "running"),
       ...Array.from({ length: 25 }, (_, index) => shell(`recent-${index}`, null, null, 1)),
       shell("old", null, null, 30),
+      shell("middle", "parent", null),
+      shell("leaf", "middle", null),
     ];
     const firstSnapshot = (input: {
       readonly omitIdleSubagents?: boolean;
+      readonly omitIdleSubagentParents?: boolean;
       readonly omitOlderSettled?: boolean;
     }) =>
       subscribeOrchestrationV2Shell(input).pipe(
@@ -512,12 +516,20 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
     const withoutChildren = yield* firstSnapshot({ omitIdleSubagents: true });
     assert.deepEqual(
       withoutChildren?.threads.map((thread) => thread.id),
+      ["parent", "live", ...recent, "old", "middle"],
+    );
+    const withoutIdleParents = yield* firstSnapshot({
+      omitIdleSubagents: true,
+      omitIdleSubagentParents: true,
+    });
+    assert.deepEqual(
+      withoutIdleParents?.threads.map((thread) => thread.id),
       ["parent", "live", ...recent, "old"],
     );
     const withoutOld = yield* firstSnapshot({ omitIdleSubagents: true, omitOlderSettled: true });
     assert.deepEqual(
       withoutOld?.threads.map((thread) => thread.id),
-      ["parent", "live", ...recent],
+      ["parent", "live", ...recent, "middle"],
     );
     assert.deepEqual(withoutOld?.olderSettled?.counts, [
       { projectId: ProjectId.make("project"), count: 1, botCount: 0 },
@@ -542,6 +554,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(AntigravityInstallation.AntigravityInstallation)({ managedDirectory: "/unused" }),
   Layer.mock(BackgroundPolicy.BackgroundPolicy)({}),
   Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({}),
+  Layer.mock(NativeChildWorkQuery.NativeChildWorkQuery)({}),
   Layer.mock(CommandOutputHub.CommandOutputHub)({}),
   Layer.mock(CodexInstallation.CodexInstallation)({ managedDirectory: "/unused" }),
   Layer.mock(DeviceService.DeviceService)({}),
