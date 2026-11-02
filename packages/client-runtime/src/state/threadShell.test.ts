@@ -298,6 +298,13 @@ describe("v2 thread shell lists", () => {
     expect(asking.map((thread) => thread.id)).toEqual([grandchild.id]);
     expect(childThreadInputsTitle(asking)).toBe("Subagent needs approval");
 
+    // The shell left out the idle child between them; the approval still reaches the root.
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [root, { ...grandchild, pendingRuntimeRequest: approval }],
+    });
+    expect(registry.get(parent)?.pendingSubagentRequest).toBe("approval");
+
     registry.set(snapshotAtom(environmentId), {
       ...v2ShellSnapshot,
       threads: [root, child, grandchild],

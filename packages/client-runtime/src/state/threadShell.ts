@@ -110,6 +110,7 @@ function pendingSubagentRequestsByThread(
   let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
   const flag = (
     firstParentId: ThreadId | null,
+    rootThreadId: ThreadId | null,
     request: PendingSubagentRequest,
     seen: Set<ThreadId>,
   ) => {
@@ -121,10 +122,13 @@ function pendingSubagentRequestsByThread(
       seen.add(parentId);
       if (requests.get(parentId) !== "approval") requests.set(parentId, request);
       const parent = byId.get(parentId);
-      parentId =
-        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
-          ? parent.lineage.parentThreadId
-          : null;
+      // Shells can leave out idle subagents between a live one and its root.
+      if (parent === undefined) parentId = rootThreadId;
+      else
+        parentId =
+          parent.lineage.relationshipToParent === "subagent" || parent.lineage.sideChat === true
+            ? parent.lineage.parentThreadId
+            : null;
     }
   };
   for (const child of threads) {
@@ -138,9 +142,9 @@ function pendingSubagentRequestsByThread(
     }
     if (child.lineage.relationshipToParent !== "subagent") continue;
     const request = subagentRequest(child);
-    if (request !== null) flag(parentId, request, new Set([child.id]));
+    if (request !== null) flag(parentId, child.lineage.rootThreadId, request, new Set([child.id]));
   }
-  for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
+  for (const task of delegated) flag(task.parentThreadId, null, task.request, new Set());
   return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
 }
 
