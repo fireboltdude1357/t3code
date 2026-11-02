@@ -23,3 +23,7 @@ draft-404-reload  patch/draft-404-reload
 mobile-connection-timings  patch/mobile-connection-timings
 host-cpu-cores  patch/host-cpu-cores
 shell-subagent-trim  patch/shell-subagent-trim
+# event-history-retention creates its table at startup instead of a numbered migration.
+# Before dropping it when #28144 lands upstream, make upstream's migration CREATE TABLE IF NOT EXISTS,
+# or servers that already have the table fail to start.
+event-history-retention  patch/event-history-retention  pingdotgg/t3code#28144
