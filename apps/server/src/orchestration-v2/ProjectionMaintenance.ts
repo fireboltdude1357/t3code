@@ -437,6 +437,7 @@ export const layer: Layer.Layer<
                     AND EXISTS (
                       SELECT 1 FROM orchestration_events AS reference
                       WHERE reference.sequence > ${initialHighWater}
+                        AND reference.aggregate_kind = candidate.aggregate_kind
                         AND reference.stream_id = candidate.stream_id
                         AND reference.event_type = candidate.event_type
                         AND json_extract(reference.payload_json, '$.promptSequence') = candidate.sequence
