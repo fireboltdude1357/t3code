@@ -128,8 +128,15 @@ function shouldPublishAgentAwarenessEvent(
     case "provider-turn.updated":
     case "turn-item.updated":
       return isTurnItemPayload(event.payload) && turnItemUpdateCanEndBackgroundWork(event.payload);
-    case "message.updated":
+    // A bot thread's finished row depends on its proposed plan staying actionable.
     case "plan.updated":
+      return (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        "kind" in event.payload &&
+        event.payload.kind === "proposed_plan"
+      );
+    case "message.updated":
     case "checkpoint-scope.created":
     case "checkpoint.captured":
     case "checkpoint.rollback-requested":
@@ -163,6 +170,17 @@ function agentAwarenessPublishIdentity(state: RelayAgentActivityState | null): s
   }
   const { updatedAt: _updatedAt, ...meaningfulState } = state;
   return JSON.stringify(meaningfulState);
+}
+
+const CLEARED_PUBLISH_IDENTITY = agentAwarenessPublishIdentity(null);
+
+// A published tombstone stays recorded so repeats are skipped, but it is not live state.
+function hasLivePublishedState(
+  publishedStateByThread: ReadonlyMap<ThreadId, string>,
+  threadId: ThreadId,
+): boolean {
+  const identity = publishedStateByThread.get(threadId);
+  return identity !== undefined && identity !== CLEARED_PUBLISH_IDENTITY;
 }
 
 function resolveAgentActivityPublishingStartupState(input: {
@@ -517,7 +535,7 @@ export const make = Effect.gen(function* () {
     if (
       threadShell !== null &&
       !isListedThreadLineage(threadShell.lineage) &&
-      !(yield* Ref.get(publishedStateByThreadRef)).has(threadId)
+      !hasLivePublishedState(yield* Ref.get(publishedStateByThreadRef), threadId)
     ) {
       // Subagents and side chats have no relay rows to clear; per-event tombstones would needlessly redeliver user aggregates.
       return;
@@ -538,11 +556,15 @@ export const make = Effect.gen(function* () {
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
-      !publishedStateByThread.has(threadId)
+      !hasLivePublishedState(publishedStateByThread, threadId)
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
     }
-    if (publishedStateByThread.get(threadId) === publishIdentity) {
+    if (
+      publishedStateByThread.get(threadId) === publishIdentity &&
+      // A held completion settled after an earlier clear still has to alert.
+      !(snapshot.state === null && heldCompletions.has(threadId))
+    ) {
       // Clear moot deadlines so later transient nulls cannot skip their deferral window.
       publishConfirmDeadlines.delete(threadId);
       heldCompletions.delete(threadId);
@@ -557,10 +579,7 @@ export const make = Effect.gen(function* () {
     // Confirm tombstones over live state to avoid removing active cards.
     // Confirm completion: a run can end moments before its continuation starts, and the relay
     // alerts on every move into completed.
-    const requiresConfirmation =
-      (snapshot.state === null &&
-        publishedStateByThread.get(threadId) !== agentAwarenessPublishIdentity(null)) ||
-      snapshot.state?.phase === "completed";
+    const requiresConfirmation = snapshot.state === null || snapshot.state?.phase === "completed";
     if (requiresConfirmation) {
       if (snapshot.state?.phase === "completed") heldCompletions.add(threadId);
       const nowMs = (yield* DateTime.now).epochMilliseconds;
@@ -640,15 +659,9 @@ export const make = Effect.gen(function* () {
     }).pipe(withRelayClientTracing);
     publishConfirmDeadlines.delete(threadId);
     heldCompletions.delete(threadId);
-    yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
-      const nextPublishedStates = new Map(publishedStates);
-      if (snapshot.state === null) {
-        nextPublishedStates.delete(threadId);
-      } else {
-        nextPublishedStates.set(threadId, publishIdentity);
-      }
-      return nextPublishedStates;
-    });
+    yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
+      new Map(publishedStates).set(threadId, publishIdentity),
+    );
   });
 
   const processThreadPublish = Effect.fnUntraced(function* (threadId: ThreadId) {
