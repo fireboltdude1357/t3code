@@ -48,29 +48,29 @@ node scripts/fork-sync.ts --force --workdir /tmp/fork-sync
 
 ## The build
 
-GitHub disabled Actions on the fork on 2026-10-14, so the build runs on Tanner's machines. The scripts are in Fleet's `services/t3-fork-build/`. `t3-fork-build.timer` on stl-wsl runs `fork-build.sh` every two hours at :50.
+GitHub disabled Actions on the fork on 2026-10-14, so the build runs on Tanner's machines. The scripts are in Fleet's `services/t3-fork-build/`. Every two hours, the T3 scheduled task "Fork nightly: sync upstream and publish" on stl-wsl starts `t3-fork-build.service`, which runs `fork-build.sh`. The same task fixes patch conflicts and failed builds in that run, and sends an ntfy alert only when no release ships.
 
 1. stl-wsl runs `scripts/fork-sync.ts` from `patch/release` and pushes the result to `fork-candidate`.
-2. stl-wsl runs the full typecheck and the test files the patches add or change, then builds the linux-x64 CLI archive. Upstream CI tests the rest of `main`.
-3. At the same time, the MacBook Air fetches `fork-candidate` and builds the macOS arm64 app with `mac-build.sh`. Once the Linux archive exists, the Windows host builds the x64 installer.
+2. omarchy runs the full typecheck and the test files the patches add or change, then builds the linux-x64 CLI archive in a container. Upstream CI tests the rest of `main`.
+3. At the same time, the MacBook Air fetches `fork-candidate` and builds the macOS arm64 app with `mac-build.sh`.
 4. stl-wsl publishes `v<version>` as a prerelease, then fast-forwards `fork-main` to the commit it built.
 
 `fork-build.sh --no-publish` builds without publishing, and `--force` rebuilds unchanged inputs. The bundle build copies `.env.example` to `.env`, so fork builds use upstream's relay and Clerk instance and T3 Connect works as it does on stock builds.
 
 Git merges `pnpm-lock.yaml` as text, so a patch's lockfile entries can keep a version upstream has since bumped in the catalog, or point at a package entry upstream has replaced. The build installs with `--no-frozen-lockfile --fix-lockfile`, which re-resolves those entries, and logs how the lockfile changed. pnpm 12 fails on a replaced entry without `--fix-lockfile`.
 
-After the Linux leg, the Windows host under stl-wsl builds the unsigned Windows x64 NSIS installer (`win-build.sh`), with that run's Linux CLI archive embedded as its WSL runtime. The Windows app updates from the release's `nightly.yml`. Fork Windows builds have no Authenticode signature, so check an installer's SHA-512 against `nightly.yml`.
+Windows installers stopped on 2026-10-27, because the Windows app is unused.
 
 Mac builds are signed with Architech's Developer ID and notarized, using the `.p12` and App Store Connect key on the Air. macOS only installs an update signed by the running app's identity, so a Mac moves from Theo's build to the fork's by hand once. There is no provisioning profile: `com.t3tools.t3code` belongs to Theo's team, and the passkey domains only trust his. Without one the build skips the passkey entitlements, so the in-app browser can't use passkeys.
 
-The timer doesn't build iOS. The Air builds the fork's mobile app by hand from `~/code/t3code` with `~/t3code-builds/run-local-build.sh`, and `.env.local` there points the build at the fork's EAS project and Apple team. That only works on a tree with `patch/mobile-fork-identity`, because upstream's `app.config.ts` hard-codes Theo's identity.
+The build doesn't include iOS. The Air builds the fork's mobile app by hand from `~/code/t3code` with `~/t3code-builds/run-local-build.sh`, and `.env.local` there points the build at the fork's EAS project and Apple team. That only works on a tree with `patch/mobile-fork-identity`, because upstream's `app.config.ts` hard-codes Theo's identity.
 
 ## Setup
 
 - `patch/release` is the fork's default branch.
 - The upstream workflows are disabled in the fork.
 - stl-wsl pushes and publishes with its `gh` login. The Air fetches over SSH.
-- Stopping `t3-fork-build.timer` on stl-wsl stops the builds.
+- Pausing the scheduled task in T3 stops the builds.
 - Fleet's updater on stl-wsl (`services/t3-preview-update/`) installs each fork nightly on the WSL server.
 
 A machine moves onto fork builds once:
