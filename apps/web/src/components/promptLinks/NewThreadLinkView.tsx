@@ -29,6 +29,7 @@ import { useScratchProject } from "~/hooks/useScratchProject";
 import { newProjectId } from "~/lib/utils";
 import { useProjects, useThreadShells, waitForProject } from "~/state/entities";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { useDefaultEnvironmentId } from "~/state/defaultEnvironment";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { environmentPresentations } from "~/state/presentation";
 import { allReachableShellsLiveAtom, environmentShell } from "~/state/shell";
@@ -105,6 +106,7 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
   const threads = useThreadShells();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const defaultEnvironmentId = useDefaultEnvironmentId();
   const handleNewThread = useNewThreadHandler();
   const { scratchEnvironmentId, openScratchProject } = useScratchProject();
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
@@ -196,9 +198,16 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
   };
 
   const cloneRepository = async (repository: PromptLinkRepository) => {
-    const environmentId = lastActiveEnvironmentId();
-    const environment = environments.find((entry) => entry.environmentId === environmentId);
-    const newProjectsRoot = environment?.serverConfig?.newProjectsRoot ?? null;
+    // A default machine the user picked wins when it can clone; otherwise clone where they
+    // worked last.
+    const newProjectsRootFor = (id: EnvironmentId | null) =>
+      environments.find((entry) => entry.environmentId === id)?.serverConfig?.newProjectsRoot ??
+      null;
+    const environmentId =
+      defaultEnvironmentId !== primaryEnvironmentId && newProjectsRootFor(defaultEnvironmentId)
+        ? defaultEnvironmentId
+        : lastActiveEnvironmentId();
+    const newProjectsRoot = newProjectsRootFor(environmentId);
     if (environmentId === null || newProjectsRoot === null) {
       setState({
         status: "failed",
