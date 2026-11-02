@@ -81,8 +81,7 @@ has a live or queued run, a pending request or background work, or a subagent
 child of its own, so badge and working walks never meet a gap. Clients that also
 send `omitIdleSubagentParents` keep an idle child only while a live subagent is
 below it. A child that wakes later reaches them through the live tail without the
-idle rows above it, so their badge walk goes to the root when a parent row is
-missing. Servers that also
+idle rows above it, so they read its family whenever a parent row is missing. Servers that also
 advertise `shellOlderSettled` keep only the 25 newest settled top-level threads
 (and any tied with the 25th, pinned, snoozed, live, or above a kept child); the
 snapshot's `olderSettled` names that cut and counts the rest per project. Left-out

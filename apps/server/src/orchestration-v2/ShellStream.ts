@@ -212,8 +212,8 @@ function omitOlderSettledShellsWith(
 /**
  * Idle subagent children have no sidebar row; opted-in clients read them from their thread family.
  * A child stays while it is live or the parent of another child, so shell walks never meet a gap.
- * With `omitIdleSubagentParents` it stays only while live or above a live one, for clients whose
- * walks fall back to the root.
+ * With `omitIdleSubagentParents` it stays only while live or above a live one, for clients that
+ * read the family of a child whose parent row is missing.
  */
 export function omitIdleSubagentShells(
   threads: ReadonlyArray<OrchestrationV2ThreadShell>,
