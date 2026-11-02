@@ -486,6 +486,19 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     });
   });
 
+  const annotateEstablishment = (event: EstablishmentEvent) =>
+    event._tag === "Completed"
+      ? annotateAttemptOutcome(
+          Exit.mapBoth(event.exit, {
+            onSuccess: ({ lease }) => lease,
+            onFailure: ({ error }) => error,
+          }),
+        )
+      : Effect.annotateCurrentSpan(
+          "connection.outcome",
+          event._tag === "TimedOut" ? "timeout" : "interrupted",
+        );
+
   const traceRelayEstablishment = (
     effect: Effect.Effect<
       ConnectionDriver.EnvironmentConnectionLease,
@@ -874,7 +887,16 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           yield* Effect.sleep(Duration.nanos(remaining));
         }
       }),
-    ]);
+    ]).pipe(
+      Effect.tap(annotateEstablishment),
+      Effect.withSpan("EnvironmentSupervisor.establish", {
+        attributes: {
+          "environment.id": target.environmentId,
+          "environment.label": target.label,
+          "connection.attempt": attempt,
+        },
+      }),
+    );
 
     if (establishment._tag === "Interrupted") {
       return {
