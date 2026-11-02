@@ -188,6 +188,9 @@ const command = Effect.fn("nativeClient.command")(function* (
         APP_VARIANT: "development",
         MOBILE_VERSION_POLICY: "appVersion",
         T3CODE_IOS_PERSONAL_TEAM: "0",
+        // Keep the upstream dev client ID that `bundleId` expects, even when a
+        // fork's .env.local sets its own app ID prefix.
+        T3CODE_APP_ID_PREFIX: "",
         CI: "1",
         EXPO_NO_GIT_STATUS: "1",
         // macOS tar otherwise adds AppleDouble entries that change the extracted bundle.
