@@ -265,7 +265,7 @@ export const layer: Layer.Layer<
       const initialHighWater = bounds[0]?.event_sequence ?? 0;
       let throughSequence = initialHighWater;
       let throughReceiptRowId = bounds[0]?.receipt_row_id ?? 0;
-      // Older doctor builds without migration 77 can compact only superseded history.
+      // Databases without the retention table can compact only superseded history.
       const retentionCutoff = (yield* hasReplayFloorTable.pipe(NodeSqliteClient.readOnly))
         ? DateTime.formatIso(
             DateTime.subtractDuration(yield* DateTime.now, EVENT_HISTORY_RETENTION),
