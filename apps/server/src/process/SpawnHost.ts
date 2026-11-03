@@ -9,7 +9,11 @@ import * as Layer from "effect/Layer";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeRuntime";
 
-import type { SpawnHostEvent, SpawnHostSpawnRequest } from "./spawnHostProcess.ts";
+import {
+  SPAWN_HOST_COMMAND,
+  type SpawnHostEvent,
+  type SpawnHostSpawnRequest,
+} from "./spawnHostProcess.ts";
 
 // A second host keeps launches moving while one is blocked inside native spawn.
 const MAX_HOSTS = 2;
@@ -306,6 +310,6 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     if ((yield* HostProcess.Platform) !== "linux") return NodeChildProcessSpawner.layer;
     const invocation = yield* resolveSelfInvocation();
-    return layerHost(invocation.command, selfInvocationArgs(invocation, ["__spawn-host"]));
+    return layerHost(invocation.command, selfInvocationArgs(invocation, [SPAWN_HOST_COMMAND]));
   }),
 );
