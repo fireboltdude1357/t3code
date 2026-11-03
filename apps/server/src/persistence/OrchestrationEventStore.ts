@@ -33,6 +33,10 @@ import {
   type OrchestrationEventStoreError,
 } from "./Errors.ts";
 
+/** Projection metadata rows: events at or below the pruned-through sequence may be gone. */
+export const EVENT_LOG_PRUNED_THROUGH = "event-log-pruned-through";
+export const EVENT_LOG_PRUNE_MARK = "event-log-prune-mark";
+
 export type UnsequencedProjectEvent = ApplicationProjectEvent extends infer Event
   ? Event extends ApplicationProjectEvent
     ? Omit<Event, "sequence">
@@ -93,10 +97,8 @@ export class OrchestrationEventStore extends Context.Service<
 
     readonly latestApplicationSequence: Effect.Effect<number, OrchestrationEventStoreError>;
 
-    /** Highest sequence removed from one thread, or any thread when omitted. */
-    readonly replayFloor: (
-      threadId?: ThreadId,
-    ) => Effect.Effect<number, OrchestrationEventStoreError>;
+    /** Replay from a cursor below this misses pruned events; resync from a snapshot instead. */
+    readonly prunedThroughSequence: Effect.Effect<number, OrchestrationEventStoreError>;
 
     /** Unknown event types fail unless skipUnknownEventTypes logs and drops them; only client replay may opt in. */
     readonly readApplicationEvents: (input: {
@@ -455,7 +457,7 @@ const makeEventStore = Effect.gen(function* () {
           const promptKey = subagent === undefined ? undefined : `${event.type}:${subagent.id}`;
           const hint = promptKey === undefined ? undefined : promptHints.get(promptKey);
           const payloadJson = yield* encodeJson(encoded.payload);
-          // Deduplicate repeated progress prompts only while their full-prompt anchor exists.
+          // Deduplicate repeated progress prompts via anchor rows; pruning keeps anchors that retained rows reference.
           const storedPayload =
             hint !== undefined && subagent !== undefined
               ? sql`CASE WHEN EXISTS (
@@ -663,20 +665,6 @@ const makeEventStore = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.latestAgentSequence:query")),
     );
 
-  const replayFloor: OrchestrationEventStore["Service"]["replayFloor"] = Effect.fn(
-    "OrchestrationEventStore.replayFloor",
-  )(function* (threadId?: ThreadId) {
-    const rows = yield* sql<{ readonly floor: number | null }>`
-      SELECT MAX(replay_floor) AS floor
-      FROM orchestration_v2_event_retention
-      ${threadId === undefined ? sql`` : sql`WHERE thread_id = ${threadId}`}
-    `.pipe(
-      NodeSqliteClient.readOnly,
-      Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.replayFloor:query")),
-    );
-    return rows[0]?.floor ?? 0;
-  });
-
   // The OR planner otherwise scans every V2 event instead of seeking the final sequence.
   const latestApplicationSequence = sql<{ readonly sequence: number | null }>`
     SELECT MAX(sequence) AS sequence
@@ -689,6 +677,21 @@ const makeEventStore = Effect.gen(function* () {
     Effect.mapError(
       toPersistenceSqlError("OrchestrationEventStore.latestApplicationSequence:query"),
     ),
+  );
+
+  // Fork patch: the fork's old pruner deleted events below each thread's replay
+  // floor before upstream's mark existed, so a resume below either loads a snapshot.
+  const prunedThroughSequence = sql<{ readonly last_sequence: number | null }>`
+    SELECT MAX(sequence) AS last_sequence FROM (
+      SELECT last_sequence AS sequence FROM orchestration_v2_projection_metadata
+      WHERE projection_name = ${EVENT_LOG_PRUNED_THROUGH}
+      UNION ALL
+      SELECT MAX(replay_floor) AS sequence FROM orchestration_v2_event_retention
+    )
+  `.pipe(
+    NodeSqliteClient.readOnly,
+    Effect.map((rows) => rows[0]?.last_sequence ?? 0),
+    Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.prunedThroughSequence:query")),
   );
 
   // Advance over raw rows so even a full page of unknown types cannot end replay early.
@@ -767,7 +770,7 @@ const makeEventStore = Effect.gen(function* () {
     getReplayStats,
     latestAgentSequence,
     latestApplicationSequence,
-    replayFloor,
+    prunedThroughSequence,
     readApplicationEvents: catchUpApplicationEvents,
     publishCommitted: (events) => PubSub.publishAll(committedEvents, events).pipe(Effect.asVoid),
     streamApplicationEvents,

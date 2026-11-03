@@ -82,6 +82,8 @@ import Migration0076 from "./Migrations/076_ProjectionProjectsPinArchive.ts";
 import Migration0077 from "./Migrations/077_RepairBooleanSettledOverride.ts";
 import Migration0078 from "./Migrations/078_DropOrchestrationEventCorrelationIndex.ts";
 
+import Migration0079 from "./Migrations/079_DelegatedRecoveryIndexes.ts";
+
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -162,6 +164,7 @@ const migrationEntries = [
   [76, "ProjectionProjectsPinArchive", Migration0076],
   [77, "RepairBooleanSettledOverride", Migration0077],
   [78, "DropOrchestrationEventCorrelationIndex", Migration0078],
+  [79, "DelegatedRecoveryIndexes", Migration0079],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -235,7 +238,8 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
 
   const sql = yield* SqlClient.SqlClient;
-  // Fork patch: a numbered migration would make this database skip upstream's next id.
+  // Fork patch: the fork's old pruner left per-thread replay floors here.
+  // prunedThroughSequence reads them, so the table must exist on every database.
   if (toMigrationInclusive === undefined) {
     yield* sql`CREATE TABLE IF NOT EXISTS orchestration_v2_event_retention (
       thread_id TEXT PRIMARY KEY,
