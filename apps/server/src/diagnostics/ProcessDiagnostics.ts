@@ -131,7 +131,7 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
           message: Option.some(`Process ${input.pid} is not a signalable T3 backend descendant.`),
         };
       }
-      if (isSpawnHostCommand(selected.command)) {
+      if (selected.ppid === process.pid && isSpawnHostCommand(selected.command)) {
         return {
           pid: input.pid,
           signal: input.signal,

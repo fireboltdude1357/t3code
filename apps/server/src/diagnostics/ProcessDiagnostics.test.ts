@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { vi } from "vite-plus/test";
 
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
@@ -180,6 +181,7 @@ describe("ProcessDiagnostics", () => {
         },
       ]);
       const layer = ProcessDiagnostics.layer.pipe(Layer.provide(layerTelemetryFor(snapshot)));
+      using kill = vi.spyOn(process, "kill").mockImplementation(() => true);
 
       const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
         Effect.flatMap((processDiagnostics) =>
@@ -200,6 +202,7 @@ describe("ProcessDiagnostics", () => {
           `Refusing to signal process ${CHILD_PID}; it launches the T3 server's child processes.`,
         ),
       });
+      expect(kill).not.toHaveBeenCalled();
     }),
   );
 
