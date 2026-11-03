@@ -235,6 +235,13 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
 
   const sql = yield* SqlClient.SqlClient;
+  // Fork patch: a numbered migration would make this database skip upstream's next id.
+  if (toMigrationInclusive === undefined) {
+    yield* sql`CREATE TABLE IF NOT EXISTS orchestration_v2_event_retention (
+      thread_id TEXT PRIMARY KEY,
+      replay_floor INTEGER NOT NULL
+    )`;
+  }
   const recorded = yield* sql<{
     readonly migration_id: number;
     readonly name: string;
