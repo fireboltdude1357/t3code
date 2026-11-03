@@ -4,6 +4,9 @@ import type * as NodeNet from "node:net";
 
 export const SPAWN_HOST_COMMAND = "__spawn-host";
 
+export const isSpawnHostCommand = (command: string) =>
+  command.split(/\s+/).includes(SPAWN_HOST_COMMAND);
+
 export interface SpawnHostSpawnRequest {
   readonly type: "spawn";
   readonly id: number;

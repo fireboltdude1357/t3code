@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { isSpawnHostCommand } from "../process/spawnHostProcess.ts";
 import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
 
 export class ProcessSignalFailed extends Schema.TaggedError<ProcessSignalFailed>()(
@@ -128,6 +129,16 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
           signal: input.signal,
           signaled: false,
           message: Option.some(`Process ${input.pid} is not a signalable T3 backend descendant.`),
+        };
+      }
+      if (isSpawnHostCommand(selected.command)) {
+        return {
+          pid: input.pid,
+          signal: input.signal,
+          signaled: false,
+          message: Option.some(
+            `Refusing to signal process ${input.pid}; it launches the T3 server's child processes.`,
+          ),
         };
       }
       return yield* Effect.try({

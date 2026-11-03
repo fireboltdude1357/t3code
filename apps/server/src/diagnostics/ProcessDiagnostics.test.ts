@@ -159,6 +159,50 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
+  it.effect("refuses to signal a spawn host, which runs the server's launches", () =>
+    Effect.gen(function* () {
+      const snapshot = makeNativeSnapshot([
+        {
+          pid: CHILD_PID,
+          ppid: SERVER_PID,
+          startTimeMs: 2_000,
+          runTimeMs: 4_000,
+          name: "node",
+          command: "node /srv/t3/bin.mjs __spawn-host",
+          status: "Running",
+          cpuPercent: 1.5,
+          cpuTimeMs: 60,
+          residentBytes: 2_048,
+          virtualBytes: 4_096,
+          ioReadBytes: 300,
+          ioWriteBytes: 400,
+          ioSemantics: "storage",
+        },
+      ]);
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(layerTelemetryFor(snapshot)));
+
+      const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((processDiagnostics) =>
+          processDiagnostics.signal({
+            pid: CHILD_PID,
+            startTimeMs: 2_000,
+            signal: "SIGKILL",
+          }),
+        ),
+        Effect.provide(layer),
+      );
+
+      expect(result).toEqual({
+        pid: CHILD_PID,
+        signal: "SIGKILL",
+        signaled: false,
+        message: Option.some(
+          `Refusing to signal process ${CHILD_PID}; it launches the T3 server's child processes.`,
+        ),
+      });
+    }),
+  );
+
   it.effect("rejects Electron processes as signal targets", () =>
     Effect.gen(function* () {
       const sampledAtUnixMs = DateTime.toEpochMillis(
