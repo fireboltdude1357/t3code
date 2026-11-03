@@ -26,3 +26,4 @@ shell-subagent-trim  patch/shell-subagent-trim
 # Before dropping it when #28144 lands upstream, make upstream's migration CREATE TABLE IF NOT EXISTS,
 # or servers that already have the table fail to start.
 event-history-retention  patch/event-history-retention  pingdotgg/t3code#28144
+settled-pr-lookups  patch/settled-pr-lookups  pingdotgg/t3code#29721

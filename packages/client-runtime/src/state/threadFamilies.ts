@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
@@ -127,7 +128,7 @@ export function createThreadFamilyAtoms<R, ER, E>(
       if (config.shellThreadFamilies !== true) return EMPTY_FAMILY;
       return yield* request(ORCHESTRATION_V2_WS_METHODS.getThreadFamily, {
         threadId: input.threadId,
-      });
+      }).pipe(Effect.retry({ times: 2, schedule: Schedule.spaced("250 millis") }));
     }),
   });
   const queryFor = (environmentId: EnvironmentId, threadId: ThreadId, generation: number) =>
@@ -161,6 +162,10 @@ export function createThreadFamilyAtoms<R, ER, E>(
       Atom.withLabel(`environment-thread-family-mounts:${environmentId}`),
     ),
   );
+  const mountedAtom = Atom.family((key: string) => {
+    const [environmentId] = JSON.parse(key) as [EnvironmentId, ThreadId];
+    return Atom.make((get) => get(mountsAtom(environmentId)).has(`family:${key}`));
+  });
 
   const familyRowsAtom = Atom.family((key: string) =>
     Atom.make((get): ReadonlyArray<OrchestrationV2ThreadFamily> => {
@@ -281,6 +286,8 @@ export function createThreadFamilyAtoms<R, ER, E>(
     /** The current generation's family read, for decisions that need a settled answer. */
     familyAtom: (environmentId: EnvironmentId, threadId: ThreadId) =>
       familyAtom(familyKey(environmentId, threadId)),
+    mountedAtom: (environmentId: EnvironmentId, threadId: ThreadId) =>
+      mountedAtom(familyKey(environmentId, threadId)),
     mount,
     mountRows,
     refresh,
