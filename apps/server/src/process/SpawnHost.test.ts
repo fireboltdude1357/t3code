@@ -112,6 +112,36 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("SpawnHost", ()
     }),
   );
 
+  it.live("serves a burst of concurrent launches from at most two hosts", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const nativeSpawn = NodeChildProcess.spawn;
+      const helpers: NodeChildProcess.ChildProcess[] = [];
+      using _spawn = vi
+        .spyOn(NodeChildProcess, "spawn")
+        .mockImplementation((command, args, options) => {
+          const helper = nativeSpawn(command, args, options);
+          helpers.push(helper);
+          return helper;
+        });
+      using _restore = {
+        [Symbol.dispose]() {
+          _spawn.mockRestore();
+          NodeModule.syncBuiltinESMExports();
+        },
+      };
+      NodeModule.syncBuiltinESMExports();
+      const codes = yield* Effect.all(
+        Array.from({ length: 16 }, () =>
+          spawner.spawn(ChildProcess.make("/bin/true")).pipe(Effect.flatMap((c) => c.exitCode)),
+        ),
+        { concurrency: "unbounded" },
+      );
+      expect(codes).toEqual(Array.from({ length: 16 }, () => 0));
+      expect(helpers.length).toBeLessThanOrEqual(2);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.live("preserves stdin, fast output, env, cwd, literal args and additional descriptors", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

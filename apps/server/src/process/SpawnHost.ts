@@ -11,8 +11,8 @@ import { resolveSelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeR
 
 import type { SpawnHostEvent, SpawnHostSpawnRequest } from "./spawnHostProcess.ts";
 
-// A blocked native spawn occupies its host; already-running children share available hosts.
-const MAX_IDLE_HOSTS = 1;
+// A second host keeps launches moving while one is blocked inside native spawn.
+const MAX_HOSTS = 2;
 const HOST_READY_TIMEOUT_MS = 10_000;
 
 class HostedChild
@@ -99,7 +99,7 @@ class SpawnHost {
   readonly children = new Map<number, HostedChild>();
   ready = false;
   closed = false;
-  request: SpawnHostSpawnRequest | undefined;
+  readonly pending = new Map<number, SpawnHostSpawnRequest>();
   #nextId = 0;
   readonly #readyTimer: NodeJS.Timeout;
 
@@ -137,7 +137,7 @@ class SpawnHost {
   ): HostedChild {
     const child = new HostedChild(this, ++this.#nextId);
     this.children.set(child.id, child);
-    this.request = {
+    const request: SpawnHostSpawnRequest = {
       type: "spawn",
       id: child.id,
       referenced: child.referenced,
@@ -145,8 +145,9 @@ class SpawnHost {
       args,
       options: { ...options, cwd: options.cwd ?? process.cwd(), env: options.env ?? process.env },
     };
+    this.pending.set(child.id, request);
     this.syncRef();
-    if (this.ready) this.send();
+    if (this.ready) this.send(request);
     return child;
   }
 
@@ -164,8 +165,8 @@ class SpawnHost {
     }
   }
 
-  send(): void {
-    this.process.send(this.request!, (error) => {
+  send(request: SpawnHostSpawnRequest): void {
+    this.process.send(request, (error) => {
       if (error) this.fail(error);
     });
   }
@@ -178,7 +179,7 @@ class SpawnHost {
     if (event.type === "ready") {
       clearTimeout(this.#readyTimer);
       this.ready = true;
-      if (this.request) this.send();
+      for (const request of this.pending.values()) this.send(request);
       return;
     }
     const child = this.children.get(event.id);
@@ -191,7 +192,7 @@ class SpawnHost {
         if (socket) child.attach(event.fd, socket);
         break;
       case "spawn":
-        this.request = undefined;
+        this.pending.delete(child.id);
         child.pid = event.pid;
         if (child.signal !== undefined) child.kill(child.signal);
         child.emit("spawn");
@@ -212,9 +213,8 @@ class SpawnHost {
 
   release(child: HostedChild): void {
     this.children.delete(child.id);
-    if (this.request?.id === child.id) this.request = undefined;
+    this.pending.delete(child.id);
     this.syncRef();
-    this.pool.release(this);
   }
 
   fail(error: Error): void {
@@ -263,19 +263,21 @@ class SpawnPool {
     args: ReadonlyArray<string>,
     options: NodeChildProcess.SpawnOptions,
   ) => {
-    let host = [...this.hosts].find((candidate) => candidate.request === undefined);
-    if (!host) {
-      host = new SpawnHost(this, this.command, this.args);
-      this.hosts.add(host);
-    }
+    const hosts = [...this.hosts];
+    const host =
+      hosts.find((candidate) => candidate.pending.size === 0) ??
+      (hosts.length < MAX_HOSTS
+        ? this.start()
+        : hosts.reduce((least, candidate) =>
+            candidate.pending.size < least.pending.size ? candidate : least,
+          ));
     return host.spawn(command, args, options);
   };
 
-  release(host: SpawnHost): void {
-    if (
-      [...this.hosts].filter((candidate) => candidate.children.size === 0).length > MAX_IDLE_HOSTS
-    )
-      host.close();
+  start(): SpawnHost {
+    const host = new SpawnHost(this, this.command, this.args);
+    this.hosts.add(host);
+    return host;
   }
 
   close(): void {
