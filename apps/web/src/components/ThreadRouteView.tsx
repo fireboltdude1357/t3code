@@ -1,21 +1,35 @@
+import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
+import { threadFamilyRead, visibilityParentKey } from "@t3tools/client-runtime/state/threads";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import ChatView from "./ChatView";
 import { BackgroundThreadContext } from "./chat/backgroundThread";
 import { SidebarInset } from "./ui/sidebar";
+import { Button } from "./ui/button";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
-import { useEnvironmentThreadRefs, useQuietThreadShell } from "../state/entities";
+import {
+  useEnvironmentThreadRefs,
+  useAnyEnvironmentHiding,
+  useQuietThreadShell,
+} from "../state/entities";
 import { useEnvironmentShellStatus } from "../state/shell";
-import { useEnvironmentThread } from "../state/threads";
+import { environmentThreadShells, threadFamilies, useEnvironmentThread } from "../state/threads";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import {
   buildThreadRouteParams,
   isThreadRouteSnapshotAuthoritative,
   resolveThreadRouteRenderState,
   type ThreadRouteTarget,
 } from "../threadRoutes";
+
+const EMPTY_FAMILY_ATOM = Atom.make(AsyncResult.success({ snapshotSequence: 0, threads: [] }));
+const EMPTY_MOUNTED_ATOM = Atom.make(false);
 
 /**
  * Unkeyed so navigating between server threads reuses one ChatView. Rendered by the `_chat`
@@ -39,6 +53,26 @@ export function ThreadRouteView({
     draftId === null ? null : store.getPromotedDraftRedirect(draftId),
   );
   const serverThreadRef = target.kind === "server" ? target.threadRef : null;
+  const familyEnvironmentId = serverThreadRef?.environmentId;
+  const familyThreadId = serverThreadRef?.threadId;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the viewed thread's omitted family rows mounted until navigation
+  useEffect(() => {
+    if (familyEnvironmentId === undefined || familyThreadId === undefined) return;
+    return threadFamilies.mount(appAtomRegistry, familyEnvironmentId, familyThreadId);
+  }, [familyEnvironmentId, familyThreadId]);
+  const familyRead = threadFamilyRead(
+    useAtomValue(
+      serverThreadRef === null
+        ? EMPTY_FAMILY_ATOM
+        : threadFamilies.familyAtom(serverThreadRef.environmentId, serverThreadRef.threadId),
+    ),
+  );
+  const familyMounted = useAtomValue(
+    serverThreadRef === null
+      ? EMPTY_MOUNTED_ATOM
+      : threadFamilies.mountedAtom(serverThreadRef.environmentId, serverThreadRef.threadId),
+  );
+  const familySettled = familyMounted && familyRead === "settled";
   const serverThreadShell = useQuietThreadShell(serverThreadRef);
   const shellStatus = useEnvironmentShellStatus(serverThreadRef?.environmentId ?? null);
   const environmentThreadRefs = useEnvironmentThreadRefs(serverThreadRef?.environmentId ?? null);
@@ -80,6 +114,28 @@ export function ThreadRouteView({
     unlistedThreadRef?.environmentId ?? null,
     unlistedThreadRef?.threadId ?? null,
   );
+  const hiddenKeys = useAtomValue(environmentThreadShells.hiddenThreadKeysAtom);
+  const unlistedThread = Option.getOrNull(Option.map(unlistedThreadDetail.data, (p) => p.thread));
+  const unlistedParentKey =
+    unlistedThreadRef === null || unlistedThread === null
+      ? null
+      : visibilityParentKey(unlistedThreadRef.environmentId, unlistedThread);
+  const unlistedParentShell = useQuietThreadShell(
+    unlistedParentKey === null ? null : parseThreadKey(unlistedParentKey),
+  );
+  const hidingAnywhere = useAnyEnvironmentHiding();
+  const draftRedirectShell = useQuietThreadShell(draftRedirect ?? null);
+  const hiddenByTagFilter = serverThreadRef !== null && hiddenKeys.has(threadKey(serverThreadRef));
+  // Cached detail can predate a tag or an archive, so while hiding an off-shell thread opens only
+  // as the child of a loaded, visible parent (lineage never changes); anything else stays closed.
+  const offShellBlocked =
+    hidingAnywhere &&
+    unlistedThreadRef !== null &&
+    !(
+      unlistedParentKey !== null &&
+      unlistedParentShell !== null &&
+      !hiddenKeys.has(unlistedParentKey)
+    );
   const renderState = resolveThreadRouteRenderState({
     bootstrapComplete,
     serverThreadExists: serverThreadShell !== null,
@@ -105,8 +161,40 @@ export function ThreadRouteView({
 
   let view: React.ReactNode = null;
   let redirect: React.ReactNode = null;
+  if (
+    serverThreadRef !== null &&
+    (hiddenByTagFilter || offShellBlocked) &&
+    familyMounted &&
+    familyRead === "failed"
+  ) {
+    view = (
+      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-6">
+        <p className="text-sm text-muted-foreground">Could not load the thread family.</p>
+        <Button
+          variant="outline"
+          onClick={() =>
+            threadFamilies.refresh(
+              appAtomRegistry,
+              serverThreadRef.environmentId,
+              serverThreadRef.threadId,
+            )
+          }
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
   if (target.kind === "draft") {
-    if (draftSession) {
+    if (
+      draftSession &&
+      hiddenKeys.has(
+        threadKey({ environmentId: draftSession.environmentId, threadId: draftSession.threadId }),
+      )
+    ) {
+      // A draft whose thread is already live and hidden (mid-promotion): never mount it.
+      redirect = <Navigate to="/" replace />;
+    } else if (draftSession) {
       view = (
         <ChatView
           key={target.draftId}
@@ -115,6 +203,18 @@ export function ThreadRouteView({
           threadId={draftSession.threadId}
           routeKind="draft"
           forceExpandedMobileComposer
+        />
+      );
+    } else if (draftRedirect && hiddenKeys.has(threadKey(draftRedirect))) {
+      // Back to a promoted draft whose thread is now hidden: never mount it.
+      redirect = <Navigate to="/" replace />;
+    } else if (draftRedirect && hidingAnywhere && draftRedirectShell === null) {
+      // While hiding, a thread outside the live list is judged by the server route, unmounted here.
+      redirect = (
+        <Navigate
+          to="/$environmentId/$threadId"
+          params={buildThreadRouteParams(draftRedirect)}
+          replace
         />
       );
     } else if (draftRedirect) {
@@ -135,6 +235,13 @@ export function ThreadRouteView({
         />
       );
     } else {
+      redirect = <Navigate to="/" replace />;
+    }
+  } else if (hiddenByTagFilter) {
+    if (familySettled) redirect = <Navigate to="/" replace />;
+  } else if (offShellBlocked) {
+    // Before the shell bootstraps, a listed visible thread can still look off-shell.
+    if (bootstrapComplete && familySettled && unlistedThread !== null) {
       redirect = <Navigate to="/" replace />;
     }
   } else if (renderState === "ready" || (renderState === "loading" && serverThreadShell !== null)) {
