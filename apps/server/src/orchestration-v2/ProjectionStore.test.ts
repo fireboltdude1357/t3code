@@ -3447,6 +3447,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.isTrue(
         agentWindow.projection.visibleTurnItems.some((row) => row.sourceItemId === agentPromptId),
       );
+      // Later tests in this shared database expect no thread events.
+      yield* sql`DELETE FROM orchestration_events WHERE event_id LIKE 'event:bounded-sql-history:edit:%'`;
     }),
   );
 
@@ -3717,6 +3719,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         )
       `;
       assert.strictEqual((yield* forkPage()).totalItems, forkTotal + 2);
+      // Later tests in this shared database expect no thread events.
+      yield* sql`DELETE FROM orchestration_events WHERE event_id = 'event:paged-scrollback:direct'`;
     }),
   );
 
