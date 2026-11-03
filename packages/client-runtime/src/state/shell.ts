@@ -39,6 +39,7 @@ import {
 } from "./shellReducer.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
+import { makeShellSyncTiming } from "./syncTimings.ts";
 
 export type EnvironmentShellStatus = "empty" | "cached" | "synchronizing" | "live";
 
@@ -88,6 +89,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const snapshotLoader = yield* ShellSnapshotLoader.ShellSnapshotLoader;
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
+  yield* Effect.annotateCurrentSpan("environment.id", environmentId);
   const cached = yield* cache.loadShell(environmentId).pipe(
     Effect.catch((error) =>
       Effect.logWarning("Could not load cached environment shell.").pipe(
@@ -100,6 +102,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     ),
   );
   const cachedSnapshot = Option.map(cached, withoutDeferredPullRequests);
+  const syncTiming = yield* makeShellSyncTiming(environmentId, Option.isSome(cachedSnapshot));
   const state = yield* SubscriptionRef.make<EnvironmentShellState>({
     ...EMPTY_SHELL_STATE,
     snapshot: cachedSnapshot,
@@ -162,6 +165,9 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
 
   yield* runCachePersistence(persistence, persist).pipe(Effect.forkScoped);
 
+  const endStaleSyncTiming = SubscriptionRef.get(supervisor.session).pipe(
+    Effect.flatMap(syncTiming.sessionChanged),
+  );
   const setDisconnected = Ref.set(awaitingCompletion, false).pipe(
     Effect.andThen(
       SubscriptionRef.update(state, (current) => ({
@@ -169,6 +175,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         status: shellStatusForSnapshot(current.snapshot),
       })),
     ),
+    Effect.andThen(endStaleSyncTiming),
     Effect.andThen(flushLiveShellSnapshot.pipe(Effect.forkScoped)),
     Effect.asVoid,
   );
@@ -257,6 +264,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         if (Option.isSome(next.snapshot)) {
           next = { ...next, status: "live", error: Option.none() };
         }
+        yield* syncTiming.live(next.snapshot);
         continue;
       }
       const authoritative = item.resolvedRepositoryIdentityRoots === undefined;
@@ -395,6 +403,10 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         const hasAuthoritativeSnapshot = (yield* Ref.get(lastAuthoritativeSession)) === session;
         let canResume = hasAuthoritativeSnapshot;
         let current = yield* SubscriptionRef.get(state);
+        yield* syncTiming.subscriptionStarted(
+          session,
+          hasAuthoritativeSnapshot && Option.isSome(current.snapshot),
+        );
         if (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot)) {
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
@@ -428,6 +440,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
                 : httpSnapshot.value.threads.map((thread) => thread.id),
             );
             yield* applyItems([{ kind: "snapshot", snapshot }], pendingLinkIds);
+            yield* syncTiming.httpApplied;
             canResume = true;
             current = yield* SubscriptionRef.get(state);
             if (Option.isSome(current.snapshot)) {
@@ -460,7 +473,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     Stream.runForEach((connectionState) => {
       switch (connectionProjectionPhase(connectionState)) {
         case "synchronizing":
-          return setSynchronizing;
+          return Effect.andThen(setSynchronizing, endStaleSyncTiming);
         case "disconnected":
           return setDisconnected;
         case "ready":
