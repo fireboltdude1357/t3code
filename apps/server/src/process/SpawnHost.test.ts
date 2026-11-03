@@ -112,6 +112,36 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("SpawnHost", ()
     }),
   );
 
+  it.live("serves a burst of concurrent launches from at most two hosts", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const nativeSpawn = NodeChildProcess.spawn;
+      const helpers: NodeChildProcess.ChildProcess[] = [];
+      using _spawn = vi
+        .spyOn(NodeChildProcess, "spawn")
+        .mockImplementation((command, args, options) => {
+          const helper = nativeSpawn(command, args, options);
+          helpers.push(helper);
+          return helper;
+        });
+      using _restore = {
+        [Symbol.dispose]() {
+          _spawn.mockRestore();
+          NodeModule.syncBuiltinESMExports();
+        },
+      };
+      NodeModule.syncBuiltinESMExports();
+      const codes = yield* Effect.all(
+        Array.from({ length: 16 }, () =>
+          spawner.spawn(ChildProcess.make("/bin/true")).pipe(Effect.flatMap((c) => c.exitCode)),
+        ),
+        { concurrency: "unbounded" },
+      );
+      expect(codes).toEqual(Array.from({ length: 16 }, () => 0));
+      expect(helpers.length).toBeLessThanOrEqual(2);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.live("preserves stdin, fast output, env, cwd, literal args and additional descriptors", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -304,16 +334,18 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("SpawnHost", ()
 
   it.live("fails launcher startup without retrying the target on the server", () =>
     Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const result = yield* spawner.spawn(ChildProcess.make("/bin/true")).pipe(Effect.result);
-      expect(Result.isFailure(result)).toBe(true);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        SpawnHost.layerHost("/t3-missing-launcher-30183", []).pipe(
-          Layer.provide(NodeServices.layer),
-        ),
-      ),
-    ),
+      for (const launcher of [
+        SpawnHost.layerHost("/t3-missing-launcher-30183", []),
+        SpawnHost.layerHost(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
+          readyTimeoutMs: 1,
+        }),
+      ]) {
+        const result = yield* Effect.gen(function* () {
+          const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+          return yield* spawner.spawn(ChildProcess.make("/bin/true")).pipe(Effect.result);
+        }).pipe(Effect.scoped, Effect.provide(launcher.pipe(Layer.provide(NodeServices.layer))));
+        expect(Result.isFailure(result)).toBe(true);
+      }
+    }),
   );
 });

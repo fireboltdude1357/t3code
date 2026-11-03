@@ -9,11 +9,14 @@ import * as Layer from "effect/Layer";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeRuntime";
 
-import type { SpawnHostEvent, SpawnHostSpawnRequest } from "./spawnHostProcess.ts";
+import {
+  SPAWN_HOST_COMMAND,
+  type SpawnHostEvent,
+  type SpawnHostSpawnRequest,
+} from "./spawnHostProcess.ts";
 
-// A blocked native spawn occupies its host; already-running children share available hosts.
-const MAX_IDLE_HOSTS = 1;
-const HOST_READY_TIMEOUT_MS = 10_000;
+// A second host keeps launches moving while one is blocked inside native spawn.
+const MAX_HOSTS = 2;
 
 class HostedChild
   extends NodeEvents.EventEmitter
@@ -99,26 +102,30 @@ class SpawnHost {
   readonly children = new Map<number, HostedChild>();
   ready = false;
   closed = false;
-  request: SpawnHostSpawnRequest | undefined;
+  readonly pending = new Map<number, SpawnHostSpawnRequest>();
   #nextId = 0;
   readonly #readyTimer: NodeJS.Timeout;
 
   readonly pool: SpawnPool;
 
-  constructor(pool: SpawnPool, command: string, args: ReadonlyArray<string>) {
+  constructor(pool: SpawnPool) {
     this.pool = pool;
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
-    this.process = NodeChildProcess.spawn(command, [...args], {
+    this.process = NodeChildProcess.spawn(pool.command, [...pool.args], {
       cwd: "/",
       env,
       stdio: ["inherit", "inherit", "inherit", "ipc"],
     });
     this.process.unref();
     this.#readyTimer = setTimeout(() => {
-      this.process.kill("SIGKILL");
-      this.fail(new Error("The process launcher did not start in time."));
-    }, HOST_READY_TIMEOUT_MS);
+      // After a stalled loop, timers run before poll reads a ready message already in the pipe.
+      setImmediate(() => {
+        if (this.ready || this.closed) return;
+        this.process.kill("SIGKILL");
+        this.fail(new Error("The process launcher did not start in time."));
+      });
+    }, pool.readyTimeoutMs);
     this.#readyTimer.unref();
     this.process.on("message", (event, socket) =>
       this.onEvent(event as SpawnHostEvent, socket as NodeNet.Socket | undefined),
@@ -137,7 +144,7 @@ class SpawnHost {
   ): HostedChild {
     const child = new HostedChild(this, ++this.#nextId);
     this.children.set(child.id, child);
-    this.request = {
+    const request: SpawnHostSpawnRequest = {
       type: "spawn",
       id: child.id,
       referenced: child.referenced,
@@ -145,8 +152,9 @@ class SpawnHost {
       args,
       options: { ...options, cwd: options.cwd ?? process.cwd(), env: options.env ?? process.env },
     };
+    this.pending.set(child.id, request);
     this.syncRef();
-    if (this.ready) this.send();
+    if (this.ready) this.send(request);
     return child;
   }
 
@@ -164,8 +172,8 @@ class SpawnHost {
     }
   }
 
-  send(): void {
-    this.process.send(this.request!, (error) => {
+  send(request: SpawnHostSpawnRequest): void {
+    this.process.send(request, (error) => {
       if (error) this.fail(error);
     });
   }
@@ -178,7 +186,7 @@ class SpawnHost {
     if (event.type === "ready") {
       clearTimeout(this.#readyTimer);
       this.ready = true;
-      if (this.request) this.send();
+      for (const request of this.pending.values()) this.send(request);
       return;
     }
     const child = this.children.get(event.id);
@@ -191,7 +199,7 @@ class SpawnHost {
         if (socket) child.attach(event.fd, socket);
         break;
       case "spawn":
-        this.request = undefined;
+        this.pending.delete(child.id);
         child.pid = event.pid;
         if (child.signal !== undefined) child.kill(child.signal);
         child.emit("spawn");
@@ -212,9 +220,8 @@ class SpawnHost {
 
   release(child: HostedChild): void {
     this.children.delete(child.id);
-    if (this.request?.id === child.id) this.request = undefined;
+    this.pending.delete(child.id);
     this.syncRef();
-    this.pool.release(this);
   }
 
   fail(error: Error): void {
@@ -252,10 +259,12 @@ class SpawnPool {
 
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly readyTimeoutMs: number;
 
-  constructor(command: string, args: ReadonlyArray<string>) {
+  constructor(command: string, args: ReadonlyArray<string>, readyTimeoutMs: number) {
     this.command = command;
     this.args = args;
+    this.readyTimeoutMs = readyTimeoutMs;
   }
 
   readonly spawn = (
@@ -263,19 +272,21 @@ class SpawnPool {
     args: ReadonlyArray<string>,
     options: NodeChildProcess.SpawnOptions,
   ) => {
-    let host = [...this.hosts].find((candidate) => candidate.request === undefined);
-    if (!host) {
-      host = new SpawnHost(this, this.command, this.args);
-      this.hosts.add(host);
-    }
+    const hosts = [...this.hosts];
+    const host =
+      hosts.find((candidate) => candidate.pending.size === 0) ??
+      (hosts.length < MAX_HOSTS
+        ? this.start()
+        : hosts.reduce((least, candidate) =>
+            candidate.pending.size < least.pending.size ? candidate : least,
+          ));
     return host.spawn(command, args, options);
   };
 
-  release(host: SpawnHost): void {
-    if (
-      [...this.hosts].filter((candidate) => candidate.children.size === 0).length > MAX_IDLE_HOSTS
-    )
-      host.close();
+  start(): SpawnHost {
+    const host = new SpawnHost(this);
+    this.hosts.add(host);
+    return host;
   }
 
   close(): void {
@@ -283,10 +294,14 @@ class SpawnPool {
   }
 }
 
-export const layerHost = (command: string, args: ReadonlyArray<string>) =>
+export const layerHost = (
+  command: string,
+  args: ReadonlyArray<string>,
+  { readyTimeoutMs = 10_000 }: { readonly readyTimeoutMs?: number } = {},
+) =>
   Layer.unwrap(
     Effect.acquireRelease(
-      Effect.sync(() => new SpawnPool(command, args)),
+      Effect.sync(() => new SpawnPool(command, args, readyTimeoutMs)),
       (pool) => Effect.sync(() => pool.close()),
     ).pipe(Effect.map((pool) => NodeChildProcessSpawner.layerWithSpawn(pool.spawn))),
   );
@@ -295,6 +310,6 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     if ((yield* HostProcess.Platform) !== "linux") return NodeChildProcessSpawner.layer;
     const invocation = yield* resolveSelfInvocation();
-    return layerHost(invocation.command, selfInvocationArgs(invocation, ["__spawn-host"]));
+    return layerHost(invocation.command, selfInvocationArgs(invocation, [SPAWN_HOST_COMMAND]));
   }),
 );
