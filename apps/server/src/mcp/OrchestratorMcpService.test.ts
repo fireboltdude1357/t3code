@@ -1716,6 +1716,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const createdIds = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
         const layerDependencies = Layer.mergeAll(
           NodeServices.layer,
+          NodeCrypto.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             assertProviderInstanceEnabled: () => Effect.void,
             hasReceipt: () => Effect.succeed(false),
