@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
@@ -82,6 +83,7 @@ function layerEnvironment(
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         DesktopConfig.layerTest({
           T3CODE_HOME: baseDir,
           T3CODE_PORT: "9999",
@@ -134,7 +136,7 @@ const withHarness = <A, E, R>(
         ),
       ),
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 interface PackagedWslHarnessContext {
   readonly baseDir: string;
@@ -226,7 +228,7 @@ const withPackagedWslHarness = <A, E, R>(
         ),
       ),
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 describe("DesktopBackendConfiguration", () => {
   it.effect("resolvePrimary produces a stable scoped bootstrap token", () =>
@@ -351,7 +353,7 @@ describe("DesktopBackendConfiguration", () => {
         path.join(resourcesPath, "server.asar/apps/server/dist/bin.mjs"),
       );
       assert.equal(config.env.ELECTRON_RUN_AS_NODE, "1");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("resolveWsl pins a default-tracking run to the concrete default distro", () =>
@@ -411,7 +413,7 @@ describe("DesktopBackendConfiguration", () => {
       assert.deepEqual(config.args.slice(0, 2), ["-d", "Ubuntu"]);
       assert.deepEqual(observedDistros, ["Ubuntu", "Ubuntu", "Ubuntu"]);
       assert.isTrue(Option.isNone(config.preflightFailure));
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("resolveWsl launches a packaged backend from the WSL-local runtime cache", () => {
@@ -700,7 +702,7 @@ describe("DesktopBackendConfiguration", () => {
         assert.notInclude(config.args, "/bin/sh");
         assert.notInclude(config.args, "-c");
         assert.isTrue(Option.isNone(config.preflightFailure));
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("resolvePrimary and resolveWsl share one token under concurrent resolution", () =>
@@ -768,7 +770,7 @@ describe("DesktopBackendConfiguration", () => {
         restoreEnv("T3CODE_TELEMETRY_ENABLED", previousTelemetry);
         restoreEnv("OTEL_RESOURCE_ATTRIBUTES", previousResourceAttributes);
       }
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("resolveWsl preserves existing WSLENV entries when forwarding backend secrets", () =>
@@ -835,7 +837,7 @@ describe("DesktopBackendConfiguration", () => {
         restoreEnv("T3CODE_OTLP_PROTOCOL", previousOtlpProtocol);
         for (const [name, value] of ambientOtel) restoreEnv(name, value);
       }
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -872,7 +874,7 @@ describe("DesktopBackendConfiguration", () => {
             ),
           ),
         );
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -915,7 +917,7 @@ describe("DesktopBackendConfiguration", () => {
             ),
           ),
         );
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("resolveWsl marks a missing packaged server entry as fatal", () =>
@@ -948,7 +950,7 @@ describe("DesktopBackendConfiguration", () => {
           ),
         ),
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("prefers the external packaged resource monitor over the copy inside the asar", () =>
@@ -997,7 +999,7 @@ describe("DesktopBackendConfiguration", () => {
           ),
         ),
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it("resolvePrimaryLabel is runSync-safe against the real WSL availability probe", async () => {
@@ -1018,7 +1020,7 @@ describe("DesktopBackendConfiguration", () => {
           ),
         ),
         Layer.provideMerge(layerEnvironment("/tmp/t3-wsl-isavailable", { platform: "win32" })),
-        Layer.provide(NodeServices.layer),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       ),
     );
     try {
