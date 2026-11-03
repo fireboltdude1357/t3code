@@ -13,7 +13,6 @@ import type { SpawnHostEvent, SpawnHostSpawnRequest } from "./spawnHostProcess.t
 
 // A second host keeps launches moving while one is blocked inside native spawn.
 const MAX_HOSTS = 2;
-const HOST_READY_TIMEOUT_MS = 10_000;
 
 class HostedChild
   extends NodeEvents.EventEmitter
@@ -105,20 +104,24 @@ class SpawnHost {
 
   readonly pool: SpawnPool;
 
-  constructor(pool: SpawnPool, command: string, args: ReadonlyArray<string>) {
+  constructor(pool: SpawnPool) {
     this.pool = pool;
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
-    this.process = NodeChildProcess.spawn(command, [...args], {
+    this.process = NodeChildProcess.spawn(pool.command, [...pool.args], {
       cwd: "/",
       env,
       stdio: ["inherit", "inherit", "inherit", "ipc"],
     });
     this.process.unref();
     this.#readyTimer = setTimeout(() => {
-      this.process.kill("SIGKILL");
-      this.fail(new Error("The process launcher did not start in time."));
-    }, HOST_READY_TIMEOUT_MS);
+      // After a stalled loop, timers run before poll reads a ready message already in the pipe.
+      setImmediate(() => {
+        if (this.ready || this.closed) return;
+        this.process.kill("SIGKILL");
+        this.fail(new Error("The process launcher did not start in time."));
+      });
+    }, pool.readyTimeoutMs);
     this.#readyTimer.unref();
     this.process.on("message", (event, socket) =>
       this.onEvent(event as SpawnHostEvent, socket as NodeNet.Socket | undefined),
@@ -252,10 +255,12 @@ class SpawnPool {
 
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly readyTimeoutMs: number;
 
-  constructor(command: string, args: ReadonlyArray<string>) {
+  constructor(command: string, args: ReadonlyArray<string>, readyTimeoutMs: number) {
     this.command = command;
     this.args = args;
+    this.readyTimeoutMs = readyTimeoutMs;
   }
 
   readonly spawn = (
@@ -275,7 +280,7 @@ class SpawnPool {
   };
 
   start(): SpawnHost {
-    const host = new SpawnHost(this, this.command, this.args);
+    const host = new SpawnHost(this);
     this.hosts.add(host);
     return host;
   }
@@ -285,10 +290,14 @@ class SpawnPool {
   }
 }
 
-export const layerHost = (command: string, args: ReadonlyArray<string>) =>
+export const layerHost = (
+  command: string,
+  args: ReadonlyArray<string>,
+  { readyTimeoutMs = 10_000 }: { readonly readyTimeoutMs?: number } = {},
+) =>
   Layer.unwrap(
     Effect.acquireRelease(
-      Effect.sync(() => new SpawnPool(command, args)),
+      Effect.sync(() => new SpawnPool(command, args, readyTimeoutMs)),
       (pool) => Effect.sync(() => pool.close()),
     ).pipe(Effect.map((pool) => NodeChildProcessSpawner.layerWithSpawn(pool.spawn))),
   );

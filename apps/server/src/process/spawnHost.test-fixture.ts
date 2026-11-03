@@ -35,4 +35,19 @@ const gatedSpawn = (
 };
 NodeChildProcess.spawn = gatedSpawn as typeof NodeChildProcess.spawn;
 NodeModule.syncBuiltinESMExports();
+
+const readyFifo = process.argv[2];
+const send = process.send?.bind(process);
+if (readyFifo && send) {
+  // Writes the FIFO once the ready message is in the IPC pipe.
+  process.send = ((
+    message: { readonly type: string },
+    handle: undefined,
+    callback?: (error: Error | null) => void,
+  ) =>
+    send(message, handle, (error) => {
+      if (message.type === "ready") NodeFS.writeFileSync(readyFifo, "ready");
+      callback?.(error);
+    })) as NonNullable<typeof process.send>;
+}
 runSpawnHost();
