@@ -1145,10 +1145,6 @@ const encodeThreadPayload = Schema.encodeEffect(
 const encodeThreadUpdatedAt = Schema.encodeEffect(
   OrchestrationV2AppThreadJsonSchema.fields.updatedAt,
 );
-// Message and turn-item timestamps encode the same way inside their payloads.
-// Encoding them directly avoids parsing the payload JSON, which carries the
-// full streamed text, back just to read them.
-const encodePayloadTimestamp = Schema.encodeEffect(Schema.DateTimeUtcFromString);
 const encodeRunPayload = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2RunJsonSchema));
 const encodeRestartCancelledBackgroundWork = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema.fields.restartCancelledBackgroundWork),
@@ -1183,6 +1179,8 @@ const encodePlanPayload = Schema.encodeEffect(
 const encodeTurnItemPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2TurnItemJsonSchema),
 );
+// The codec every *Json payload schema uses for timestamps, so index columns match payload_json.
+const encodePayloadTimestamp = Schema.encodeEffect(Schema.DateTimeUtcFromString);
 const encodeCheckpointScopePayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2CheckpointScopeJsonSchema),
 );
@@ -4117,6 +4115,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND (
                   ${booleanInt(options.autoResume)}
                   OR (${booleanInt(options.snooze)} AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)}))
+                )
+                -- A subagent of a settled parent is abandoned work; resuming it would wake the parent.
+                AND NOT EXISTS (
+                  SELECT 1 FROM orchestration_v2_projection_threads parent
+                  WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                    AND parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
+                    AND json_extract(parent.payload_json, '$.settledOverride') = 'settled'
                 )
               )
             )
