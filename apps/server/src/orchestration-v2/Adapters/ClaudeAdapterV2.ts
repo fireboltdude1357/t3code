@@ -5195,7 +5195,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (typeof usage !== "number") {
             if (claudeMessageInputTokens(usage) <= 0) return;
             context.compactionTokens = undefined;
-            if ("promptCacheTtlMs" in tokenUsage) context.promptCacheTtlMs = tokenUsage.promptCacheTtlMs;
+            if ("promptCacheTtlMs" in tokenUsage)
+              context.promptCacheTtlMs = tokenUsage.promptCacheTtlMs;
           }
           yield* emitProviderEvent({
             type: "provider_turn.updated",
