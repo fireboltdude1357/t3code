@@ -103,6 +103,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
 }) {
   const listRef = useRef<HTMLDivElement>(null);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the highlighted menu item's DOM node into view
   useLayoutEffect(() => {
     if (!props.activeItemId || !listRef.current) return;
     const el = listRef.current.querySelector<HTMLElement>(
@@ -151,7 +152,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
           <div className="px-5 pt-3.5 pb-7">
             <p className="text-secondary-label text-xs">
               {props.isLoading
-                ? props.triggerKind === "skill"
+                ? props.triggerKind === "skill" || props.triggerKind === "slash-command"
                   ? "Searching workspace skills..."
                   : props.triggerKind === "pull-request"
                     ? "Finding pull request..."
