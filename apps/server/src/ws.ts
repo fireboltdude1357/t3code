@@ -1076,6 +1076,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     readonly afterSequence?: number;
     readonly requestCompletionMarker?: boolean;
     readonly omitIdleSubagents?: boolean;
+    readonly omitIdleSubagentParents?: boolean;
     readonly omitOlderSettled?: boolean;
   }) {
     const sql = yield* SqlClient.SqlClient;
@@ -1117,6 +1118,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
         latestSequence: applicationEvents.latestApplicationSequence,
         options: {
           omitIdleSubagents: input.omitIdleSubagents === true,
+          omitIdleSubagentParents: input.omitIdleSubagentParents === true,
           omitOlderSettled: input.omitOlderSettled === true,
         },
       });
