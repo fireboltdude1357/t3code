@@ -302,6 +302,17 @@ it.effect("prunes events the projections cover once the retained day has passed"
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("counts the fork pruner's old replay floors as pruned", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const events = yield* OrchestrationEventStore.OrchestrationEventStore;
+    assert.equal(yield* events.prunedThroughSequence, 0);
+    yield* sql`INSERT INTO orchestration_v2_event_retention (thread_id, replay_floor)
+      VALUES ('thread:old-a', 40), ('thread:old-b', 75)`;
+    assert.equal(yield* events.prunedThroughSequence, 75);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("keeps the anchor a retained stream head borrows from", () =>
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
