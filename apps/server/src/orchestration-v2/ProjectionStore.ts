@@ -7090,6 +7090,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               title: state.thread.title,
               lineage: state.thread.lineage,
               modelSelection: state.thread.modelSelection,
+              interactionMode: state.thread.interactionMode,
               settledOverride: state.thread.settledOverride,
               updatedAt: state.updatedAt,
               status: state.latestRunStatus,
