@@ -128,7 +128,6 @@ function NewTaskHeader(props: {
       <AppBar
         title={props.title}
         subtitle={props.subtitle ?? undefined}
-        sidebar={false}
         options={{ headerBackVisible: true }}
         hideBottomBorder
         onBack={goBack}
