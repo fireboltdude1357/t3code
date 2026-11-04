@@ -576,8 +576,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       // ChatGPT login has subscription limits; asking without one fails, as it
       // does for a custom model provider with no `codex login`.
       input.skipNativeUsage || accountResponse.account?.type !== "chatgpt"
-        ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-          Effect.succeed(undefined)
+        ? Effect.undefined
         : withCodexDiscoveryDeadline(
             client.request("account/rateLimits/read", null),
             deadlineMs,

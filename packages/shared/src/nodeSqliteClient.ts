@@ -448,8 +448,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
         if (slots[slot] === reader) slots[slot] = undefined;
         void reader.worker.terminate();
       }
-      // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-      if (unavailable) return Effect.succeed(undefined);
+      if (unavailable) return Effect.undefined;
       unavailable = true;
       return Effect.logWarning("SQLite reader worker unavailable; reads use the main connection", {
         reason,
@@ -458,8 +457,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
 
   const connect = (slot: number) =>
     Effect.suspend((): Effect.Effect<Connection | undefined> => {
-      // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-      if (unavailable) return Effect.succeed(undefined);
+      if (unavailable) return Effect.undefined;
       let reader: Reader;
       try {
         reader = slots[slot] ?? start(slot);
@@ -479,8 +477,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
         (startup): Effect.Effect<Connection | undefined> =>
           // A late ready event must not hand out a worker retired by another acquire timeout.
           unavailable || slots[slot] !== reader
-            ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-              Effect.succeed(undefined)
+            ? Effect.undefined
             : Option.isSome(startup) && startup.value.type === "ready"
               ? Effect.succeed(reader.connection)
               : turnOff(
@@ -545,8 +542,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
   /** Undefined means reads use the writer. Run masked; `wait` restores the caller's interruptibility. */
   return (wait: typeof Effect.interruptible): Effect.Effect<ReaderLease | undefined> =>
     unavailable
-      ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-        Effect.succeed(undefined)
+      ? Effect.undefined
       : Effect.flatMap(take(wait), (slot) =>
           Effect.onExit(connect(slot), (exit) =>
             Exit.isSuccess(exit) && exit.value !== undefined ? Effect.void : release(slot),
