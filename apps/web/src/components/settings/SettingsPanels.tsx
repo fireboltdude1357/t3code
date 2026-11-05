@@ -555,6 +555,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       : []),
     ...(settings.defaultEnvironmentId !== DEFAULT_UNIFIED_SETTINGS.defaultEnvironmentId
       ? ["Default machine"]
+      : []),
     ...(settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout
       ? ["Clone into host folders"]
       : []),
