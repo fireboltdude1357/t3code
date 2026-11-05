@@ -1,5 +1,9 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { getCloneDestinationPath } from "@t3tools/client-runtime/operations/projects";
+import {
+  getAddProjectInitialQuery,
+  getCloneDestinationPath,
+  getCloneDirectoryPath,
+} from "@t3tools/client-runtime/operations/projects";
 import {
   findPromptLinkProjects,
   findPromptLinkPullRequestThread,
@@ -200,15 +204,16 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
   const cloneRepository = async (repository: PromptLinkRepository) => {
     // A default machine the user picked wins when it can clone; otherwise clone where they
     // worked last.
-    const newProjectsRootFor = (id: EnvironmentId | null) =>
-      environments.find((entry) => entry.environmentId === id)?.serverConfig?.newProjectsRoot ??
-      null;
+    const serverConfigFor = (id: EnvironmentId | null) =>
+      environments.find((entry) => entry.environmentId === id)?.serverConfig ?? null;
     const environmentId =
-      defaultEnvironmentId !== primaryEnvironmentId && newProjectsRootFor(defaultEnvironmentId)
+      defaultEnvironmentId !== primaryEnvironmentId &&
+      serverConfigFor(defaultEnvironmentId)?.newProjectsRoot
         ? defaultEnvironmentId
         : lastActiveEnvironmentId();
-    const newProjectsRoot = newProjectsRootFor(environmentId);
-    if (environmentId === null || newProjectsRoot === null) {
+    const serverConfig = serverConfigFor(environmentId);
+    const newProjectsRoot = serverConfig?.newProjectsRoot ?? null;
+    if (environmentId === null || serverConfig === null || newProjectsRoot === null) {
       setState({
         status: "failed",
         message:
@@ -218,14 +223,21 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
     }
     setState({ status: "opening" });
     const projectId = newProjectId();
+    const remoteUrl = `https://github.com/${repository.owner}/${repository.name}.git`;
+    const settings = serverConfig.settings;
     const result = await startProjectClone({
       environmentId,
       input: {
         projectId,
         title: repository.name,
         createdAt: new Date().toISOString(),
-        remoteUrl: `https://github.com/${repository.owner}/${repository.name}.git`,
-        destinationPath: getCloneDestinationPath(newProjectsRoot, repository.name),
+        remoteUrl,
+        destinationPath: getCloneDestinationPath(
+          settings.ghqCloneLayout
+            ? getAddProjectInitialQuery(settings.addProjectBaseDirectory)
+            : newProjectsRoot,
+          getCloneDirectoryPath(remoteUrl, settings.ghqCloneLayout === true),
+        ),
       },
     });
     if (result._tag === "Failure") {
