@@ -820,7 +820,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
         },
       }),
     ),
-    apiKey: TrimmedString.pipe(
+    apiKey: SettingsSecretValue.pipe(
       secretSetting,
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -1761,6 +1761,10 @@ export function requiredScopesForServerSettingsPatch(
     } else {
       changesSettings = true;
     }
+  }
+  // Removing a secret provider also clears the settings fields that read from it.
+  if (Object.values(patch.secretProviders ?? {}).some((entry) => entry === null)) {
+    changesSettings = true;
   }
   return [
     ...(changesSettings || !changesProviders ? [AuthSettingsWriteScope] : []),
