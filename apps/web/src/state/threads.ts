@@ -18,6 +18,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
+import { serverEnvironment } from "./server";
 import { environmentShell } from "./shell";
 
 export const threadFamilies = createThreadFamilyAtoms(
@@ -35,6 +36,7 @@ export const threadEnvironment = createThreadEnvironmentAtoms(
 export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: threadEnvironment.snapshotAtom,
+  hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
 });
 const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime, {
   threadShellAtom: environmentThreadShells.threadShellAtom,
