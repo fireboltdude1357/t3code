@@ -12,6 +12,8 @@ import type { FoundationHotModule } from "../lib/foundation-fast-refresh";
 import { hotSwappableAtomRuntime } from "../lib/hot-swappable-atom-runtime";
 import * as Runtime from "../lib/runtime";
 import { appAtomRegistry } from "../state/atom-registry";
+import { appIdentity } from "../features/diagnostics/app-identity";
+import * as ConnectionTimingSender from "../features/diagnostics/connection-timings-sender";
 import * as BackgroundActivity from "./background-activity";
 import * as ConnectionPlatform from "./platform";
 
@@ -32,7 +34,8 @@ type ConnectionLayerSource =
   | typeof Runtime.layer
   | typeof ConnectionPlatform.layer
   | typeof BackgroundActivity.layerObserver
-  | typeof BackgroundActivity.layerReporter;
+  | typeof BackgroundActivity.layerReporter
+  | ReturnType<typeof ConnectionTimingSender.layer>;
 
 const layerProvidedClientConnection = layerSnapshotLoader.pipe(
   Layer.provideMerge(
@@ -51,9 +54,10 @@ const layerProvidedClientConnection = layerSnapshotLoader.pipe(
   ),
 );
 
-const layerConnection = BackgroundActivity.layerReporter.pipe(
-  Layer.provideMerge(layerProvidedClientConnection),
-);
+const layerConnection = Layer.mergeAll(
+  BackgroundActivity.layerReporter,
+  ConnectionTimingSender.layer(appIdentity()),
+).pipe(Layer.provideMerge(layerProvidedClientConnection));
 
 export const connectionAtomRuntime: Atom.AtomRuntime<
   Layer.Success<ConnectionLayerSource>,
