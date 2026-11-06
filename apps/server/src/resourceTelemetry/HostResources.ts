@@ -1,6 +1,7 @@
 import * as NodeOS from "node:os";
 import type { HostResourcesSnapshot } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -21,6 +22,8 @@ interface CpuSample {
   readonly total: number;
   readonly count: number;
   readonly reclaimable: number | null;
+  /** The raw `os.cpus()` reading the totals came from. */
+  readonly cores: ReadonlyArray<NodeOS.CpuInfo>;
 }
 
 function readCpu(reclaimable: number | null): CpuSample {
@@ -28,11 +31,11 @@ function readCpu(reclaimable: number | null): CpuSample {
   const cpu = cpus.reduce(
     (sum, { times }) => ({
       idle: sum.idle + times.idle,
-      total: sum.total + times.user + times.nice + times.sys + times.idle + times.irq,
+      total: sum.total + coreTotal(times),
     }),
     { idle: 0, total: 0 },
   );
-  return { ...cpu, count: cpus.length, reclaimable };
+  return { ...cpu, count: cpus.length, reclaimable, cores: cpus };
 }
 
 /** Busy share between two samples, counting reclaimable cgroup time as idle. */
@@ -45,6 +48,25 @@ export function cpuUtilization(previous: CpuSample, current: CpuSample): number 
       ? Math.max(0, current.reclaimable - previous.reclaimable)
       : 0;
   return Math.min(1, Math.max(0, 1 - (idleDelta + reclaimableDelta) / totalDelta));
+}
+
+function coreTotal(times: NodeOS.CpuInfo["times"]) {
+  return times.user + times.nice + times.sys + times.idle + times.irq;
+}
+
+/** Busy share of each core between two `os.cpus()` readings; undefined when the core count changed. */
+export function cpuCoreUtilization(
+  previous: ReadonlyArray<NodeOS.CpuInfo>,
+  current: ReadonlyArray<NodeOS.CpuInfo>,
+) {
+  if (previous.length !== current.length) return undefined;
+  return Arr.zipWith(previous, current, ({ times: before }, { times: after }) => {
+    const totalDelta = coreTotal(after) - coreTotal(before);
+    const idleDelta = after.idle - before.idle;
+    return totalDelta > 0 && idleDelta >= 0
+      ? Math.min(1, Math.max(0, 1 - idleDelta / totalDelta))
+      : null;
+  });
 }
 
 function darwinAvailableMemory(output: string): number | null {
@@ -109,6 +131,7 @@ const make = Effect.fn("makeHostResources")(function* () {
     return {
       sampledAt: DateTime.toEpochMillis(yield* DateTime.now),
       cpuUtilization: cpuUtilization(previousCpu, cpu),
+      cpuCoreUtilization: cpuCoreUtilization(previousCpu.cores, cpu.cores),
       cpuCount: cpu.count,
       availableMemoryBytes: Math.min(totalMemoryBytes, Math.max(0, availableMemoryBytes)),
       totalMemoryBytes,
