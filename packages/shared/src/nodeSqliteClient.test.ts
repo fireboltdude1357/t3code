@@ -497,7 +497,7 @@ it.effect.each([
   { readerAfter: 0 },
   // The WAL is fully backfilled, but the reader's snapshot stops the TRUNCATE reset.
   // At about 257 frames per 1 MiB row, the 128th row crosses the 32,768-frame ceiling.
-  { readerAfter: 126 },
+  { readerAfter: 127 },
 ])(
   "keeps admitting writes while an outside read transaction pins the WAL (readerAfter=$readerAfter)",
   ({ readerAfter }) =>
@@ -588,7 +588,8 @@ it.effect("resets the WAL once an outside reader that stopped TRUNCATE closes", 
         if (message?.type !== "checkpoint" || message.truncateId === undefined) return;
         Deferred.doneUnsafe(message.log === 0 ? reset : stopped, Effect.void);
       });
-      // Same shape as readerAfter=126 above: the reader opens on a fully backfilled WAL.
+      // The reader opens one row before the ceiling, so the write that crosses it starts a
+      // TRUNCATE the reader stops.
       for (let write = 1; write <= 126; write++) yield* sql`INSERT INTO blobs VALUES (${payload})`;
       const outside = new NodeSqlite.DatabaseSync(filename, { readOnly: true });
       outside.exec("BEGIN");
