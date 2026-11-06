@@ -16,6 +16,8 @@ export interface PendingServiceUpdate {
   readonly targetVersion: string;
   readonly dbPath: string;
   readonly status: "pending";
+  /** Set when the target applies no migration the database lacks, so the previous version can still open it. */
+  readonly skipDatabaseBackup?: true;
 }
 
 export type ServiceUpdateRecord = PendingServiceUpdate | ServerSelfUpdateOutcome;
@@ -84,7 +86,14 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   }
   if (status === "pending") {
     return typeof value.dbPath === "string" && value.dbPath.trim() !== ""
-      ? { id, fromVersion, targetVersion, dbPath: value.dbPath, status }
+      ? {
+          id,
+          fromVersion,
+          targetVersion,
+          dbPath: value.dbPath,
+          status,
+          ...(value.skipDatabaseBackup === true ? { skipDatabaseBackup: true } : {}),
+        }
       : undefined;
   }
   if (
