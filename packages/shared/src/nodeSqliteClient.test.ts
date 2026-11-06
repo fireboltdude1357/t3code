@@ -639,7 +639,9 @@ it.effect.each([
   // The reader's snapshot stops the PASSIVE backfill.
   { readerAfter: 0 },
   // The WAL is fully backfilled, but the reader's snapshot stops the TRUNCATE reset.
-  { readerAfter: 38 },
+  // With 1 KiB pages a 1 MiB row is about 1,030 frames, so the 32nd row crosses the
+  // 32,768-frame ceiling.
+  { readerAfter: 31 },
 ])(
   "keeps admitting writes while an outside read transaction pins the WAL (readerAfter=$readerAfter)",
   ({ readerAfter }) =>
@@ -654,6 +656,8 @@ it.effect.each([
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const worker = startedWorkers.at(-1)!;
+        // 1 KiB pages put the frame ceiling near 32 MiB of WAL, so checkpointing it stays quick.
+        yield* sql`PRAGMA page_size = 1024`;
         yield* sql`PRAGMA journal_mode = WAL`;
         yield* sql.unsafe(`PRAGMA journal_size_limit = ${journalSizeLimit}`);
         yield* sql`CREATE TABLE blobs(data BLOB NOT NULL)`;
@@ -683,7 +687,7 @@ it.effect.each([
               onBlocked?.(message.generation);
           },
         );
-        // 64 MiB of inserts passes both the size limit and the 10,000-frame ceiling.
+        // 64 MiB of inserts passes both the size limit and the 32,768-frame ceiling.
         for (let write = 1; write <= 64; write++) {
           if (write === readerAfter + 1) yield* openReader;
           const stalled = yield* Deferred.make<void>();
@@ -730,8 +734,9 @@ it.effect("resets the WAL once an outside reader that stopped TRUNCATE closes", 
         if (message?.type !== "checkpoint" || message.truncateId === undefined) return;
         Deferred.doneUnsafe(message.log === 0 ? reset : stopped, Effect.void);
       });
-      // Same shape as readerAfter=38 above: the reader opens on a fully backfilled WAL.
-      for (let write = 1; write <= 38; write++) yield* sql`INSERT INTO blobs VALUES (${payload})`;
+      // The reader opens one row before the ceiling, so the write that crosses it starts a
+      // TRUNCATE the reader stops.
+      for (let write = 1; write <= 126; write++) yield* sql`INSERT INTO blobs VALUES (${payload})`;
       const outside = new NodeSqlite.DatabaseSync(filename, { readOnly: true });
       outside.exec("BEGIN");
       outside.prepare("SELECT COUNT(*) FROM blobs").get();
