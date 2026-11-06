@@ -496,7 +496,8 @@ it.effect.each([
   // The reader's snapshot stops the PASSIVE backfill.
   { readerAfter: 0 },
   // The WAL is fully backfilled, but the reader's snapshot stops the TRUNCATE reset.
-  { readerAfter: 38 },
+  // At about 257 frames per 1 MiB row, the 128th row crosses the 32,768-frame ceiling.
+  { readerAfter: 126 },
 ])(
   "keeps admitting writes while an outside read transaction pins the WAL (readerAfter=$readerAfter)",
   ({ readerAfter }) =>
@@ -540,8 +541,8 @@ it.effect.each([
               onBlocked?.(message.generation);
           },
         );
-        // 64 MiB of inserts passes both the size limit and the 10,000-frame ceiling.
-        for (let write = 1; write <= 64; write++) {
+        // 160 MiB of inserts passes both the size limit and the 32,768-frame ceiling.
+        for (let write = 1; write <= 160; write++) {
           if (write === readerAfter + 1) yield* openReader;
           const stalled = yield* Deferred.make<void>();
           let seen: unknown;
@@ -562,7 +563,7 @@ it.effect.each([
             );
           }
         }
-        assert.equal(yield* countBlobs(sql), 65);
+        assert.equal(yield* countBlobs(sql), 161);
       }).pipe(Effect.provide(SqliteClient.layer({ filename, checkpointWorker: true })));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -587,8 +588,8 @@ it.effect("resets the WAL once an outside reader that stopped TRUNCATE closes", 
         if (message?.type !== "checkpoint" || message.truncateId === undefined) return;
         Deferred.doneUnsafe(message.log === 0 ? reset : stopped, Effect.void);
       });
-      // Same shape as readerAfter=38 above: the reader opens on a fully backfilled WAL.
-      for (let write = 1; write <= 38; write++) yield* sql`INSERT INTO blobs VALUES (${payload})`;
+      // Same shape as readerAfter=126 above: the reader opens on a fully backfilled WAL.
+      for (let write = 1; write <= 126; write++) yield* sql`INSERT INTO blobs VALUES (${payload})`;
       const outside = new NodeSqlite.DatabaseSync(filename, { readOnly: true });
       outside.exec("BEGIN");
       outside.prepare("SELECT COUNT(*) FROM blobs").get();
