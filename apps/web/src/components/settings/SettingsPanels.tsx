@@ -715,7 +715,7 @@ export function useSettingsRestore(onRestored?: () => void) {
   };
 }
 
-const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
+const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ?? 7;
 
 const CACHE_EXPIRY_COMPACTION_DEFAULT_TOKENS = 150_000;
 const CACHE_EXPIRY_COMPACTION_TOKEN_OPTIONS = [100_000, 150_000, 200_000, 300_000, 500_000];
