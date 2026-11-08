@@ -41,7 +41,7 @@ import {
   getProjectScopeSelectionTarget,
   resolveNewTaskScratchOption,
 } from "./new-task-project-selection";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 
 type NewTaskRouteParams = {
   readonly incomingShareId?: string | string[];
@@ -128,7 +128,6 @@ function NewTaskHeader(props: {
       <AppBar
         title={props.title}
         subtitle={props.subtitle ?? undefined}
-        options={{ headerBackVisible: true }}
         hideBottomBorder
         onBack={goBack}
         actions={
@@ -406,21 +405,27 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               </Text>
               {Platform.OS === "android" ? (
                 <>
-                  <Button
-                    label={catalogState.hasReadyEnvironment ? "Add new project" : "Add environment"}
-                    tone="primary"
-                    onPress={() =>
-                      catalogState.hasReadyEnvironment
-                        ? navigation.dispatch(StackActions.push("AddProject"))
-                        : navigation.navigate("ConnectionsNew")
-                    }
-                  />
-                  {canStartScratch ? (
+                  <View>
                     <Button
-                      label="Start without a project"
-                      tone="secondary"
-                      onPress={() => void startScratch()}
+                      label={
+                        catalogState.hasReadyEnvironment ? "Add new project" : "Add environment"
+                      }
+                      tone="primary"
+                      onPress={() =>
+                        catalogState.hasReadyEnvironment
+                          ? navigation.dispatch(StackActions.push("AddProject"))
+                          : navigation.navigate("ConnectionsNew")
+                      }
                     />
+                  </View>
+                  {canStartScratch ? (
+                    <View>
+                      <Button
+                        label="Start without a project"
+                        tone="secondary"
+                        onPress={() => void startScratch()}
+                      />
+                    </View>
                   ) : null}
                 </>
               ) : !catalogState.hasReadyEnvironment ? (
@@ -441,11 +446,13 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                     />
                   </View>
                   {canStartScratch ? (
-                    <Button
-                      label="Start without a project"
-                      tone="secondary"
-                      onPress={() => void startScratch()}
-                    />
+                    <View>
+                      <Button
+                        label="Start without a project"
+                        tone="secondary"
+                        onPress={() => void startScratch()}
+                      />
+                    </View>
                   ) : null}
                 </>
               )}
