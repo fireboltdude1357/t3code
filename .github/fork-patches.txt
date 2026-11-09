@@ -30,3 +30,4 @@ settled-pr-lookups  patch/settled-pr-lookups  pingdotgg/t3code#29721
 # spawn-host is #30209 plus fork fixes from fireboltdude1357/t3code#182 (wiring, a 2-helper pool, process guards).
 # #30209 alone never runs its helpers, so drop this line only once upstream ships those fixes too.
 spawn-host  patch/spawn-host  pingdotgg/t3code#30209
+widget-opens-app  patch/widget-opens-app
