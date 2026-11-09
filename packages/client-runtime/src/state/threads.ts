@@ -51,6 +51,7 @@ import {
 } from "./threadHistoryMerge.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
 import { makeThreadRequestsResolvedAnnouncer, pendingRuntimeRequestIds } from "./threadRequests.ts";
+import { makeThreadOpenTiming } from "./syncTimings.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
@@ -226,6 +227,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
+  yield* Effect.annotateCurrentSpan("environment.id", environmentId);
+  const openTiming = yield* makeThreadOpenTiming(environmentId, threadId);
   const candidate = resumeCache?.snapshot;
   const retained =
     candidate &&
@@ -274,6 +277,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         sequence: initialSequence,
       };
   const state = yield* SubscriptionRef.make(initialState);
+  if (Option.isSome(initialState.data)) {
+    yield* openTiming.content(retained ? "memory" : "cache", initialState.data.value);
+  }
+  if (initialState.status === "deleted") yield* openTiming.missing;
   const canLoadHistory = Option.isSome(httpClient) && Option.isSome(historyController);
   const acceptsBoundedSocketSnapshots = yield* Ref.make(canLoadHistory);
   const lastSequence = yield* SubscriptionRef.make(initialSequence);
@@ -388,6 +395,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
   yield* runCachePersistence(persistence, persist).pipe(Effect.forkScoped);
 
+  const endStaleSyncTiming = SubscriptionRef.get(supervisor.session).pipe(
+    Effect.flatMap(openTiming.sessionChanged),
+  );
   const setConnecting = SubscriptionRef.update(state, (current) =>
     current.status === "deleted" || Option.isSome(current.error)
       ? current
@@ -396,7 +406,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           status: "synchronizing" as const,
           error: Option.none(),
         },
-  );
+  ).pipe(Effect.andThen(endStaleSyncTiming));
   const setReady = SubscriptionRef.update(state, (current) =>
     current.status === "live" || current.status === "deleted" || Option.isSome(current.error)
       ? current
@@ -412,6 +422,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
     }));
+    yield* endStaleSyncTiming;
   });
   const setStreamError = (message: string) =>
     Ref.set(awaitingCompletion, false).pipe(
@@ -481,6 +492,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
     yield* Ref.set(awaitingCompletion, false);
+    yield* openTiming.missing;
     yield* SubscriptionRef.set(state, {
       data: Option.none(),
       status: "deleted",
@@ -633,22 +645,24 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
-      yield* SubscriptionRef.update(state, (current) =>
+      const synchronized = yield* SubscriptionRef.updateAndGet(state, (current) =>
         Option.isSome(current.data) && current.status !== "deleted" && Option.isNone(current.error)
           ? { ...current, status: "live" as const, error: Option.none() }
           : current,
       );
+      if (synchronized.status === "live") yield* openTiming.live(synchronized.data);
       return;
     }
 
     if (item.kind === "snapshot") {
       yield* SubscriptionRef.set(lastSequence, item.snapshotSequence);
+      const projection = boundedSnapshotProjection(item);
       const hasProgressiveHistory =
         item.historyCursor !== undefined ||
         item.hasMoreHistory !== undefined ||
         item.latestLocalTurnOrdinal !== undefined;
       yield* setThread(
-        boundedSnapshotProjection(item),
+        projection,
         hasProgressiveHistory
           ? {
               history: {
@@ -662,6 +676,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             }
           : { resetHistory: true },
       );
+      yield* openTiming.content("socket", projection);
       return;
     }
 
@@ -1013,6 +1028,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
         const config = yield* Effect.option(session.initialConfig);
         yield* Ref.set(awaitingCompletion, true);
+        yield* openTiming.subscriptionStarted(session);
         yield* markSynchronizing;
         yield* Ref.set(resumingLive, false);
 
@@ -1078,6 +1094,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                         }
                       : EMPTY_THREAD_HISTORY_META;
                   yield* setThread(httpResult.snapshot.projection, { history });
+                  yield* openTiming.content("http", httpResult.snapshot.projection);
                   yield* remember;
                 }),
               );
