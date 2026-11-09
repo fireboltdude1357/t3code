@@ -90,6 +90,11 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
                 active -= 1;
               }).pipe(Effect.andThen(Deferred.succeed(closed, undefined))),
           );
+          // A paging server cannot open a thread it does not have yet, so the
+          // client retries over HTTP, where the 404 is told apart from a failure.
+          if (input.afterSequence === undefined && snapshotMissing) {
+            return yield* Effect.die(new Error("Thread not found"));
+          }
           yield* Queue.offer(subscriptions, { afterSequence: input.afterSequence, events, closed });
           // Like a paging server, a fresh subscribe opens with the bounded snapshot.
           if (input.afterSequence === undefined && options?.socketSnapshot !== false) {
