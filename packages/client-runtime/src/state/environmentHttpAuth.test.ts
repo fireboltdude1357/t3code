@@ -20,6 +20,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 import type { HttpClient } from "effect/http";
 
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
@@ -287,7 +288,17 @@ describe("authenticated environment HTTP requests", () => {
   it.effect.each(LOADERS)("uses current relay authorization and endpoint for $name", (loader) =>
     Effect.gen(function* () {
       const harness = makeHarness(() => Response.json(loader.response));
-      const result = yield* loader.load(harness.input).pipe(Effect.provide(harness.httpLayer));
+      const spans: Array<Tracer.NativeSpan> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const result = yield* loader
+        .load(harness.input)
+        .pipe(Effect.provide(harness.httpLayer), Effect.provideService(Tracer.Tracer, tracer));
 
       expect(result).toEqual(loader.expected);
       expect(harness.calls).toHaveLength(1);
@@ -313,6 +324,15 @@ describe("authenticated environment HTTP requests", () => {
         expect(url.searchParams.get("cursor")).toBe("older-page");
       }
       expect(PREPARED.httpAuthorization).toMatchObject({ accessToken: "expired-token" });
+      // Diagnostics report this span's trace, so it must be the one the environment continues.
+      const request = spans.find(
+        (span) => span.name === "clientRuntime.state.executeAuthenticatedEnvironmentHttpRequest",
+      );
+      expect(new Headers(call.init.headers).get("traceparent")?.split("-")[1]).toBe(
+        request?.traceId,
+      );
+      expect(request?.attributes.get("http.path")).toBe(url.pathname);
+      expect(request?.attributes.get("environment.id")).toBe(TARGET.environmentId);
     }),
   );
 
