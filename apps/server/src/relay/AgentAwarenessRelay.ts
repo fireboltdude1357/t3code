@@ -129,8 +129,15 @@ function shouldPublishAgentAwarenessEvent(
     case "provider-turn.updated":
     case "turn-item.updated":
       return isTurnItemPayload(event.payload) && turnItemUpdateCanEndBackgroundWork(event.payload);
-    case "message.updated":
+    // A bot thread's finished row depends on its proposed plan staying actionable.
     case "plan.updated":
+      return (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        "kind" in event.payload &&
+        event.payload.kind === "proposed_plan"
+      );
+    case "message.updated":
     case "checkpoint-scope.created":
     case "checkpoint.captured":
     case "checkpoint.rollback-requested":
