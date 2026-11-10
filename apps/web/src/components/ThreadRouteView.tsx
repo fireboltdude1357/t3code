@@ -1,7 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { threadFamilyRead, visibilityParentKey } from "@t3tools/client-runtime/state/threads";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { Navigate, useNavigate } from "@tanstack/react-router";
@@ -18,9 +19,9 @@ import {
   useAnyEnvironmentHiding,
   useQuietThreadShell,
 } from "../state/entities";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironmentShellStatus } from "../state/shell";
 import { environmentThreadShells, threadFamilies, useEnvironmentThread } from "../state/threads";
-import { appAtomRegistry } from "../rpc/atomRegistry";
 import {
   buildThreadRouteParams,
   isThreadRouteSnapshotAuthoritative,
@@ -30,6 +31,24 @@ import {
 
 const EMPTY_FAMILY_ATOM = Atom.make(AsyncResult.success({ snapshotSequence: 0, threads: [] }));
 const EMPTY_MOUNTED_ATOM = Atom.make(false);
+
+/**
+ * Keeps the family of an open thread the shell leaves out (an older settled thread) in the shell
+ * rows until the route leaves it, so every reader of its shell row finds it.
+ */
+function useOpenThreadFamily(threadRef: ScopedThreadRef | null, missing: boolean) {
+  const key = threadRef === null ? null : scopedThreadKey(threadRef);
+  // Sticks to the route thread, so the row the family brings in does not release it.
+  const [mountedKey, setMountedKey] = useState<string | null>(null);
+  const nextKey = missing || mountedKey === key ? key : null;
+  if (nextKey !== mountedKey) setMountedKey(nextKey);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- holds the open thread's family in the thread family registry until the route leaves it
+  useEffect(() => {
+    const ref = mountedKey === null ? null : parseScopedThreadKey(mountedKey);
+    if (ref === null) return;
+    return threadFamilies.mount(appAtomRegistry, ref.environmentId, ref.threadId);
+  }, [mountedKey]);
+}
 
 /**
  * Unkeyed so navigating between server threads reuses one ChatView. Rendered by the `_chat`
@@ -114,6 +133,7 @@ export function ThreadRouteView({
     unlistedThreadRef?.environmentId ?? null,
     unlistedThreadRef?.threadId ?? null,
   );
+  useOpenThreadFamily(serverThreadRef, bootstrapComplete && unlistedThreadRef !== null);
   const hiddenKeys = useAtomValue(environmentThreadShells.hiddenThreadKeysAtom);
   const unlistedThread = Option.getOrNull(Option.map(unlistedThreadDetail.data, (p) => p.thread));
   const unlistedParentKey =
