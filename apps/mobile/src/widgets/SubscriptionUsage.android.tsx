@@ -45,7 +45,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
     { name: "Claude", detail: "Open T3 to connect", windows: [], expiresAt: 0, totalWindows: 0 },
   ];
   return (
-    // Android lacks widgetURL; one card Button routes taps to the app listener opening props.url.
+    // Android lacks widgetURL; one card Button routes taps to the app listener that opens the app.
     <Button
       colors={{ containerColor: colors.surface }}
       modifiers={[fillMaxSize()]}
