@@ -44,7 +44,8 @@ target's migrations, and compares them with `effect_sql_migrations`. If the
 target ships no migration the database lacks, the update takes no snapshot. If
 the check fails, times out, or meets an older target that doesn't report
 migrations, the update takes one. A snapshot on a filesystem without reflinks is
-a full copy made while no server runs, so skipping it keeps updates short.
+a full copy of the database, so skipping it keeps updates short and needs no
+free space. The skip covers the copy made while the old server still runs too.
 
 An update that takes a snapshot is refused first if the snapshot will not fit on
 disk, so a full disk does not cause an outage. After the old child exits, the
