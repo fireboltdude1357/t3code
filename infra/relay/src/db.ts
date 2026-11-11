@@ -81,11 +81,15 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
 
 export const RelayHyperdrive = Effect.gen(function* () {
   const { runtimeRole } = yield* PlanetscaleDatabase;
+  // Cloudflare's free Workers plan only accepts 5 to 20.
+  const originConnectionLimit = yield* Config.Int("RELAY_HYPERDRIVE_CONNECTION_LIMIT").pipe(
+    Config.withDefault(40),
+  );
   return yield* Cloudflare.Hyperdrive.Connection("RelayHyperdrive", {
     origin: runtimeRole.origin,
     caching: {
       disabled: true,
     },
-    originConnectionLimit: 40,
+    originConnectionLimit,
   });
 });
