@@ -26,7 +26,7 @@ export default function Presentation(props: {
   const [page, setPage] = useState(0);
   const [failed, setFailed] = useState<Record<number, boolean>>({});
   const scroll = useRef<((index: number, y?: number) => void) | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Open and paint slides through a worker whose requests and lifetime belong to this presentation.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Open and paint slides through a worker whose requests and lifetime belong to this presentation.
   useEffect(() => {
     const controller = new AbortController();
     const worker = new Worker(new URL("./presentation.worker.ts", import.meta.url), {
@@ -83,7 +83,7 @@ export default function Presentation(props: {
         if (slides.length === 0 || slides.length > 500)
           throw new Error("Preview limited to presentations with 1 to 500 slides.");
         setOpened({ slides, paint });
-        onDetails(`${slides.length} slides`);
+        onDetails(`${slides.length} slide${slides.length === 1 ? "" : "s"}`);
       })
       .catch(fail);
     return () => {

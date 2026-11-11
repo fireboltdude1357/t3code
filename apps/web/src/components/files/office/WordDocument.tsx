@@ -28,7 +28,7 @@ export default function WordDocument(props: {
   const { onError, bytes, onDetails } = props;
   const [opened, setOpened] = useState<Opened>();
   const scroll = useRef<((index: number, y?: number) => void) | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the document worker and cancel its layout and painting requests when the document changes or unmounts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the document worker and cancel its layout and painting requests when the document changes or unmounts.
   useEffect(() => {
     const controller = new AbortController();
     const worker = new Worker(new URL("./document.worker.ts", import.meta.url), { type: "module" });
@@ -63,7 +63,9 @@ export default function WordDocument(props: {
       .then(async (first) => {
         if (controller.signal.aborted) return;
         setOpened({ pages: first.pages, paint, engine });
-        onDetails(`${first.pages.length}${first.loading ? "+" : ""} pages`);
+        onDetails(
+          `${first.pages.length}${first.loading ? "+" : ""} page${first.pages.length === 1 && !first.loading ? "" : "s"}`,
+        );
         if (!first.loading) return;
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         while (!controller.signal.aborted) {
@@ -71,7 +73,7 @@ export default function WordDocument(props: {
           if (!step.done) continue;
           if (step.pages.length > 1000) throw new Error("Preview limited to 1,000 pages.");
           setOpened({ pages: step.pages, paint, engine });
-          onDetails(`${step.pages.length} pages`);
+          onDetails(`${step.pages.length} page${step.pages.length === 1 ? "" : "s"}`);
           break;
         }
       })
@@ -121,7 +123,7 @@ function WordTextLayer(props: {
 }) {
   const { engine, index, page, follow } = props;
   const [spans, setSpans] = useState<readonly WordSpan[]>([]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Request selectable text from the document worker and cancel the request when its page leaves the viewport.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Request selectable text from the document worker and cancel the request when its page leaves the viewport.
   useEffect(() => {
     if (!page) return;
     const controller = new AbortController();
