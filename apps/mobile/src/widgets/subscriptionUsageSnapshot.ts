@@ -9,7 +9,6 @@ import type { WidgetTheme } from "./widgetTheme";
 
 export interface SubscriptionUsageSnapshot {
   theme?: WidgetTheme;
-  url?: string;
   checkedAt: number;
   providers: Array<{
     name: string;
@@ -122,7 +121,6 @@ function subscriptionUsageProps(
 
 export function buildSubscriptionUsageSnapshot(
   presentations: LimitPresentations,
-  url: string,
   maxWindowsPerProvider = 6,
 ): SubscriptionUsageSnapshot {
   const configuredDrivers = new Set(
@@ -138,15 +136,12 @@ export function buildSubscriptionUsageSnapshot(
         .map((provider) => provider.driver),
     ),
   );
-  return {
-    ...subscriptionUsageProps(
-      collectLimitAccounts(presentations),
-      0,
-      configuredDrivers,
-      maxWindowsPerProvider,
-    ),
-    url,
-  };
+  return subscriptionUsageProps(
+    collectLimitAccounts(presentations),
+    0,
+    configuredDrivers,
+    maxWindowsPerProvider,
+  );
 }
 
 export function subscriptionUsageTimeline(snapshot: SubscriptionUsageSnapshot, now: number) {
