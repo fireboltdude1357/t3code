@@ -154,6 +154,7 @@ export function makeReplayServerConfig(
       logsDir,
       serverLogPath: path.join(logsDir, "server.log"),
       serverTracePath: path.join(logsDir, "server.trace.ndjson"),
+      clientTimingsPath: path.join(logsDir, "client-timings.ndjson"),
       providerLogsDir,
       providerEventLogPath: path.join(providerLogsDir, "events.log"),
       terminalLogsDir,
