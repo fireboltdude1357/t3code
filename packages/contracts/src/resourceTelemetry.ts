@@ -6,9 +6,13 @@ import { DesktopUpdateChannelSchema, DesktopUpdateStateSchema } from "./ipc.ts";
 
 export const RESOURCE_MONITOR_PROTOCOL_VERSION = 3 as const;
 
+const CpuShare = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+
 export const HostResourcesSnapshot = Schema.Struct({
   sampledAt: NonNegativeInt,
-  cpuUtilization: Schema.NullOr(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  cpuUtilization: Schema.NullOr(CpuShare),
+  /** One entry per core in `os.cpus()` order, null when that core gave no valid delta. Servers that predate it omit it. */
+  cpuCoreUtilization: Schema.optional(Schema.Array(Schema.NullOr(CpuShare))),
   cpuCount: NonNegativeInt,
   availableMemoryBytes: NonNegativeInt,
   totalMemoryBytes: NonNegativeInt,

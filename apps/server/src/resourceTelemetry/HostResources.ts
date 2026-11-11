@@ -1,7 +1,9 @@
 import * as NodeOS from "node:os";
 import type { HostResourcesSnapshot } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -14,16 +16,57 @@ export class HostResources extends Context.Service<
   { readonly read: Effect.Effect<HostResourcesSnapshot> }
 >()("t3/resourceTelemetry/HostResources") {}
 
-function readCpu() {
+/** Cumulative CPU milliseconds across all cores; `reclaimable` is null when no cgroup is configured or readable. */
+interface CpuSample {
+  readonly idle: number;
+  readonly total: number;
+  readonly count: number;
+  readonly reclaimable: number | null;
+  /** The raw `os.cpus()` reading the totals came from. */
+  readonly cores: ReadonlyArray<NodeOS.CpuInfo>;
+}
+
+function readCpu(reclaimable: number | null): CpuSample {
   const cpus = NodeOS.cpus();
   const cpu = cpus.reduce(
     (sum, { times }) => ({
       idle: sum.idle + times.idle,
-      total: sum.total + times.user + times.nice + times.sys + times.idle + times.irq,
+      total: sum.total + coreTotal(times),
     }),
     { idle: 0, total: 0 },
   );
-  return { ...cpu, count: cpus.length };
+  return { ...cpu, count: cpus.length, reclaimable, cores: cpus };
+}
+
+/** Busy share between two samples, counting reclaimable cgroup time as idle. */
+export function cpuUtilization(previous: CpuSample, current: CpuSample): number | null {
+  const totalDelta = current.total - previous.total;
+  const idleDelta = current.idle - previous.idle;
+  if (previous.count !== current.count || totalDelta <= 0 || idleDelta < 0) return null;
+  const reclaimableDelta =
+    previous.reclaimable !== null && current.reclaimable !== null
+      ? Math.max(0, current.reclaimable - previous.reclaimable)
+      : 0;
+  return Math.min(1, Math.max(0, 1 - (idleDelta + reclaimableDelta) / totalDelta));
+}
+
+function coreTotal(times: NodeOS.CpuInfo["times"]) {
+  return times.user + times.nice + times.sys + times.idle + times.irq;
+}
+
+/** Busy share of each core between two `os.cpus()` readings; undefined when the core count changed. */
+export function cpuCoreUtilization(
+  previous: ReadonlyArray<NodeOS.CpuInfo>,
+  current: ReadonlyArray<NodeOS.CpuInfo>,
+) {
+  if (previous.length !== current.length) return undefined;
+  return Arr.zipWith(previous, current, ({ times: before }, { times: after }) => {
+    const totalDelta = coreTotal(after) - coreTotal(before);
+    const idleDelta = after.idle - before.idle;
+    return totalDelta > 0 && idleDelta >= 0
+      ? Math.min(1, Math.max(0, 1 - idleDelta / totalDelta))
+      : null;
+  });
 }
 
 function darwinAvailableMemory(output: string): number | null {
@@ -88,6 +131,27 @@ const make = Effect.fn("makeHostResources")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const platform = yield* HostProcess.Platform;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  // Colon-separated cgroup v2 directories whose work yields to T3 on demand, such as a CI slice
+  // with a low cpu.weight. Their CPU time counts as idle so balancing doesn't skip a machine
+  // that is only busy with background jobs.
+  const reclaimableCgroups =
+    platform === "linux"
+      ? (yield* Config.String("T3CODE_RECLAIMABLE_CPU_CGROUPS").pipe(Config.withDefault("")))
+          .split(":")
+          .map((dir) => dir.trim())
+          .filter((dir) => dir.length > 0)
+      : [];
+  const readReclaimable = Effect.forEach(reclaimableCgroups, (dir) =>
+    fs.readFileString(`${dir}/cpu.stat`).pipe(
+      Effect.map((stat) => /^usage_usec (\d+)$/m.exec(stat)?.[1]),
+      Effect.flatMap((usec) =>
+        usec === undefined ? Effect.fail("no usage_usec") : Effect.succeed(Number(usec) / 1000),
+      ),
+    ),
+  ).pipe(
+    Effect.map((ms) => (ms.length > 0 ? ms.reduce((sum, value) => sum + value, 0) : null)),
+    Effect.orElseSucceed(() => null),
+  );
 
   const readNetwork = Effect.fn("HostResources.readNetwork")(
     function* () {
@@ -116,15 +180,9 @@ const make = Effect.fn("makeHostResources")(function* () {
   );
 
   const sample = Effect.fn("HostResources.sample")(function* () {
-    const previousCpu = readCpu();
+    const previousCpu = readCpu(yield* readReclaimable);
     yield* Effect.sleep("200 millis");
-    const cpu = readCpu();
-    const totalDelta = cpu.total - previousCpu.total;
-    const idleDelta = cpu.idle - previousCpu.idle;
-    const cpuUtilization =
-      previousCpu.count === cpu.count && totalDelta > 0 && idleDelta >= 0
-        ? Math.min(1, Math.max(0, 1 - idleDelta / totalDelta))
-        : null;
+    const cpu = readCpu(yield* readReclaimable);
     const totalMemoryBytes = NodeOS.totalmem();
     // On Windows libuv returns GlobalMemoryStatusEx.ullAvailPhys, including standby memory.
     let availableMemoryBytes = NodeOS.freemem();
@@ -145,7 +203,8 @@ const make = Effect.fn("makeHostResources")(function* () {
     }
     return {
       sampledAt: DateTime.toEpochMillis(yield* DateTime.now),
-      cpuUtilization,
+      cpuUtilization: cpuUtilization(previousCpu, cpu),
+      cpuCoreUtilization: cpuCoreUtilization(previousCpu.cores, cpu.cores),
       cpuCount: cpu.count,
       availableMemoryBytes: Math.min(totalMemoryBytes, Math.max(0, availableMemoryBytes)),
       totalMemoryBytes,
