@@ -136,7 +136,6 @@ describe("subscription widget expiry", () => {
   function single(resetsAt: string) {
     return buildSubscriptionUsageSnapshot(
       presentations([provider({ usageLimits: { checkedAt, windows: [{ ...window, resetsAt }] } })]),
-      deepLink,
     ).providers[0];
   }
 
@@ -179,7 +178,6 @@ describe("subscription widget expiry", () => {
             }),
           ),
         ),
-        deepLink,
       );
       expect(snapshot.providers[0]).toMatchObject({
         detail: "2 accounts · pooled",
