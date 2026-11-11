@@ -63,6 +63,8 @@ import {
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
+  botThreadId,
+  threadOwnerBotName,
   latestProviderTurnForAttempt,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
@@ -2805,11 +2807,10 @@ const make = Effect.gen(function* () {
                 operation: "create-thread",
                 index,
               });
-              const threadId = stableThreadId({
-                scope,
-                requestKey: key,
-                index,
-              });
+              const stableId = stableThreadId({ scope, requestKey: key, index });
+              // A bot's threads create more bot work; the id stays stable for retries.
+              const bot = threadOwnerBotName(parent.thread);
+              const threadId = bot === null ? stableId : ThreadId.make(botThreadId(bot, stableId));
               const isRetryOfAcceptedCreation = yield* threadManagement.hasReceipt(commandId);
               const committedThread = isRetryOfAcceptedCreation
                 ? yield* threadManagement
