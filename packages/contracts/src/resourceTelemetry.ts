@@ -12,6 +12,10 @@ export const HostResourcesSnapshot = Schema.Struct({
   cpuCount: NonNegativeInt,
   availableMemoryBytes: NonNegativeInt,
   totalMemoryBytes: NonNegativeInt,
+  /** Bytes received and sent since boot, summed over physical network interfaces. Servers that predate it, or can't read the counters, omit it. */
+  network: Schema.optional(
+    Schema.Struct({ receivedBytes: NonNegativeInt, sentBytes: NonNegativeInt }),
+  ),
 });
 export type HostResourcesSnapshot = typeof HostResourcesSnapshot.Type;
 

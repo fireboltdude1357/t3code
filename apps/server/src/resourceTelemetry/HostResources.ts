@@ -37,10 +37,83 @@ function darwinAvailableMemory(output: string): number | null {
   return Number.isSafeInteger(available) && Number(pageSize) > 0 ? available : null;
 }
 
+const counter = (field: string | undefined) =>
+  field !== undefined && /^\d+$/.test(field) ? Number(field) : undefined;
+
+function totalNetworkBytes(
+  interfaces: ReadonlyArray<{
+    readonly receivedBytes: number | undefined;
+    readonly sentBytes: number | undefined;
+  }>,
+): HostResourcesSnapshot["network"] {
+  let receivedBytes = 0;
+  let sentBytes = 0;
+  for (const counters of interfaces) {
+    if (counters.receivedBytes === undefined || counters.sentBytes === undefined) return undefined;
+    receivedBytes += counters.receivedBytes;
+    sentBytes += counters.sentBytes;
+  }
+  return interfaces.length > 0 ? { receivedBytes, sentBytes } : undefined;
+}
+
+/** Sums `/proc/net/dev` over the named interfaces; undefined when none match or a matching row doesn't parse. */
+export function linuxNetworkBytes(procNetDev: string, interfaces: ReadonlySet<string>) {
+  return totalNetworkBytes(
+    procNetDev.split("\n").flatMap((line) => {
+      const separator = line.indexOf(":");
+      if (separator < 0 || !interfaces.has(line.slice(0, separator).trim())) return [];
+      const fields = line
+        .slice(separator + 1)
+        .trim()
+        .split(/\s+/);
+      return [{ receivedBytes: counter(fields[0]), sentBytes: counter(fields[8]) }];
+    }),
+  );
+}
+
+/** Sums `netstat -ibn` over the `<Link#N>` row of each `en<N>` interface; undefined when none match or a row doesn't parse. */
+export function darwinNetworkBytes(netstat: string) {
+  return totalNetworkBytes(
+    netstat.split("\n").flatMap((line) => {
+      const fields = line.trim().split(/\s+/);
+      // `*` marks a down interface, whose counters still count toward the since-boot total.
+      if (!/^en\d+\*?$/.test(fields[0] ?? "") || !fields[2]?.startsWith("<Link#")) return [];
+      // Address is blank on some rows, so count from the end: Ibytes Opkts Oerrs Obytes Coll.
+      return [{ receivedBytes: counter(fields.at(-5)), sentBytes: counter(fields.at(-2)) }];
+    }),
+  );
+}
+
 const make = Effect.fn("makeHostResources")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const platform = yield* HostProcess.Platform;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+  const readNetwork = Effect.fn("HostResources.readNetwork")(
+    function* () {
+      if (platform === "linux") {
+        // Only physical NICs have a `device` link, which drops lo, tailscale0, bridges and veths.
+        const physical = yield* fs
+          .readDirectory("/sys/class/net")
+          .pipe(
+            Effect.flatMap((names) =>
+              Effect.filter(names, (name) => fs.exists(`/sys/class/net/${name}/device`)),
+            ),
+          );
+        return linuxNetworkBytes(yield* fs.readFileString("/proc/net/dev"), new Set(physical));
+      }
+      if (platform === "darwin") {
+        const output = yield* spawner
+          .string(
+            ChildProcess.make("/usr/sbin/netstat", ["-ibn"], { stdin: "ignore", stderr: "ignore" }),
+          )
+          .pipe(Effect.timeout("1 second"));
+        return darwinNetworkBytes(output);
+      }
+      return undefined;
+    },
+    Effect.orElseSucceed(() => undefined),
+  );
 
   const sample = Effect.fn("HostResources.sample")(function* () {
     const previousCpu = readCpu();
@@ -76,6 +149,7 @@ const make = Effect.fn("makeHostResources")(function* () {
       cpuCount: cpu.count,
       availableMemoryBytes: Math.min(totalMemoryBytes, Math.max(0, availableMemoryBytes)),
       totalMemoryBytes,
+      network: yield* readNetwork(),
     };
   });
 
