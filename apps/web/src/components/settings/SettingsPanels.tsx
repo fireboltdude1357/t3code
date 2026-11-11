@@ -224,6 +224,7 @@ function AboutVersionSection() {
           getDesktopUpdateInstallConfirmationMessage(
             updateState ?? { availableVersion: null, downloadedVersion: null },
           ),
+          { initialFocus: "confirm" },
         );
       } catch (error) {
         setIsUpdateActionPending(false);
