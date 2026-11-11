@@ -765,7 +765,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       ["parent", "live", ...recent],
     );
     assert.deepEqual(withoutOld?.olderSettled?.counts, [
-      { projectId: ProjectId.make("project"), count: 1 },
+      { projectId: ProjectId.make("project"), count: 1, botCount: 0 },
     ]);
   }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );
