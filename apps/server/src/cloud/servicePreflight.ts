@@ -1,5 +1,6 @@
 import packageJson from "../../package.json" with { type: "json" };
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
+import { migrationManifest } from "../persistence/Migrations.ts";
 import {
   isSupportedLauncherProtocol,
   SERVICE_LAUNCHER_PROTOCOL,
@@ -12,6 +13,8 @@ export type ServicePreflightResult =
       readonly version: string;
       /** The launcher protocol the server named; it accepts no other in reply. */
       readonly launcherProtocol: SupportedLauncherProtocol;
+      /** The launcher compares these with the database to decide whether the update needs a backup. */
+      readonly migrations?: typeof migrationManifest;
     }
   | {
       readonly status: "blocked";
@@ -57,7 +60,7 @@ export function runServicePreflight(input: {
     };
   }
 
-  return { status: "ready", version, launcherProtocol };
+  return { status: "ready", version, launcherProtocol, migrations: migrationManifest };
 }
 
 /** Migrations a newer build recorded, or null when the database exists but cannot be read.
