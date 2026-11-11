@@ -157,13 +157,19 @@ const make = Effect.fn("makeHostResources")(function* () {
     function* () {
       if (platform === "linux") {
         // Only physical NICs have a `device` link, which drops lo, tailscale0, bridges and veths.
+        // Type 1 (Ethernet, which managed Wi-Fi also reports) drops a Wi-Fi monitor interface,
+        // whose counters repeat the frames the managed interface already counted.
+        const isPhysical = (name: string) =>
+          Effect.all([
+            fs.exists(`/sys/class/net/${name}/device`),
+            fs.readFileString(`/sys/class/net/${name}/type`).pipe(
+              Effect.map((type) => type.trim() === "1"),
+              Effect.orElseSucceed(() => false),
+            ),
+          ]).pipe(Effect.map(([hasDevice, isEthernet]) => hasDevice && isEthernet));
         const physical = yield* fs
           .readDirectory("/sys/class/net")
-          .pipe(
-            Effect.flatMap((names) =>
-              Effect.filter(names, (name) => fs.exists(`/sys/class/net/${name}/device`)),
-            ),
-          );
+          .pipe(Effect.flatMap((names) => Effect.filter(names, isPhysical)));
         return linuxNetworkBytes(yield* fs.readFileString("/proc/net/dev"), new Set(physical));
       }
       if (platform === "darwin") {
