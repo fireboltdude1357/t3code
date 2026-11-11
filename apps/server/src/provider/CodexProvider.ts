@@ -643,9 +643,11 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
             !input.skipNativeUsage &&
             config !== undefined &&
             codexRoutesSpendNativeQuota(accountResponse, config.config);
-          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
-            ? readCodexRateLimits(client, deadlineMs)
-            : Effect.undefined;
+          // Only a ChatGPT login has subscription limits; asking without one fails.
+          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> =
+            nativeUsage && accountResponse.account?.type === "chatgpt"
+              ? readCodexRateLimits(client, deadlineMs)
+              : Effect.undefined;
           return readUsage.pipe(
             Effect.map((rateLimits) => ({
               serviceTier: config?.config.service_tier ?? undefined,
@@ -904,9 +906,13 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const accountStatus = managedAuth
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
     : accountProbeStatus(snapshot);
-  // Sign-in guidance still applies when Codex itself says it needs an OpenAI login.
+  // Only a ChatGPT login has subscription limits. Sign-in guidance still
+  // applies when Codex itself says it needs an OpenAI login.
+  const accountType = snapshot.account.account?.type;
+  const hasSubscriptionUsage =
+    snapshot.nativeUsage === true && (accountType === undefined || accountType === "chatgpt");
   const usageLimits =
-    !snapshot.nativeUsage && !accountStatus.message
+    !hasSubscriptionUsage && !accountStatus.message
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
       : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
         ? makeUnavailableUsageLimits({
