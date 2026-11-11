@@ -61,7 +61,7 @@ Git merges `pnpm-lock.yaml` as text, so a patch's lockfile entries can keep a ve
 
 Windows installers stopped on 2026-10-27, because the Windows app is unused.
 
-Mac builds are signed with Architech's Developer ID and notarized, using the `.p12` and App Store Connect key on the Air. macOS only installs an update signed by the running app's identity, so a Mac moves from Theo's build to the fork's by hand once. There is no provisioning profile: `com.t3tools.t3code` belongs to Theo's team, and the passkey domains only trust his. Without one the build skips the passkey entitlements, so the in-app browser can't use passkeys.
+Mac builds are signed with Architech's Developer ID and notarized, using the `.p12` and App Store Connect key on the Air. macOS only installs an update signed by the running app's identity, so a Mac moves from Theo's build to the fork's by hand once. There is no provisioning profile: `com.t3tools.t3code` belongs to Theo's team, and the passkey domains only trust his. Without one the build skips the passkey entitlements, so the in-app browser can't use passkeys. It still claims camera and microphone, which the hardened runtime denies silently otherwise.
 
 The build doesn't include iOS. The Air builds the fork's mobile app by hand from `~/code/t3code` with `~/t3code-builds/run-local-build.sh`, and `.env.local` there points the build at the fork's EAS project and Apple team. That only works on a tree with `patch/mobile-fork-identity`, because upstream's `app.config.ts` hard-codes Theo's identity.
 
