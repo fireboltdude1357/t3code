@@ -709,6 +709,195 @@ if (context.update?.status === "pending") {
       }),
   );
 
+  it.effect.each([
+    {
+      target: "adds no migrations, even with a full disk",
+      migrations: [[1, "Init"]],
+      // The serving child holds a WAL database open, which upstream copies before the server stops.
+      journalMode: "wal",
+      freeBytes: 0,
+      sawBackup: "false",
+      afterRollback: "after trial",
+      reason: "candidate-exited:1:no-backup",
+    },
+    {
+      target: "renames a recorded migration",
+      migrations: [[1, "Renamed"]],
+      journalMode: "delete",
+      freeBytes: Number.MAX_SAFE_INTEGER,
+      sawBackup: "true",
+      afterRollback: "before trial",
+      reason: "candidate-exited:1",
+    },
+    {
+      target: "adds a migration",
+      migrations: [
+        [1, "Init"],
+        [2, "Next"],
+      ],
+      journalMode: "delete",
+      freeBytes: Number.MAX_SAFE_INTEGER,
+      sawBackup: "true",
+      afterRollback: "before trial",
+      reason: "candidate-exited:1",
+    },
+  ])(
+    "backs up only when the target $target, and rolls back either way",
+    ({ migrations, journalMode, freeBytes, sawBackup, afterRollback, reason }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-skip-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const databasePath = path.join(root, "userdata", "state.sqlite");
+        const observedPath = path.join(root, "trial-saw-backup");
+        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+        const database = new NodeSqlite.DatabaseSync(databasePath);
+        database.exec(`
+          PRAGMA journal_mode = ${journalMode};
+          CREATE TABLE effect_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+          INSERT INTO effect_sql_migrations VALUES (1, 'Init');
+          CREATE TABLE notes (body TEXT NOT NULL);
+          INSERT INTO notes VALUES ('before trial');
+        `);
+        database.close();
+        const encoded = JSON.stringify({
+          root,
+          databasePath,
+          observedPath,
+          migrations,
+          journalMode,
+        });
+        const childSource = `
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+const paths = ${encoded};
+if (process.argv.includes("__service-preflight")) {
+  console.log(JSON.stringify({ status: "ready", version: "1.1.0", launcherProtocol: ${SERVICE_LAUNCHER_PROTOCOL}, migrations: paths.migrations }));
+} else {
+  const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+  if (context.update?.status === "pending") {
+    writeFileSync(paths.observedPath, String(existsSync(join(paths.root, "runtime", "db-backup", context.update.id))));
+    const database = new DatabaseSync(context.update.dbPath);
+    database.exec("UPDATE notes SET body = 'after trial'");
+    database.close();
+    process.exit(1);
+  } else if (context.update === undefined) {
+    process.on("message", (message) => {
+      if (message.type === "update-rejected") process.exit(2);
+    });
+    if (paths.journalMode === "wal") {
+      const served = new DatabaseSync(paths.databasePath);
+      served.prepare("SELECT count(*) FROM notes").get();
+    }
+    process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: paths.databasePath });
+    setInterval(() => {}, 1_000);
+  } else {
+    process.exit(0);
+  }
+}
+`;
+        for (const version of ["1.0.0", "1.1.0"]) {
+          yield* writeFakeRuntime(
+            fs,
+            path,
+            path.join(root, "runtime", "versions", version),
+            childSource,
+          );
+        }
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+          }),
+        );
+
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+          {
+            backupSpaceProbe: {
+              readFreeBytes: () => Promise.resolve(freeBytes),
+              canClone: () => Promise.resolve(false),
+            },
+          },
+        );
+        yield* Effect.promise(() =>
+          launcher.run().then(
+            () => Promise.reject(new Error("launcher unexpectedly completed")),
+            () => Promise.resolve(),
+          ),
+        );
+
+        const state = yield* Effect.promise(() => readServiceState(statePath));
+        assert.equal(state.activeVersion, "1.0.0");
+        assert.equal(state.update?.status, "rolled-back");
+        assert.equal(
+          state.update?.status === "rolled-back" ? state.update.reason : undefined,
+          reason,
+        );
+        assert.equal(yield* fs.readFileString(observedPath), sawBackup);
+        const after = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+        try {
+          assert.deepEqual(
+            after
+              .prepare("SELECT body FROM notes")
+              .all()
+              .map((row) => row.body),
+            [afterRollback],
+          );
+        } finally {
+          after.close();
+        }
+      }),
+  );
+
+  it.effect("does not flag a skipped backup when no trial ran", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-no-trial-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.0.0"),
+        "process.exit(0);",
+      );
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: "update-1",
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: path.join(root, "userdata", "state.sqlite"),
+            status: "pending",
+            skipDatabaseBackup: true,
+          },
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "failed");
+      assert.equal(
+        state.update?.status === "failed" ? state.update.reason : undefined,
+        "target-runtime-missing",
+      );
+    }),
+  );
+
   it.effect.each(["wal", "delete"] as const)(
     "backs up a %s-mode database (online when WAL) and restores its final state",
     (journalMode) =>
