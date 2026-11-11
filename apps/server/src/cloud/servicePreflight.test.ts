@@ -49,6 +49,26 @@ it("lists every migration as id and name pairs when ready", () => {
   expect(migrationManifest.length).toBeGreaterThan(0);
 });
 
+// regression: #34502 every installed launcher was protocol 3, so protocol 4 blocked every remote update
+it.each([3, SERVICE_LAUNCHER_PROTOCOL])(
+  "is ready under launcher protocol %i and reports it back",
+  (launcherProtocol) => {
+    // A released server accepts a ready result only when it names that server's own protocol.
+    expect(
+      runServicePreflight({
+        databasePath: "/missing/state.sqlite",
+        launcherProtocol,
+        version: "9.8.7",
+      }),
+    ).toEqual({
+      status: "ready",
+      version: "9.8.7",
+      launcherProtocol,
+      migrations: migrationManifest,
+    });
+  },
+);
+
 it.layer(NodeServices.layer)("service preflight database", (it) => {
   it.effect("blocks a database that a newer build migrated", () =>
     Effect.gen(function* () {
