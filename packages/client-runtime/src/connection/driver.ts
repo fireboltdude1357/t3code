@@ -17,6 +17,7 @@ import type {
 import { ConnectionTransientError } from "./model.ts";
 import * as ConnectionResolver from "./resolver.ts";
 import {
+  connectionRouteKind,
   connectionRoutes,
   routeEntry,
   routeHttpBaseUrl,
@@ -174,8 +175,12 @@ export const make = Effect.gen(function* () {
     const httpBaseUrl = routeHttpBaseUrl(route);
     if (httpBaseUrl === null) return Effect.succeed<RouteCheck>("unchecked");
     return checkDescriptor(httpBaseUrl, entry.target.environmentId, routeKeepsItsHost(route)).pipe(
+      Effect.tap((check) => Effect.annotateCurrentSpan("connection.route.check", check)),
       Effect.withSpan("ConnectionDriver.checkRoute", {
-        attributes: { "connection.target.kind": route.target._tag },
+        attributes: {
+          "connection.target.kind": route.target._tag,
+          "connection.route.kind": connectionRouteKind(route),
+        },
       }),
     );
   };
