@@ -104,6 +104,7 @@ import {
   SettingsSection,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+import { DefaultEnvironmentSettingsRow } from "./DefaultEnvironmentSettingsRow";
 import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PullRequestLinksOpenInAppSetting } from "./IntegrationsSettings";
@@ -569,6 +570,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
       ? ["Add project base directory"]
       : []),
+    ...(settings.defaultEnvironmentId !== DEFAULT_UNIFIED_SETTINGS.defaultEnvironmentId
+      ? ["Default machine"]
+      : []),
     ...(settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout
       ? ["Clone into host folders"]
       : []),
@@ -687,6 +691,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+      defaultEnvironmentId: DEFAULT_UNIFIED_SETTINGS.defaultEnvironmentId,
       ghqCloneLayout: DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -1662,6 +1667,7 @@ export function ThreadsSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection id="new-projects" title="New projects">
+        <DefaultEnvironmentSettingsRow />
         <SettingsRow
           serverScoped
           settingKeys={["addProjectBaseDirectory"]}
