@@ -96,7 +96,14 @@ it.effect("marks threads a bot launches, and the threads its threads launch", ()
                 resumed: false,
               } as unknown as ThreadLaunch.ThreadLaunchResult),
           }),
-          Layer.mock(Project.ProjectService)({}),
+          Layer.mock(Project.ProjectService)({
+            getById: (id) =>
+              Effect.succeedSome({
+                id,
+                workspaceRoot: "/projects/project",
+                defaultModelSelection: modelSelection,
+              } as unknown as ProjectRecord),
+          }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -726,6 +733,40 @@ it.effect("a launch into a new worktree creates nothing when its branch collides
       message:
         'Branch "werkstatt/baseline" cannot be created in project "Client target": branch "werkstatt" exists. No thread was created. Use a name that does not nest under or contain an existing branch, such as "werkstatt-baseline".',
     });
+    expect(launched).toHaveLength(0);
+  }),
+);
+
+it.effect("a launch into an unknown project says the project was not found", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { modelSelection, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    for (const workspaceStrategy of [
+      undefined,
+      { type: "worktree", baseRef: "main", startFromOrigin: false } as const,
+    ]) {
+      const result = yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Fix",
+          message: "Fix the bug",
+          projectId: ProjectId.make("current"),
+          modelSelection,
+          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(result.at(-1)?.result).toMatchObject({
+        code: "invalid_request",
+        message: "The project was not found.",
+      });
+    }
     expect(launched).toHaveLength(0);
   }),
 );
