@@ -158,6 +158,7 @@ import {
 } from "./DispatchModeLimit.ts";
 import {
   applyToProjection,
+  cacheExpiryCompactionCandidateFromProjection,
   emptyProjection,
   threadShellFromProjection,
   ProjectionStoreV2,
@@ -6207,7 +6208,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
     }
-    if (yield* isStaleQuestionWake(projection, command.messageId, command.notification)) {
+    if (
+      (yield* isStaleQuestionWake(projection, command.messageId, command.notification)) ||
+      (command.cacheExpiryCompactionOfProviderTurnId !== undefined &&
+        cacheExpiryCompactionCandidateFromProjection(projection, 0, yield* DateTime.now)
+          ?.providerTurnId !== command.cacheExpiryCompactionOfProviderTurnId)
+    ) {
+      // A stale question wake, or a compaction whose thread was parked, resumed or
+      // switched after the sweep read it. Accept the command without changing anything
+      // so it is not retried.
       yield* emit(
         events,
         command,
@@ -6373,7 +6382,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : run.id === command.restartContinuationOfRunId,
     )?.delegatedTaskId;
 
-    if (projection.thread.settledOverride !== null) {
+    // Automatic compaction is not user activity, so it keeps an "active" override.
+    if (
+      projection.thread.settledOverride !== null &&
+      command.cacheExpiryCompactionOfProviderTurnId === undefined
+    ) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
         ...projection.thread,
@@ -6398,9 +6411,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection = applyToProjection(projection, event);
     }
     // Background wakes and delegated completions continue work the user already snoozed, so
-    // only a message someone actually sent ends the snooze.
+    // only a message someone actually sent ends the snooze. Automatic compaction only runs
+    // once a snooze has ended and leaves it so the thread still shows that it woke.
     const automaticWake =
-      command.notification !== undefined || command.delegatedCompletion !== undefined;
+      command.notification !== undefined ||
+      command.delegatedCompletion !== undefined ||
+      command.cacheExpiryCompactionOfProviderTurnId !== undefined;
     if (projection.thread.snoozedUntil != null && !automaticWake) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
