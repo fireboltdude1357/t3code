@@ -32,3 +32,4 @@ settled-pr-lookups  patch/settled-pr-lookups  pingdotgg/t3code#29721
 # #30209 alone never runs its helpers, so drop this line only once upstream ships those fixes too.
 spawn-host  patch/spawn-host  pingdotgg/t3code#30209
 widget-opens-app  patch/widget-opens-app
+relay-db-size  patch/relay-db-size
