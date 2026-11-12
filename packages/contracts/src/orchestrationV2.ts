@@ -3249,6 +3249,8 @@ export const OrchestrationV2Command = Schema.Union([
     steerFollowUpOfRunId: Schema.optional(RunId),
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
+    /** Automatic `/compact` for this provider turn; dropped if the thread is no longer eligible. */
+    cacheExpiryCompactionOfProviderTurnId: Schema.optional(ProviderTurnId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
