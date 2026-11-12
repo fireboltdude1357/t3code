@@ -272,6 +272,14 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
 
   const sql = yield* SqlClient.SqlClient;
+  // Fork patch: the fork's old pruner left per-thread replay floors here.
+  // prunedThroughSequence reads them, so the table must exist on every database.
+  if (toMigrationInclusive === undefined) {
+    yield* sql`CREATE TABLE IF NOT EXISTS orchestration_v2_event_retention (
+      thread_id TEXT PRIMARY KEY,
+      replay_floor INTEGER NOT NULL
+    )`;
+  }
   const recorded = yield* sql<{
     readonly migration_id: number;
     readonly name: string;
