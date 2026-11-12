@@ -1192,7 +1192,7 @@ const encodeMessagePayload = Schema.encodeEffect(
 const encodePlanPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2PlanArtifactSchema),
 );
-const encodeTurnItemPayload = Schema.encodeEffect(
+export const encodeTurnItemPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2TurnItemJsonSchema),
 );
 // The codec every *Json payload schema uses for timestamps, so index columns match payload_json.
@@ -1605,6 +1605,7 @@ function secretRequestAsPendingInput(
     kind: "user_input",
     createdAt: item.startedAt ?? item.updatedAt,
     blocking: true,
+    userOnly: true,
   };
 }
 
@@ -1795,6 +1796,7 @@ export function threadShellFromProjection(
     lastVisitedAt: projection.thread.lastVisitedAt,
     opens: projection.thread.opens ?? null,
     titleRegeneration: projection.thread.titleRegeneration ?? null,
+    lastTitleRegeneration: projection.thread.lastTitleRegeneration ?? null,
     limitRecovery: projection.thread.limitRecovery ?? null,
     deletedAt: projection.thread.deletedAt,
   };
@@ -2091,6 +2093,7 @@ function shellFromState(input: {
     lastVisitedAt: input.state.thread.lastVisitedAt,
     opens: input.state.thread.opens ?? null,
     titleRegeneration: input.state.thread.titleRegeneration ?? null,
+    lastTitleRegeneration: input.state.thread.lastTitleRegeneration ?? null,
     limitRecovery: input.state.thread.limitRecovery ?? null,
     deletedAt: input.state.thread.deletedAt,
   };
