@@ -25,6 +25,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -34,9 +35,11 @@ import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
-import { resolveAutoUpdateDisabledReason } from "./autoUpdateSupport.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
-import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
+import {
+  normalizeDesktopUpdateReleaseNotes,
+  releaseNotesOfOfferedVersion,
+} from "./releaseNotes.ts";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
@@ -65,10 +68,14 @@ interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
   readonly failed: boolean;
 }
 
+const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
+type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
+
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
   // Malformed notes must not block update-state decoding; normalizeDesktopUpdateReleaseNotes validates separately.
   releaseNotes: Schema.optional(Schema.Unknown),
+  releaseName: Schema.optional(Schema.NullOr(Schema.String)),
   releaseDate: Schema.optional(Schema.String),
 });
 
@@ -82,6 +89,7 @@ const DesktopUpdateInstallRecord = Schema.fromJsonString(
 const decodeInstallRecord = Schema.decodeUnknownEffect(DesktopUpdateInstallRecord);
 const encodeInstallRecord = Schema.encodeEffect(DesktopUpdateInstallRecord);
 
+const decodeAppUpdateYmlConfig = Schema.decodeUnknownEffect(AppUpdateYmlConfig);
 const decodeUpdateInfo = Schema.decodeUnknownEffect(UpdateInfo);
 const decodeDownloadProgressInfo = Schema.decodeUnknownEffect(DownloadProgressInfo);
 
@@ -274,6 +282,21 @@ export function describeUpdateErrorCause(cause: unknown): string {
   }
 }
 
+function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYmlConfig>> {
+  const entries: Record<string, string> = {};
+  for (const line of raw.split("\n")) {
+    const match = line.match(/^(\w+):\s*(.+)$/);
+    if (match?.[1] && match[2]) {
+      entries[match[1]] = match[2].trim();
+    }
+  }
+
+  return decodeAppUpdateYmlConfig(entries).pipe(
+    Effect.map((config) => (config.provider ? Option.some(config) : Option.none())),
+    Effect.orElseSucceed(() => Option.none<AppUpdateYmlConfig>()),
+  );
+}
+
 function createBaseUpdateState(
   channel: DesktopUpdateChannel,
   disabledReason: Option.Option<string>,
@@ -310,6 +333,34 @@ function shouldBroadcastDownloadProgress(
   return nextStep !== previousStep || nextPercent === 100;
 }
 
+function getAutoUpdateDisabledReason(args: {
+  policy: DesktopUpdatePolicy.UpdatePolicy;
+  isDevelopment: boolean;
+  isPackaged: boolean;
+  platform: NodeJS.Platform;
+  appImage?: string | undefined;
+  isDebPackage: boolean;
+  disabledByEnv: boolean;
+  hasUpdateFeedConfig: boolean;
+}): string | null {
+  if (args.policy.mode === "off") {
+    return args.policy.message ?? "Updates are turned off on this machine.";
+  }
+  if (!args.hasUpdateFeedConfig) {
+    return "Automatic updates are not available because no update feed is configured.";
+  }
+  if (args.isDevelopment || !args.isPackaged) {
+    return "Automatic updates are only available in packaged production builds.";
+  }
+  if (args.disabledByEnv) {
+    return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
+  }
+  if (args.platform === "linux" && !args.appImage && !args.isDebPackage) {
+    return "Automatic updates on Linux require the AppImage or the .deb package.";
+  }
+  return null;
+}
+
 function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean {
   return runtimeInfo.hostArch === "arm64" && runtimeInfo.appArch === "x64";
 }
@@ -328,6 +379,7 @@ export const make = Effect.gen(function* () {
   // Any user can set the mock flag, so it never replaces an administrator's update source.
   const mockUpdates = config.mockUpdates && policy.message === null;
 
+  const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
   const installRunningBackendsRef = yield* Ref.make<
     ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>
@@ -383,7 +435,49 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const disabledReason = yield* resolveAutoUpdateDisabledReason(config);
+  const readAppUpdateYml = fileSystem.readFileString(environment.appUpdateYmlPath, "utf-8").pipe(
+    Effect.option,
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.succeed(Option.none<AppUpdateYmlConfig>()),
+        onSome: parseAppUpdateYml,
+      }),
+    ),
+  );
+
+  // electron-updater uses this marker to install .deb updates with dpkg.
+  const isDebPackage =
+    environment.platform === "linux" && environment.isPackaged
+      ? yield* fileSystem
+          .readFileString(environment.path.join(environment.resourcesPath, "package-type"))
+          .pipe(
+            Effect.map((packageType) => packageType.trim() === "deb"),
+            Effect.orElseSucceed(() => false),
+          )
+      : false;
+
+  const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
+    Effect.map(
+      (appUpdateYmlConfig) =>
+        Option.isSome(appUpdateYmlConfig) || mockUpdates || policy.feedUrl !== undefined,
+    ),
+  );
+
+  const resolveDisabledReason = Effect.gen(function* () {
+    const hasFeedConfig = yield* hasUpdateFeedConfig;
+    return Option.fromNullishOr(
+      getAutoUpdateDisabledReason({
+        policy,
+        isDevelopment: environment.isDevelopment,
+        isPackaged: environment.isPackaged,
+        platform: environment.platform,
+        appImage: Option.getOrUndefined(config.appImagePath),
+        isDebPackage,
+        disabledByEnv: config.disableAutoUpdate,
+        hasUpdateFeedConfig: hasFeedConfig,
+      }),
+    );
+  });
 
   // Without nightly, an install on that channel stays put until its user picks stable: moving it
   // silently would be a downgrade nobody asked for, and checking nightly would break the policy.
@@ -395,7 +489,7 @@ export const make = Effect.gen(function* () {
       : Option.none();
 
   const resolveStateDisabledReason = (channel: DesktopUpdateChannel) =>
-    Option.orElse(disabledReason, () => channelBlockedReason(channel));
+    resolveDisabledReason.pipe(Effect.map(Option.orElse(() => channelBlockedReason(channel))));
 
   const activeUpdateAction = Ref.get(activeUpdateActionRef);
 
@@ -730,7 +824,8 @@ export const make = Effect.gen(function* () {
           yield* Ref.set(installRunningBackendsRef, runningInstances);
           yield* Effect.forEach(
             instances,
-            (instance) => instance.stop({ timeout: Duration.seconds(5) }),
+            (instance) =>
+              instance.stop({ timeout: DesktopBackendManager.BACKEND_QUIT_STOP_TIMEOUT }),
             { concurrency: "unbounded" },
           );
           yield* electronUpdater.quitAndInstall({
@@ -848,7 +943,7 @@ export const make = Effect.gen(function* () {
 
           const checkedAt = yield* currentIsoTimestamp;
           const { releaseNotes, omittedReleaseCount } = normalizeDesktopUpdateReleaseNotes(
-            info.releaseNotes,
+            releaseNotesOfOfferedVersion(info),
             info.version,
             state.channel,
             info.releaseDate,
@@ -1020,13 +1115,16 @@ export const make = Effect.gen(function* () {
     ),
     emitState,
     disabledReason: Ref.get(updateStateRef).pipe(
-      Effect.map((state) => resolveStateDisabledReason(state.channel)),
+      Effect.flatMap((state) => resolveStateDisabledReason(state.channel)),
     ),
     configure: Effect.gen(function* () {
       const context = yield* Effect.context<never>();
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);
       };
+
+      const appUpdateYmlConfig = yield* readAppUpdateYml;
+      yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
 
       const notAppliedVersion = yield* readNotAppliedInstallVersion;
       yield* Ref.set(notAppliedVersionRef, notAppliedVersion);
@@ -1051,6 +1149,9 @@ export const make = Effect.gen(function* () {
       }
 
       const settings = yield* desktopSettings.get;
+      const disabledReason = yield* resolveDisabledReason;
+      // A blocked nightly channel still lets the user switch back to stable, so it stays updatable.
+      yield* Ref.set(desktopState.canInstallUpdates, Option.isNone(disabledReason));
       yield* setState(
         yield* baseUpdateState(
           settings.updateChannel,
@@ -1148,6 +1249,7 @@ export const make = Effect.gen(function* () {
             ),
           );
 
+        const disabledReason = yield* resolveDisabledReason;
         yield* setState(yield* baseUpdateState(nextChannel, disabledReason));
 
         if (Option.isSome(disabledReason) || !(yield* Ref.get(updaterConfiguredRef))) {

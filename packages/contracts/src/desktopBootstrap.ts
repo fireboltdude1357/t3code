@@ -19,8 +19,6 @@ export const DesktopBackendBootstrap = Schema.Struct({
   desktopBootstrapSecret: Schema.optionalKey(Schema.String),
   // Absent means the backend must hydrate PATH, as WSL and older desktops require.
   shellEnvironmentPrepared: Schema.optionalKey(Schema.Boolean),
-  // False when the desktop cannot update itself, e.g. a distro package. Absent means it can, as older desktops assumed.
-  desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: PortSchema,
   otlpTracesUrl: Schema.optional(Schema.String),
@@ -28,6 +26,8 @@ export const DesktopBackendBootstrap = Schema.Struct({
   otlpLogsUrl: Schema.optional(Schema.String),
   desktopTelemetryFd: Schema.optionalKey(PositiveInt),
   desktopTelemetryControlFd: Schema.optionalKey(PositiveInt),
+  // Whether the spawning desktop app can install updates when the server requests one.
+  desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
   desktopBrowserFd: Schema.optionalKey(PositiveInt),
   desktopBrowserControlFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),

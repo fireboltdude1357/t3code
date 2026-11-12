@@ -42,6 +42,7 @@ export interface ServerDerivedPaths {
   readonly environmentThemesDir: string;
   readonly providerStatusCacheDir: string;
   readonly worktreesDir: string;
+  readonly worktreeCheckoutCacheDir: string;
   readonly attachmentsDir: string;
   readonly browserArtifactsDir: string;
   readonly logsDir: string;
@@ -97,9 +98,9 @@ export class ServerConfig extends Context.Service<
     readonly desktopBootstrapToken: string | undefined;
     readonly desktopBootstrapSecret?: string | undefined;
     readonly shellEnvironmentPrepared?: boolean | undefined;
-    readonly desktopAppUpdate?: boolean | undefined;
     readonly desktopTelemetryFd?: number | undefined;
     readonly desktopTelemetryControlFd?: number | undefined;
+    readonly desktopAppUpdate?: boolean | undefined;
     readonly desktopBrowserFd?: number | undefined;
     readonly desktopBrowserControlFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
@@ -116,12 +117,6 @@ export class ServerConfig extends Context.Service<
 }
 
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
-
-/** The desktop app that launched this server can update itself when the server asks. */
-export const canRequestDesktopAppUpdate = (config: ServerConfig["Service"]): boolean =>
-  config.mode === "desktop" &&
-  config.desktopTelemetryControlFd !== undefined &&
-  config.desktopAppUpdate !== false;
 
 export const otlpResource = (
   config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,
@@ -165,6 +160,7 @@ export const deriveServerPaths = Effect.fn(function* (
     environmentThemesDir: join(stateDir, "themes"),
     providerStatusCacheDir,
     worktreesDir: join(baseDir, "worktrees"),
+    worktreeCheckoutCacheDir: join(providerStatusCacheDir, "worktree-checkouts"),
     attachmentsDir,
     browserArtifactsDir: join(stateDir, "browser-artifacts"),
     logsDir,

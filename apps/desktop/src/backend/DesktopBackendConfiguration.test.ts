@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -17,8 +18,8 @@ import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
-import * as DesktopUpdatePolicy from "../updates/DesktopUpdatePolicy.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
@@ -27,15 +28,14 @@ const layerShellEnvironment = (prepared = true) =>
   Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
     installIntoProcess: Effect.succeed(prepared),
     awaitDiscovery: Effect.succeed(prepared),
+    awaitUserShellDiscovery: Effect.succeed(prepared),
     updates: Stream.empty,
   });
 
 const layerBackendConfiguration = (prepared = true) =>
   DesktopBackendConfiguration.layer.pipe(
     Layer.provide(layerShellEnvironment(prepared)),
-    // Without this the layer reads APPIMAGE and T3CODE_DISABLE_AUTO_UPDATE from the shell running the tests.
-    Layer.provide(DesktopConfig.layerTest({})),
-    Layer.provide(DesktopUpdatePolicy.layerTest()),
+    Layer.provide(DesktopState.layer),
   );
 
 const layerServerExposure = Layer.succeed(DesktopServerExposure.DesktopServerExposure, {
@@ -99,14 +99,6 @@ function layerEnvironment(
   );
 }
 
-const restoreEnv = (name: string, value: string | undefined) => {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
-  }
-};
-
 const withHarness = <A, E, R>(
   effect: Effect.Effect<
     A,
@@ -117,7 +109,6 @@ const withHarness = <A, E, R>(
     | DesktopBackendConfiguration.DesktopBackendConfiguration
   >,
   prepared = true,
-  environmentOptions?: Parameters<typeof layerEnvironment>[1],
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -132,7 +123,7 @@ const withHarness = <A, E, R>(
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(DesktopWslEnvironment.layerTest()),
           Layer.provideMerge(DesktopWslServerTree.layerTest()),
-          Layer.provideMerge(layerEnvironment(baseDir, environmentOptions)),
+          Layer.provideMerge(layerEnvironment(baseDir)),
         ),
       ),
     );
@@ -280,34 +271,6 @@ describe("DesktopBackendConfiguration", () => {
         );
       }),
     ),
-  );
-
-  it.effect("resolvePrimary tells the backend whether this Linux package can update itself", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-backend-config-resources-",
-      });
-      yield* fileSystem.writeFileString(
-        `${resourcesPath}/app-update.yml`,
-        "owner: pingdotgg\nrepo: t3code\nprovider: github\n",
-      );
-      const resolvePrimary = withHarness(
-        Effect.gen(function* () {
-          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-          return yield* configuration.resolvePrimary;
-        }),
-        true,
-        { platform: "linux", resourcesPath },
-      );
-
-      const distroPackage = yield* resolvePrimary;
-      yield* fileSystem.writeFileString(`${resourcesPath}/package-type`, "deb\n");
-      const debPackage = yield* resolvePrimary;
-
-      assert.equal(distroPackage.bootstrap.desktopAppUpdate, false);
-      assert.equal(debPackage.bootstrap.desktopAppUpdate, true);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("resolvePrimary starts from server.asar without materializing the WSL tree", () =>
@@ -727,49 +690,38 @@ describe("DesktopBackendConfiguration", () => {
         prefix: "t3-desktop-backend-config-test-",
       });
 
-      const previousWslEnv = process.env.WSLENV;
-      const previousDisabled = process.env.OTEL_SDK_DISABLED;
-      const previousTelemetry = process.env.T3CODE_TELEMETRY_ENABLED;
-      const previousResourceAttributes = process.env.OTEL_RESOURCE_ATTRIBUTES;
-      try {
-        delete process.env.WSLENV;
-        process.env.OTEL_SDK_DISABLED = "true";
-        process.env.T3CODE_TELEMETRY_ENABLED = "false";
-        process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment.name=staging";
+      yield* Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
 
-        yield* Effect.gen(function* () {
-          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-          const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
-
-          assert.equal(config.env.OTEL_SDK_DISABLED, "true");
-          assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_SDK_DISABLED");
-          assert.equal(config.env.T3CODE_TELEMETRY_ENABLED, "false");
-          assert.include((config.env.WSLENV ?? "").split(":"), "T3CODE_TELEMETRY_ENABLED");
-          assert.equal(config.env.OTEL_RESOURCE_ATTRIBUTES, "deployment.environment.name=staging");
-          assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_RESOURCE_ATTRIBUTES");
-        }).pipe(
-          Effect.provide(
-            layerBackendConfiguration().pipe(
-              Layer.provideMerge(layerServerExposure),
-              Layer.provideMerge(DesktopAppSettings.layerTest()),
-              Layer.provideMerge(DesktopWslServerTree.layerTest()),
-              Layer.provideMerge(
-                DesktopWslEnvironment.layerTest({
-                  isAvailable: true,
-                  windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
-                  getDistroIp: () => Option.some("172.27.0.99"),
-                }),
-              ),
-              Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
+        assert.equal(config.env.OTEL_SDK_DISABLED, "true");
+        assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_SDK_DISABLED");
+        assert.equal(config.env.T3CODE_TELEMETRY_ENABLED, "false");
+        assert.include((config.env.WSLENV ?? "").split(":"), "T3CODE_TELEMETRY_ENABLED");
+        assert.equal(config.env.OTEL_RESOURCE_ATTRIBUTES, "deployment.environment.name=staging");
+        assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_RESOURCE_ATTRIBUTES");
+      }).pipe(
+        Effect.provide(
+          layerBackendConfiguration().pipe(
+            Layer.provideMerge(layerServerExposure),
+            Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
+            Layer.provideMerge(
+              DesktopWslEnvironment.layerTest({
+                isAvailable: true,
+                windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
+                getDistroIp: () => Option.some("172.27.0.99"),
+              }),
             ),
+            Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
           ),
-        );
-      } finally {
-        restoreEnv("WSLENV", previousWslEnv);
-        restoreEnv("OTEL_SDK_DISABLED", previousDisabled);
-        restoreEnv("T3CODE_TELEMETRY_ENABLED", previousTelemetry);
-        restoreEnv("OTEL_RESOURCE_ATTRIBUTES", previousResourceAttributes);
-      }
+        ),
+        Effect.provideService(HostProcess.Environment, {
+          OTEL_SDK_DISABLED: "true",
+          T3CODE_TELEMETRY_ENABLED: "false",
+          OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name=staging",
+        }),
+      );
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
@@ -780,63 +732,48 @@ describe("DesktopBackendConfiguration", () => {
         prefix: "t3-desktop-backend-config-test-",
       });
 
-      const previousWslEnv = process.env.WSLENV;
-      const previousOpenAiKey = process.env.OPENAI_API_KEY;
-      const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
-      const previousOtlpHeaders = process.env.T3CODE_OTLP_HEADERS;
-      const previousOtlpProtocol = process.env.T3CODE_OTLP_PROTOCOL;
-      const ambientOtel = Object.entries(process.env).filter(([name]) => name.startsWith("OTEL_"));
-      try {
-        for (const [name] of ambientOtel) delete process.env[name];
-        process.env.WSLENV = "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u";
-        process.env.OPENAI_API_KEY = "openai-key";
-        process.env.ANTHROPIC_API_KEY = "anthropic-key";
-        process.env.T3CODE_OTLP_HEADERS = 'authorization="Bearer%20my-token"';
-        process.env.T3CODE_OTLP_PROTOCOL = "http/protobuf";
+      yield* Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
 
-        yield* Effect.gen(function* () {
-          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-          const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
-
-          assert.equal(config.executablePath, "wsl.exe");
-          assert.equal(config.bootstrap.port, 5050);
-          assert.equal(config.bootstrap.host, "0.0.0.0");
-          assert.equal(config.bootstrap.tailscaleServeEnabled, false);
-          assert.notProperty(config.bootstrap, "desktopTelemetryFd");
-          assert.notProperty(config.bootstrap, "resourceMonitorPath");
-          assert.equal(config.httpBaseUrl.href, "http://172.27.0.99:5050/");
-          assert.equal(config.env.OPENAI_API_KEY, "openai-key");
-          assert.equal(config.env.ANTHROPIC_API_KEY, "anthropic-key");
-          assert.equal(config.env.T3CODE_OTLP_PROTOCOL, "http/protobuf");
-          assert.equal(
-            config.env.WSLENV,
-            "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u:ANTHROPIC_API_KEY:T3CODE_OTLP_HEADERS:T3CODE_OTLP_PROTOCOL",
-          );
-        }).pipe(
-          Effect.provide(
-            layerBackendConfiguration().pipe(
-              Layer.provideMerge(layerServerExposure),
-              Layer.provideMerge(DesktopAppSettings.layerTest()),
-              Layer.provideMerge(DesktopWslServerTree.layerTest()),
-              Layer.provideMerge(
-                DesktopWslEnvironment.layerTest({
-                  isAvailable: true,
-                  windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
-                  getDistroIp: () => Option.some("172.27.0.99"),
-                }),
-              ),
-              Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
-            ),
-          ),
+        assert.equal(config.executablePath, "wsl.exe");
+        assert.equal(config.bootstrap.port, 5050);
+        assert.equal(config.bootstrap.host, "0.0.0.0");
+        assert.equal(config.bootstrap.tailscaleServeEnabled, false);
+        assert.notProperty(config.bootstrap, "desktopTelemetryFd");
+        assert.notProperty(config.bootstrap, "resourceMonitorPath");
+        assert.equal(config.httpBaseUrl.href, "http://172.27.0.99:5050/");
+        assert.equal(config.env.OPENAI_API_KEY, "openai-key");
+        assert.equal(config.env.ANTHROPIC_API_KEY, "anthropic-key");
+        assert.equal(config.env.T3CODE_OTLP_PROTOCOL, "http/protobuf");
+        assert.equal(
+          config.env.WSLENV,
+          "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u:ANTHROPIC_API_KEY:T3CODE_OTLP_HEADERS:T3CODE_OTLP_PROTOCOL",
         );
-      } finally {
-        restoreEnv("WSLENV", previousWslEnv);
-        restoreEnv("OPENAI_API_KEY", previousOpenAiKey);
-        restoreEnv("ANTHROPIC_API_KEY", previousAnthropicKey);
-        restoreEnv("T3CODE_OTLP_HEADERS", previousOtlpHeaders);
-        restoreEnv("T3CODE_OTLP_PROTOCOL", previousOtlpProtocol);
-        for (const [name, value] of ambientOtel) restoreEnv(name, value);
-      }
+      }).pipe(
+        Effect.provide(
+          layerBackendConfiguration().pipe(
+            Layer.provideMerge(layerServerExposure),
+            Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
+            Layer.provideMerge(
+              DesktopWslEnvironment.layerTest({
+                isAvailable: true,
+                windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
+                getDistroIp: () => Option.some("172.27.0.99"),
+              }),
+            ),
+            Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
+          ),
+        ),
+        Effect.provideService(HostProcess.Environment, {
+          WSLENV: "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u",
+          OPENAI_API_KEY: "openai-key",
+          ANTHROPIC_API_KEY: "anthropic-key",
+          T3CODE_OTLP_HEADERS: 'authorization="Bearer%20my-token"',
+          T3CODE_OTLP_PROTOCOL: "http/protobuf",
+        }),
+      );
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
