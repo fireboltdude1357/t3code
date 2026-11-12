@@ -104,6 +104,7 @@ const CLIENT_HISTORY_OPT_INS = { compactIds: "1", deferWork: "1" } satisfies Req
 >;
 const CLIENT_SHELL_OPT_INS = {
   omitIdleSubagents: "1",
+  omitIdleSubagentParents: "1",
   omitOlderSettled: "1",
 } satisfies Required<typeof EnvironmentOrchestrationShellSnapshotQuery.Type>;
 const CLIENT_THREAD_SUBSCRIPTION = {
@@ -117,6 +118,7 @@ const CLIENT_THREAD_SUBSCRIPTION = {
 const CLIENT_SHELL_SUBSCRIPTION = {
   requestCompletionMarker: true,
   omitIdleSubagents: true,
+  omitIdleSubagentParents: true,
   omitOlderSettled: true,
 } satisfies Required<
   Omit<OrchestrationV2SubscribeShellInput, "afterSequence" | "httpSnapshotFallback">

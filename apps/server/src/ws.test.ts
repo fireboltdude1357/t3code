@@ -709,11 +709,14 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       shell("live", "parent", "running"),
       ...Array.from({ length: 25 }, (_, index) => shell(`recent-${index}`, null, null, 1)),
       shell("old", null, null, 30),
+      shell("middle", "parent", null),
+      shell("leaf", "middle", null),
       shell("remote-parent", null, null, 40),
       shell("remote-child-parent", "parent", null),
     ];
     const firstSnapshot = (input: {
       readonly omitIdleSubagents?: boolean;
+      readonly omitIdleSubagentParents?: boolean;
       readonly omitOlderSettled?: boolean;
     }) =>
       subscribeOrchestrationV2Shell(input).pipe(
@@ -771,6 +774,14 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
     const withoutChildren = yield* firstSnapshot({ omitIdleSubagents: true });
     assert.deepEqual(
       withoutChildren?.threads.map((thread) => thread.id),
+      ["parent", "live", ...recent, "old", "middle", "remote-parent", "remote-child-parent"],
+    );
+    const withoutIdleParents = yield* firstSnapshot({
+      omitIdleSubagents: true,
+      omitIdleSubagentParents: true,
+    });
+    assert.deepEqual(
+      withoutIdleParents?.threads.map((thread) => thread.id),
       ["parent", "live", ...recent, "old", "remote-parent", "remote-child-parent"],
     );
     // A linked environment's clients nest its task under its parent, so that parent stays: an
@@ -778,7 +789,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
     const withoutOld = yield* firstSnapshot({ omitIdleSubagents: true, omitOlderSettled: true });
     assert.deepEqual(
       withoutOld?.threads.map((thread) => thread.id),
-      ["parent", "live", ...recent, "remote-parent", "remote-child-parent"],
+      ["parent", "live", ...recent, "middle", "remote-parent", "remote-child-parent"],
     );
     assert.deepEqual(withoutOld?.olderSettled?.counts, [
       { projectId: ProjectId.make("project"), count: 2, botCount: 0 },
