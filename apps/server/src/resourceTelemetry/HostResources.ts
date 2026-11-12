@@ -1,6 +1,7 @@
 import * as NodeOS from "node:os";
 import type { HostResourcesSnapshot } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
@@ -48,11 +49,30 @@ function readCpu() {
   const cpu = cpus.reduce(
     (sum, { times }) => ({
       idle: sum.idle + times.idle,
-      total: sum.total + times.user + times.nice + times.sys + times.idle + times.irq,
+      total: sum.total + coreTotal(times),
     }),
     { idle: 0, total: 0 },
   );
   return { ...cpu, count: cpus.length };
+}
+
+function coreTotal(times: NodeOS.CpuInfo["times"]) {
+  return times.user + times.nice + times.sys + times.idle + times.irq;
+}
+
+/** Busy share of each core between two `os.cpus()` readings; undefined when the core count changed. */
+export function cpuCoreUtilization(
+  previous: ReadonlyArray<NodeOS.CpuInfo>,
+  current: ReadonlyArray<NodeOS.CpuInfo>,
+) {
+  if (previous.length !== current.length) return undefined;
+  return Arr.zipWith(previous, current, ({ times: before }, { times: after }) => {
+    const totalDelta = coreTotal(after) - coreTotal(before);
+    const idleDelta = after.idle - before.idle;
+    return totalDelta > 0 && idleDelta >= 0
+      ? Math.min(1, Math.max(0, 1 - idleDelta / totalDelta))
+      : null;
+  });
 }
 
 /**
@@ -145,11 +165,14 @@ const make = Effect.fn("makeHostResources")(function* () {
         : Effect.sync(readCpu);
 
     const previousCpu = yield* sampleCpu();
+    // Per-core load covers every host core, whatever the server is pinned to.
+    const previousCores = NodeOS.cpus();
     const previousUsage = yield* readCpuUsage();
     const previousReclaimable = yield* readReclaimableUsage;
     const startedAt = yield* Clock.currentTimeMillis;
     yield* Effect.sleep("200 millis");
     const cpu = yield* sampleCpu();
+    const cores = NodeOS.cpus();
     const usage = yield* readCpuUsage();
     const reclaimable = yield* readReclaimableUsage;
     const elapsedMicros = ((yield* Clock.currentTimeMillis) - startedAt) * 1000;
@@ -216,6 +239,7 @@ const make = Effect.fn("makeHostResources")(function* () {
     return {
       sampledAt: DateTime.toEpochMillis(yield* DateTime.now),
       cpuUtilization,
+      cpuCoreUtilization: cpuCoreUtilization(previousCores, cores),
       cpuCount,
       availableMemoryBytes: Math.min(totalMemoryBytes, Math.max(0, availableMemoryBytes)),
       totalMemoryBytes,
