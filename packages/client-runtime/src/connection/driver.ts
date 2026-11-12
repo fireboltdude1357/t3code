@@ -21,6 +21,7 @@ import {
   connectionRoutes,
   routeEntry,
   routeHttpBaseUrl,
+  routeKeepsItsHost,
   sendsTokenInClear,
   usableRoutes,
 } from "./routes.ts";
@@ -149,7 +150,7 @@ export const make = Effect.gen(function* () {
 
   // The descriptor is public, so this sends no credential to whatever
   // answers at a saved LAN address on a different network.
-  const checkDescriptor = (httpBaseUrl: string, environmentId: string) =>
+  const checkDescriptor = (httpBaseUrl: string, environmentId: string, keepsItsHost: boolean) =>
     fetchRemoteEnvironmentDescriptor({
       httpBaseUrl,
       timeoutMs: ROUTE_CHECK_TIMEOUT_MS,
@@ -157,7 +158,9 @@ export const make = Effect.gen(function* () {
       Effect.option,
       // The connect this check leads to skips its own read. Every answer, even a
       // failure, replaces what an older check remembered.
-      Effect.tap((descriptor) => remote.rememberCheckedDescriptor(httpBaseUrl, descriptor)),
+      Effect.tap((descriptor) =>
+        remote.rememberCheckedDescriptor(httpBaseUrl, descriptor, keepsItsHost),
+      ),
       Effect.map((descriptor): RouteCheck =>
         Option.exists(descriptor, (value) => value.environmentId === environmentId)
           ? "answered"
@@ -171,7 +174,7 @@ export const make = Effect.gen(function* () {
   const checkRoute = (entry: ConnectionCatalogEntry, route: ConnectionRoute) => {
     const httpBaseUrl = routeHttpBaseUrl(route);
     if (httpBaseUrl === null) return Effect.succeed<RouteCheck>("unchecked");
-    return checkDescriptor(httpBaseUrl, entry.target.environmentId).pipe(
+    return checkDescriptor(httpBaseUrl, entry.target.environmentId, routeKeepsItsHost(route)).pipe(
       Effect.tap((check) => Effect.annotateCurrentSpan("connection.route.check", check)),
       Effect.withSpan("ConnectionDriver.checkRoute", {
         attributes: {
@@ -183,7 +186,11 @@ export const make = Effect.gen(function* () {
   };
 
   const checkHost = (prepared: PreparedConnection) =>
-    checkDescriptor(prepared.httpBaseUrl, prepared.environmentId).pipe(
+    checkDescriptor(
+      prepared.httpBaseUrl,
+      prepared.environmentId,
+      prepared.httpBaseUrl.startsWith("https:"),
+    ).pipe(
       Effect.withSpan("ConnectionDriver.checkHost", {
         attributes: { "connection.target.kind": prepared.target._tag },
       }),
