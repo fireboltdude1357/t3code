@@ -12,14 +12,17 @@ import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQ
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
+import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as SpawnHost from "./process/SpawnHost.ts";
 import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Etag from "effect/http/Etag";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -351,36 +354,47 @@ const layerHttpServer = Layer.unwrap(
       privateNetworkOnly: config.privateNetworkOnly,
     });
     yield* ManagedLimits.closeTailscaleServeTo(policy, { host: bindHost, port: config.port });
-    return NodeHttpServer.layer(
-      () => {
-        const server = rejectRequestsUntilServing(
-          guardHttpResponseWriteErrors(NodeHttp.createServer()),
-        );
-        if (config.privateNetworkOnly) {
-          server.on("connection", (socket) => {
-            if (!acceptsPrivateNetworkConnection(socket)) {
-              socket.destroy();
-            }
-          });
-        }
-        return server;
-      },
-      {
-        host: bindHost,
-        port: config.port,
-        gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
-        // Context takeover stays enabled (ws default) so the compression
-        // window is shared across frames — that also makes small frames cheap
-        // to compress, so no size threshold is set (ws only honors
-        // `threshold` when context takeover is disabled).
-        websocket: { perMessageDeflate: true },
-      },
+    // NodeHttpServer.layer also re-exports NodeServices, whose native spawner would shadow SpawnHost.
+    return Layer.mergeAll(
+      NodeHttpServer.layerServer(
+        () => {
+          const server = rejectRequestsUntilServing(
+            guardHttpResponseWriteErrors(NodeHttp.createServer()),
+          );
+          if (config.privateNetworkOnly) {
+            server.on("connection", (socket) => {
+              if (!acceptsPrivateNetworkConnection(socket)) {
+                socket.destroy();
+              }
+            });
+          }
+          return server;
+        },
+        {
+          host: bindHost,
+          port: config.port,
+          gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+          // Context takeover stays enabled (ws default) so the compression
+          // window is shared across frames — that also makes small frames cheap
+          // to compress, so no size threshold is set (ws only honors
+          // `threshold` when context takeover is disabled).
+          websocket: { perMessageDeflate: true },
+        },
+      ),
+      NodeHttpPlatform.layer,
+      Etag.layerWeak,
     );
   }),
 ).pipe(Layer.provide(ManagedPolicy.layer));
 
 const layerPlatformServices = DocumentText.layer.pipe(
-  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      NodeServices.layer,
+      NodeCrypto.layer,
+      SpawnHost.layer.pipe(Layer.provide(NodeServices.layer)),
+    ),
+  ),
 );
 
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
@@ -1230,9 +1244,8 @@ const layerMakeServer = Layer.unwrap(
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
       Layer.provideMerge(AgentScopeLive.layer),
-      Layer.provideMerge(layerPlatformServices),
     );
   }),
-).pipe(Layer.provide(ProcessRunner.layer));
+).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(layerPlatformServices));
 
 export const runServer = Layer.launch(layerMakeServer);
