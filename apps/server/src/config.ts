@@ -99,9 +99,9 @@ export class ServerConfig extends Context.Service<
     readonly desktopBootstrapToken: string | undefined;
     readonly desktopBootstrapSecret?: string | undefined;
     readonly shellEnvironmentPrepared?: boolean | undefined;
-    readonly desktopAppUpdate?: boolean | undefined;
     readonly desktopTelemetryFd?: number | undefined;
     readonly desktopTelemetryControlFd?: number | undefined;
+    readonly desktopAppUpdate?: boolean | undefined;
     readonly desktopBrowserFd?: number | undefined;
     readonly desktopBrowserControlFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
@@ -119,11 +119,11 @@ export class ServerConfig extends Context.Service<
 
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
 
-/** The desktop app that launched this server can update itself when the server asks. */
+/** The desktop app that launched this server reported it can install updates, and listens for requests on its control fd. */
 export const canRequestDesktopAppUpdate = (config: ServerConfig["Service"]): boolean =>
   config.mode === "desktop" &&
-  config.desktopTelemetryControlFd !== undefined &&
-  config.desktopAppUpdate !== false;
+  config.desktopAppUpdate === true &&
+  config.desktopTelemetryControlFd !== undefined;
 
 export const otlpResource = (
   config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,

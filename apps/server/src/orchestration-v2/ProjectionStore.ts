@@ -2188,8 +2188,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readonly local: ReadonlyArray<TimelineIndexRow>;
       readonly visible: ReadonlyArray<TimelineIndexRow>;
     };
-    // Keyed by thread and output mode; a few cover clients scrolling side by side without pinning
-    // every thread.
+    // Least recently used first; a few cover clients scrolling side by side without pinning every thread.
     const TIMELINE_INDEX_CACHE_LIMIT = 8;
     const timelineIndexes = new Map<
       string,
@@ -6260,12 +6259,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ),
     );
 
-    // Paging through a long thread asks for this index once per page, and building it scans the
-    // whole thread and its fork sources. A committed projection write appends a thread event in
-    // the same transaction, so the newest event across those threads identifies the snapshot the
-    // index came from; apply also drops entries it touches, covering writes replayed without a new
-    // event. Call inside the read transaction so the index and that sequence share one snapshot.
-    // Without the hint SQLite walks every V2 event newer than these threads on each page.
+    // Every committed projection write appends a thread event, so the newest event across the
+    // index's threads identifies its snapshot; apply also drops entries for replayed writes. Call
+    // inside the read transaction. Without the index hint SQLite walks every newer V2 event.
     const latestThreadEventSequence = (threadId: ThreadId, threadIds: ReadonlyArray<ThreadId>) =>
       sql<{ sequence: number }>`SELECT COALESCE(MAX(sequence), 0) AS sequence
         FROM orchestration_events INDEXED BY idx_orchestration_events_agent_stream_sequence
@@ -6275,16 +6271,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })),
       );
     const readSnapshotTimelineIndex = Effect.fn("ProjectionStore.readSnapshotTimelineIndex")(
-      function* (threadId: ThreadId, includePersistentOutput = false) {
-        const key = `${includePersistentOutput ? "work" : "chat"}:${threadId}`;
+      function* (threadId: ThreadId, includePersistentOutput: boolean) {
+        const key = `${includePersistentOutput ? "work" : "plain"}:${threadId}`;
         const cached = timelineIndexes.get(key);
-        if (
+        const index =
           cached !== undefined &&
           (yield* latestThreadEventSequence(threadId, cached.index.threadIds)) === cached.sequence
-        )
-          return cached.index;
-        const index = yield* readTimelineIndex(threadId, new Set(), includePersistentOutput);
-        const sequence = yield* latestThreadEventSequence(threadId, index.threadIds);
+            ? cached.index
+            : yield* readTimelineIndex(threadId, new Set(), includePersistentOutput);
+        const sequence =
+          index === cached?.index
+            ? cached.sequence
+            : yield* latestThreadEventSequence(threadId, index.threadIds);
         timelineIndexes.delete(key);
         timelineIndexes.set(key, { sequence, index });
         const oldest = timelineIndexes.keys().next();
@@ -6425,7 +6423,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sql
         .withTransaction(
           Effect.gen(function* () {
-            const index = yield* readSnapshotTimelineIndex(threadId);
+            const index = yield* readSnapshotTimelineIndex(threadId, false);
             const attachmentOwners =
               options.attachmentId === undefined
                 ? undefined

@@ -77,9 +77,7 @@ const makeHarness = Effect.fn("test.make_desktop_app_update_harness")(function* 
     ...("controlFd" in options
       ? { desktopTelemetryControlFd: options.controlFd }
       : { desktopTelemetryControlFd: 5 }),
-    ...(options.desktopAppUpdate === undefined
-      ? {}
-      : { desktopAppUpdate: options.desktopAppUpdate }),
+    desktopAppUpdate: options.desktopAppUpdate ?? true,
   };
   const reportsForRun = options.reports ?? (() => []);
   const changes = Stream.unwrap(

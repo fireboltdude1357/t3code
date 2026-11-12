@@ -33,7 +33,12 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
-import { isAuthorizationFailure, request, subscribeDynamic } from "../rpc/client.ts";
+import {
+  isAuthorizationFailure,
+  request,
+  subscribeDynamic,
+  subscriptionRetryDelay,
+} from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import type { EnvironmentThreadShell } from "./models.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
@@ -50,13 +55,15 @@ import {
   type ThreadHistoryMeta,
 } from "./threadHistoryMerge.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
-import { makeThreadRequestsResolvedAnnouncer, pendingRuntimeRequestIds } from "./threadRequests.ts";
+import { makeThreadRequestsResolvedAnnouncer } from "./threadRequests.ts";
 import { makeThreadOpenTiming } from "./syncTimings.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
   type EnvironmentThreadStatus,
 } from "./threadState.ts";
+
+const THREAD_SUBSCRIPTION_RETRY_DELAY = "250 millis";
 
 function statusWithoutLiveData(
   data: Option.Option<OrchestrationV2ThreadProjection>,
@@ -218,7 +225,7 @@ function hasMissingPendingQuestionCard(projection: OrchestrationV2ThreadProjecti
 
 /**
  * `shellEntry` is the environment shell's entry for this thread, or null while
- * the shell does not list it. A deleted state waits on it before it retries.
+ * the shell does not list it. A deleted state retries as soon as it lists one.
  */
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
@@ -316,7 +323,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     const owns = resumeCache === undefined || resumeCache.owner === owner;
     if (owns && current.status === "deleted") announceRequests([]);
     else if (owns && current.status === "live" && Option.isSome(current.data))
-      announceRequests(pendingRuntimeRequestIds(current.data.value));
+      announceRequests(current.data.value.runtimeRequests);
     committed = {
       state: current,
       sequence,
@@ -989,8 +996,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       (yield* Ref.get(socketOnlyOpen)) && Option.isNone((yield* SubscriptionRef.get(state)).data)
     );
   });
-  // A defect parks the subscription, so a socket-only open resubscribes once.
-  const httpRetries = yield* Queue.unbounded<void>();
+  // A stream defect parks the subscription until something resubscribes it.
+  const resubscribes = yield* Queue.unbounded<void>();
   const markSynchronizing = Effect.gen(function* () {
     if (yield* Ref.get(resumingLive)) return;
     yield* SubscriptionRef.update(state, (current) =>
@@ -1001,9 +1008,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   });
 
   // A draft reserves its thread id before the server creates it, so a 404 can
-  // be premature. Park until the shell lists the thread with an entry other
-  // than `missed`, the one the last failed retry used, then start over. A miss
-  // refetches at most once per shell change, so a stale entry cannot loop.
+  // be premature. Resolves once the shell lists the thread with an entry other
+  // than `missed`, the one the last failed retry used, so a stale entry cannot
+  // retry more than once.
   const awaitListed = Effect.fn("EnvironmentThreadState.awaitListed")(function* (
     missed: EnvironmentThreadShell | null,
   ) {
@@ -1011,28 +1018,35 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       Stream.filter((entry) => entry !== null && entry !== missed),
       Stream.runHead,
     );
-    if (Option.isNone(entry)) return yield* Effect.never;
-    yield* SubscriptionRef.update(state, (current) =>
-      current.status === "deleted" ? EMPTY_ENVIRONMENT_THREAD_STATE : current,
-    );
-    return entry.value;
+    return Option.isSome(entry) ? entry.value : yield* Effect.never;
   });
-
-  // The shell entry the last failed load used. It outlives resubscriptions, so
-  // a reconnect or wakeup does not retry an entry that already missed.
+  // The shell entry the last shell-driven retry used. It outlives resubscriptions.
   let retriedWith: EnvironmentThreadShell | null = null;
 
   yield* markSynchronizing;
-  yield* Effect.forkScoped(
+  // A 404 can arrive before the thread exists, so a miss asks HTTP again while mounted.
+  let httpMisses = 0;
+  let defectRetries = 0;
+  const backOffAfterDefect = Effect.suspend(() => {
+    const retryDelay = subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, defectRetries);
+    defectRetries += 1;
+    return setStreamError("Could not synchronize the thread.").pipe(
+      Effect.andThen(Effect.sleep(retryDelay)),
+    );
+  });
+  const followThread = (): Effect.Effect<
+    void,
+    never,
+    EnvironmentSupervisor.EnvironmentSupervisor
+  > =>
     subscribeDynamic(
       ORCHESTRATION_V2_WS_METHODS.subscribeThread,
       Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (session) {
         let current = yield* SubscriptionRef.get(state);
-        // A prior definitive miss (or delete event) already cleared this thread.
-        // Do not open the socket until the shell lists the thread.
-        if (current.status === "deleted") {
+        // A delete event already cleared this thread. Do not open the socket
+        // until the shell lists it.
+        if (current.status === "deleted" && httpMisses === 0) {
           retriedWith = yield* awaitListed(retriedWith);
-          current = yield* SubscriptionRef.get(state);
         }
 
         const config = yield* Effect.option(session.initialConfig);
@@ -1051,9 +1065,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* Ref.set(socketOnlyOpen, socketOnly);
 
         if (Option.isNone(current.data) && !socketOnly) {
-          // Read the connection on every attempt, since its credentials can
-          // change while a 404 waits on the shell.
-          const loadSnapshot = SubscriptionRef.get(supervisor.prepared).pipe(
+          const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({
                 onSome: Effect.succeed,
@@ -1066,22 +1078,12 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                   ),
               }),
             ),
-            Effect.flatMap((prepared) => snapshotLoader.load(prepared, threadId)),
           );
-          let httpResult: ThreadSnapshotLoader.ThreadSnapshotLoadResult = yield* loadSnapshot;
-          while (httpResult._tag === "missing") {
-            // Definitive HTTP 404: clear any stale cache and do not open a
-            // socket subscription until the shell lists the thread.
-            yield* setDeleted();
-            // A 404 also means "not created yet". Only a delete event may outlive this mount.
-            if (resumeCache?.owner === owner) resumeCache.snapshot = undefined;
-            retriedWith = yield* awaitListed(retriedWith);
-            yield* Ref.set(awaitingCompletion, true);
-            yield* markSynchronizing;
-            httpResult = yield* loadSnapshot;
-          }
+          const httpResult: ThreadSnapshotLoader.ThreadSnapshotLoadResult =
+            yield* snapshotLoader.load(prepared, threadId);
           switch (httpResult._tag) {
             case "present": {
+              httpMisses = 0;
               if (canLoadHistory && httpResult.history !== undefined) {
                 yield* Ref.set(acceptsBoundedSocketSnapshots, true);
               }
@@ -1109,6 +1111,22 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               );
               current = yield* SubscriptionRef.get(state);
               break;
+            }
+            case "missing": {
+              if (current.status !== "deleted") yield* setDeleted();
+              // A 404 also means "not created yet". Only a delete event may outlive this mount.
+              if (resumeCache?.owner === owner) resumeCache.snapshot = undefined;
+              // Ask again after the backoff, or as soon as the shell lists the thread.
+              yield* Effect.race(
+                Effect.sleep(subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, httpMisses++)),
+                awaitListed(retriedWith).pipe(
+                  Effect.map((entry) => {
+                    retriedWith = entry;
+                  }),
+                ),
+              );
+              yield* Queue.offer(resubscribes, undefined);
+              return yield* Effect.never;
             }
             case "unavailable": {
               break;
@@ -1138,22 +1156,49 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       {
         // A socket-only open that fails retries over HTTP, which tells a
         // missing thread apart from a failure, before showing an error.
-        onDefect: Effect.fn("EnvironmentThreadState.onDefect")(function* () {
+        onDefect: Effect.fn("EnvironmentThreadState.onDefect")(function* (cause) {
           if (yield* failedSocketOnlyOpen) {
             yield* Ref.set(socketOnlyOpen, false);
-            return yield* Queue.offer(httpRetries, undefined);
+            return yield* Queue.offer(resubscribes, undefined);
           }
-          yield* setStreamError("Could not synchronize the thread.");
+          if (!Cause.hasDies(cause)) {
+            return yield* setStreamError("Could not synchronize the thread.");
+          }
+          yield* backOffAfterDefect;
+          yield* Queue.offer(resubscribes, undefined);
         }),
         onExpectedFailure: Effect.fn("EnvironmentThreadState.onExpectedFailure")(function* (cause) {
           const retryOverHttp = !isAuthorizationFailure(cause) && (yield* failedSocketOnlyOpen);
           if (!retryOverHttp) yield* setStreamError(formatThreadError(cause));
         }),
-        retryExpectedFailureAfter: "250 millis",
-        resubscribe: Stream.merge(foregroundResubscriptions, Stream.fromQueue(httpRetries)),
+        retryExpectedFailureAfter: THREAD_SUBSCRIPTION_RETRY_DELAY,
+        resubscribe: Stream.merge(foregroundResubscriptions, Stream.fromQueue(resubscribes)),
       },
-    ).pipe(Stream.runForEachArray(applyItems)),
-  );
+    ).pipe(
+      Stream.runForEachArray((items) =>
+        applyItems(items).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              defectRetries = 0;
+            }),
+          ),
+        ),
+      ),
+      // A defect while applying items ends the stream; resubscribe for a fresh snapshot.
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("Thread subscription failed; resubscribing.", {
+              cause: Cause.pretty(cause),
+              environmentId,
+              threadId,
+            }).pipe(
+              Effect.andThen(backOffAfterDefect),
+              Effect.andThen(Effect.suspend(followThread)),
+            ),
+      ),
+    );
+  yield* Effect.forkScoped(followThread());
 
   return state;
 });
