@@ -444,6 +444,9 @@ type FindResultListener = (event: DesktopPreviewFindResultEvent) => Effect.Effec
 
 const PAGE_FIRST_FORWARDED_COMMANDS: ReadonlySet<PreviewForwardedShortcut["command"]> = new Set([
   "preview.find",
+  "preview.zoomIn",
+  "preview.zoomOut",
+  "preview.resetZoom",
 ]);
 
 const decodePageShortcutKeys = Schema.decodeUnknownOption(
@@ -563,9 +566,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const random = yield* SecureRandom.SecureRandom;
   const parentScope = yield* Scope.Scope;
   const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
+  const browserSession = yield* BrowserSession.BrowserSession;
   const passkeys = yield* PreviewPasskeys.PreviewPasskeys;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
+  const runPromise = Effect.runPromiseWith(context);
   const resolvedArtifactDirectory = path.resolve(artifactDirectory);
 
   let forwardedShortcuts: ReadonlyArray<PreviewForwardedShortcut> = [];
@@ -1551,7 +1556,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         });
       if (forwarded && host) {
         // The page keeps these keys. Only the main-frame preload can report one it
-        // left unhandled, so a focused iframe (e.g. Google Docs' input) keeps its own find.
+        // left unhandled, so a focused iframe (e.g. Google Docs' input) keeps its own find or zoom.
         if (PAGE_FIRST_FORWARDED_COMMANDS.has(forwarded.command)) return;
         event.preventDefault();
         if (!input.isAutoRepeat) {
@@ -2143,6 +2148,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
     });
   const refresh = (tabId: string) => withWebContents("refresh", tabId, (wc) => wc.reload());
+  const stopLoading = (tabId: string) => withWebContents("stopLoading", tabId, (wc) => wc.stop());
   const hardReload = (tabId: string) =>
     withWebContents("hardReload", tabId, (wc) => wc.reloadIgnoringCache());
   const findInPage = (
@@ -2472,7 +2478,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         return;
       }
       if (afterAttach.serverTab) {
-        browserHost.attach(afterAttach.serverTab, { webContents: wc, debugger: control.debugger });
+        browserHost.attach(afterAttach.serverTab, {
+          webContents: wc,
+          debugger: control.debugger,
+          cookiesCleared: () => runPromise(browserSession.cookiesCleared(wc.session)),
+        });
         // CDP cannot recover a failure that happened before it attached.
         const { navStatus } = afterAttach;
         if (navStatus.kind === "LoadFailed") {
@@ -3522,6 +3532,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     prepareWebview,
     reapplyZoom,
     refresh,
+    stopLoading,
     registerWebview,
     resetZoom: (tabId: string) => applyZoom(tabId, () => DEFAULT_ZOOM_FACTOR),
     setZoomFactor: (tabId: string, zoomFactor: number) =>
@@ -3723,6 +3734,7 @@ export class PreviewManager extends Context.Service<
     readonly goBack: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly goForward: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly refresh: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly stopLoading: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly zoomIn: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly zoomOut: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly resetZoom: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
@@ -3897,6 +3909,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     goBack: operations.goBack,
     goForward: operations.goForward,
     refresh: operations.refresh,
+    stopLoading: operations.stopLoading,
     zoomIn: operations.zoomIn,
     zoomOut: operations.zoomOut,
     resetZoom: operations.resetZoom,
