@@ -580,6 +580,86 @@ const makeReader = Effect.fnUntraced(function* (filename: string, pool: { unavai
   );
 });
 
+interface ReaderLease {
+  readonly connection: Connection;
+  readonly release: Effect.Effect<void>;
+}
+
+// Bind each read to a free reader slot; slots go to readers lowest-first and to waiters in arrival order.
+const makeReaderPool = Effect.fnUntraced(function* (filename: string) {
+  const pool = { unavailable: false };
+  const slots = yield* Effect.forEach(Array.from({ length: READER_POOL_SIZE }), () =>
+    makeReader(filename, pool),
+  );
+  // Lowest free slot first, so a worker beyond the first starts only while the others are busy.
+  const free = slots.map((_, slot) => slot);
+  // Effect's Semaphore lets a new acquire overtake a woken waiter, so slots go to waiters in arrival order.
+  const waiters = new Set<(slot: number) => void>();
+
+  const release = (slot: number) =>
+    Effect.sync(() => {
+      // A woken read runs inline and, with the readers off, releases straight away. Waking each from
+      // here instead of from the previous one's release keeps the stack flat and the order intact.
+      if (pool.unavailable) {
+        const queued = [...waiters];
+        waiters.clear();
+        for (const waiter of queued) waiter(slot);
+        return;
+      }
+      const next = waiters.values().next();
+      if (next.done) {
+        free.push(slot);
+        free.sort((a, b) => a - b);
+        return;
+      }
+      waiters.delete(next.value);
+      next.value(slot);
+    });
+
+  const take = (wait: typeof Effect.interruptible) =>
+    Effect.suspend(() => {
+      let taken: number | undefined;
+      const admit = Effect.callback<number>((resume) => {
+        if (waiters.size === 0 && free.length > 0) {
+          taken = free.shift()!;
+          resume(Effect.succeed(taken));
+          return;
+        }
+        const waiter = (slot: number) => {
+          taken = slot;
+          resume(Effect.succeed(slot));
+        };
+        waiters.add(waiter);
+        return Effect.sync(() => {
+          waiters.delete(waiter);
+        });
+      });
+      return Effect.onExit(
+        // Without a scheduler yield, nothing interrupts an admitted caller before it uses its slot.
+        Effect.provideService(wait(admit), Scheduler.PreventSchedulerYield, true),
+        (exit) => {
+          const slot = taken;
+          // A slot taken by a caller interrupted before it returns goes to the next waiter.
+          return Exit.isFailure(exit) && slot !== undefined ? release(slot) : Effect.void;
+        },
+      );
+    });
+
+  /** Undefined means reads use the writer. Run masked; `wait` restores the caller's interruptibility. */
+  return (wait: typeof Effect.interruptible): Effect.Effect<ReaderLease | undefined> =>
+    pool.unavailable
+      ? Effect.undefined
+      : Effect.flatMap(take(wait), (slot) =>
+          Effect.onExit(slots[slot]!, (exit) =>
+            Exit.isSuccess(exit) && exit.value !== undefined ? Effect.void : release(slot),
+          ).pipe(
+            Effect.map((connection) =>
+              connection === undefined ? undefined : { connection, release: release(slot) },
+            ),
+          ),
+        );
+});
+
 // A checkpoint copies WAL pages into the database and syncs it. On the writer's thread every
 // write would wait for that sync, so a second connection checkpoints beside the writes.
 const CHECKPOINT_FRAMES = 1000;
@@ -860,26 +940,17 @@ const make = Effect.fn("makeWithDatabase")(function* (
       );
     }
   }
-  const readerPool = { unavailable: false };
-  const readers =
-    options.readerWorker && isFileDatabase
-      ? yield* Effect.forEach(Array.from({ length: READER_POOL_SIZE }), () =>
-          Effect.map(
-            Effect.all([makeReader(options.filename, readerPool), Semaphore.make(1)]),
-            ([acquire, lock]) => ({
-              acquire,
-              lock,
-              claims: 0,
-            }),
-          ),
-        )
-      : [];
+  const leaseReader =
+    options.readerWorker && isFileDatabase ? yield* makeReaderPool(options.filename) : undefined;
 
-  interface Target {
-    readonly name: Acquired["connection"];
-    readonly lock: Semaphore.Semaphore;
-    readonly connection: Connection;
-  }
+  // A reader already holds its pool slot, and its wait started before route took that slot.
+  type Target =
+    | {
+        readonly name: "writer";
+        readonly lock: Semaphore.Semaphore;
+        readonly connection: Connection;
+      }
+    | { readonly name: "reader"; readonly connection: Connection; readonly waitStart: bigint };
   const writer = Effect.map(writerConnection, (connection): Target => ({
     name: "writer",
     lock: semaphore,
@@ -889,29 +960,17 @@ const make = Effect.fn("makeWithDatabase")(function* (
   // Callers must run route uninterruptibly and pass `claimed` a finalizer that runs `release` once.
   const route = (claimed: (release: Effect.Effect<void>) => Effect.Effect<void>) =>
     Effect.withFiber((fiber): Effect.Effect<Target, SqlError> => {
-      if (readers.length === 0 || readerPool.unavailable || !Context.get(fiber.context, ReadOnly)) {
-        return writer;
-      }
-      // Least claimed wins and ties go to the lowest slot, so idle slots never start a worker.
-      let slot = readers[0]!;
-      for (const candidate of readers) if (candidate.claims < slot.claims) slot = candidate;
-      slot.claims++;
-      const reader = slot;
-      return Effect.andThen(
-        claimed(
-          Effect.sync(() => {
-            reader.claims--;
-          }),
-        ),
-        Effect.flatMap(reader.acquire, (readerConnection) =>
-          readerConnection === undefined
-            ? writer
-            : Effect.succeed<Target>({
-                name: "reader",
-                lock: reader.lock,
-                connection: readerConnection,
-              }),
-        ),
+      const wait = Context.get(fiber.context, ReadOnly);
+      if (leaseReader === undefined || wait === undefined) return writer;
+      const waitStart = fiber.getRef(Clock.Clock).monotonicTimeNanosUnsafe();
+      return Effect.flatMap(leaseReader(wait), (lease) =>
+        lease === undefined
+          ? writer
+          : Effect.as(claimed(lease.release), {
+              name: "reader" as const,
+              connection: lease.connection,
+              waitStart,
+            }),
       );
     });
 
@@ -941,7 +1000,7 @@ const make = Effect.fn("makeWithDatabase")(function* (
   ): Effect.Effect<A, E, R> =>
     Effect.withFiber((fiber) => {
       const clock = fiber.getRef(Clock.Clock);
-      const start = clock.monotonicTimeNanosUnsafe();
+      const start = target.name === "reader" ? target.waitStart : clock.monotonicTimeNanosUnsafe();
       const ownerAtWaitStart = target.name === "writer" ? activeWriter : undefined;
       const owner = target.name === "writer" ? connectionOwner(fiber) : undefined;
       const useConnection = Effect.suspend(() => {
@@ -954,15 +1013,15 @@ const make = Effect.fn("makeWithDatabase")(function* (
         }
         return use(target.connection);
       });
-      const useOwnedConnection =
-        target.name === "writer"
-          ? Effect.onExit(useConnection, () =>
+      return target.name === "writer"
+        ? target.lock.withPermits(1)(
+            Effect.onExit(useConnection, () =>
               Effect.sync(() => {
                 if (activeWriter === owner) activeWriter = undefined;
               }),
-            )
-          : useConnection;
-      return target.lock.withPermits(1)(useOwnedConnection);
+            ),
+          )
+        : useConnection;
     });
   const claimedUntilScopeCloses = (release: Effect.Effect<void>) =>
     Effect.withFiber((fiber) =>
@@ -974,20 +1033,26 @@ const make = Effect.fn("makeWithDatabase")(function* (
         const fiber = Fiber.getCurrent()!;
         const scope = Context.getUnsafe(fiber.context, Scope.Scope);
         const clock = fiber.getRef(Clock.Clock);
-        const start = clock.monotonicTimeNanosUnsafe();
+        const start =
+          target.name === "reader" ? target.waitStart : clock.monotonicTimeNanosUnsafe();
         const pending = fiber.getRef(TransactionAcquire);
         const ownerAtWaitStart = target.name === "writer" ? activeWriter : undefined;
         const owner = target.name === "writer" ? connectionOwner(fiber) : undefined;
-        const acquire = Effect.tap((pending?.restore ?? restore)(target.lock.take(1)), () => {
-          if (target.name === "writer") activeWriter = owner;
+        const locked =
+          target.name === "writer"
+            ? (pending?.restore ?? restore)(target.lock.take(1))
+            : Effect.void;
+        const acquire = Effect.tap(locked, () => {
           if (pending !== undefined) {
             pending.acquired = acquired(target, clock, start);
             pending.ownerAtWaitStart = ownerAtWaitStart;
           }
+          if (target.name !== "writer") return Effect.void;
+          activeWriter = owner;
           return Scope.addFinalizer(
             scope,
             Effect.sync(() => {
-              if (target.name === "writer" && activeWriter === owner) activeWriter = undefined;
+              if (activeWriter === owner) activeWriter = undefined;
             }).pipe(Effect.andThen(target.lock.release(1))),
           );
         });
