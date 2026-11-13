@@ -238,7 +238,7 @@ it.effect("resends a reveal kind and remote targets that outlast the snapshot ti
       assert.deepEqual(remote.config.remoteOpenTargets, targets);
       assert.equal(remote.config.shellRevealInFileManagerKind, "file-explorer");
     }
-  }).pipe(Effect.scoped),
+  }),
 );
 
 it.effect("runs editor, remote open target and direct endpoint discovery side by side", () =>
@@ -277,9 +277,7 @@ const ReplayTestLayer = OrchestrationEventStore.layer.pipe(
   Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 
-it.live.each(["thread", "shell"] as const)(
-  "%s resume skips unknown types, synchronizes, and receives the live tail",
-  (scope) =>
+const resumeSkipsUnknownTypes = (scope: "thread" | "shell") =>
     Effect.gen(function* () {
       const store = yield* OrchestrationEventStore.OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
@@ -363,9 +361,7 @@ it.live.each(["thread", "shell"] as const)(
             assert.equal(input?.afterSequence, highWater!.sequence);
             return store
               .streamApplicationEvents({ afterSequence: input?.afterSequence ?? 0 })
-              .pipe(
-                Stream.filter((event): event is OrchestrationV2StoredEvent => "event" in event),
-              );
+            .pipe(Stream.filter((event): event is OrchestrationV2StoredEvent => "event" in event));
           },
         } as unknown as ThreadManagement.ThreadManagementService["Service"]),
         Effect.provideService(ProjectStore.ProjectStoreV2, {
@@ -388,7 +384,15 @@ it.live.each(["thread", "shell"] as const)(
         items.flatMap((item) => (item.sequence === undefined ? [] : [item.sequence])),
         [after!.sequence, liveSequence],
       );
-    }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
+  }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer));
+
+it.effect("thread resume skips unknown types, synchronizes, and receives the live tail", () =>
+  resumeSkipsUnknownTypes("thread"),
+);
+
+// Shell updates batch through `Stream.groupedWithin`, whose window needs real time to close.
+it.live("shell resume skips unknown types, synchronizes, and receives the live tail", () =>
+  resumeSkipsUnknownTypes("shell"),
 );
 
 it.effect("coalesces streaming replay before synchronization and the live tail", () =>
@@ -1153,7 +1157,6 @@ it.effect.each([
           Layer.mock(ServerBrowser.ServerBrowser)({}),
         ),
       ),
-      Effect.scoped,
     ),
 );
 
@@ -1265,8 +1268,7 @@ it.effect("access changes made while the snapshot loads reach the client after i
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
     ),
-    Effect.scoped,
-  ),
+    ),
 );
 
 it.effect("on-demand clients get provider config without workspace snapshots", () =>
@@ -1620,7 +1622,6 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
     ),
-    Effect.scoped,
   ),
 );
 
@@ -1792,7 +1793,6 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
     ),
-    Effect.scoped,
   ),
 );
 
@@ -1866,7 +1866,6 @@ it.effect("a git action that fails partway still refreshes the repository status
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
     ),
-    Effect.scoped,
   ),
 );
 
@@ -1954,7 +1953,6 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
     ),
-    Effect.scoped,
   ),
 );
 
@@ -2458,6 +2456,5 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
     ),
-    Effect.scoped,
   ),
 );

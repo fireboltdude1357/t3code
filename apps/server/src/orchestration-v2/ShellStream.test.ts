@@ -89,7 +89,6 @@ describe("subagent shell events", () => {
 });
 
 it.effect("coalesces a slow shell subscriber by identity and location in sequence order", () =>
-  Effect.scoped(
     Effect.gen(function* () {
       const input = yield* Queue.unbounded<
         Extract<OrchestrationV2ShellStreamItem, { readonly sequence: number }>,
@@ -143,7 +142,6 @@ it.effect("coalesces a slow shell subscriber by identity and location in sequenc
       yield* Deferred.await(drained);
       expect(yield* pull).toEqual([updates[3], updates[4], updates[7], updates[8], updates[9]]);
     }),
-  ),
 );
 
 function shellFixture(overrides: Partial<OrchestrationV2ThreadShell>): OrchestrationV2ThreadShell {
@@ -379,7 +377,6 @@ describe("shellStreamItemsFromInitialSnapshot", () => {
 
 describe("composeShellStreamWithEnrichment", () => {
   it.effect("preserves pending repository resolutions while an enrichment ACK is withheld", () =>
-    Effect.scoped(
       Effect.gen(function* () {
         // Match ProjectEnrichmentService's sliding notifications and the WS batching path.
         const changes = yield* Effect.acquireRelease(
@@ -422,8 +419,7 @@ describe("composeShellStreamWithEnrichment", () => {
 
         const resumed = yield* Stream.fromPull(Effect.succeed(pull)).pipe(
           Stream.takeUntil(
-            (item) =>
-              item.resolvedRepositoryIdentityRoots?.includes("/workspace/later-255") ?? false,
+          (item) => item.resolvedRepositoryIdentityRoots?.includes("/workspace/later-255") ?? false,
           ),
           Stream.runCollect,
         );
@@ -432,11 +428,9 @@ describe("composeShellStreamWithEnrichment", () => {
           ...laterRoots,
         ]);
       }),
-    ),
   );
 
   it.effect("keeps a merged shell batch charged while the client withholds its ACK", () =>
-    Effect.scoped(
       Effect.gen(function* () {
         const update = yield* Deferred.make<void>();
         const closed = yield* Deferred.make<void>();
@@ -473,7 +467,6 @@ describe("composeShellStreamWithEnrichment", () => {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") expect(result.failure._tag).toBe("LiveStreamBufferError");
       }),
-    ),
   );
 
   it.effect(
