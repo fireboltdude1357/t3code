@@ -5,6 +5,7 @@ import * as Planetscale from "@alchemy.run/planetscale";
 import * as Alchemy from "alchemy";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import type { EffectPgDatabase } from "drizzle-orm/effect-postgres";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -44,14 +45,19 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
   });
 
   const mode = relayDatabaseMode(stage);
+  // PlanetScale Postgres replaces the database when replicas change; size resizes in place.
+  const clusterSize = yield* Config.NonEmptyString("RELAY_DB_CLUSTER_SIZE").pipe(
+    Config.withDefault("PS_80"),
+  );
+  const replicas = yield* Config.Int("RELAY_DB_REPLICAS").pipe(Config.withDefault(2));
   const database =
     mode === "shared-database"
       ? yield* Planetscale.PostgresDatabase("RelayPostgresDatabase", {
           name: "t3coderelay",
           region: { slug: "us-west" },
-          clusterSize: "PS_80",
+          clusterSize,
           migrations: { dir: schema.out, table: "relay_migrations" },
-          replicas: 2,
+          replicas,
         }).pipe(RemovalPolicy.retain())
       : yield* Planetscale.PostgresDatabase.ref("RelayPostgresDatabase", {
           stage: "prod",
@@ -75,11 +81,15 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
 
 export const RelayHyperdrive = Effect.gen(function* () {
   const { runtimeRole } = yield* PlanetscaleDatabase;
+  // Cloudflare's free Workers plan only accepts 5 to 20.
+  const originConnectionLimit = yield* Config.Int("RELAY_HYPERDRIVE_CONNECTION_LIMIT").pipe(
+    Config.withDefault(40),
+  );
   return yield* Cloudflare.Hyperdrive.Connection("RelayHyperdrive", {
     origin: runtimeRole.origin,
     caching: {
       disabled: true,
     },
-    originConnectionLimit: 40,
+    originConnectionLimit,
   });
 });
