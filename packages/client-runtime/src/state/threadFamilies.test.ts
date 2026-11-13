@@ -125,7 +125,6 @@ describe("createThreadFamilyAtoms", () => {
   });
 
   it.effect("reads a family per shell generation and retries a failed read", () =>
-    Effect.scoped(
       Effect.gen(function* () {
         const replies =
           yield* Queue.unbounded<
@@ -252,6 +251,5 @@ describe("createThreadFamilyAtoms", () => {
         yield* settle;
         expect(mergedIds()).toEqual(["parent", "woken", "idle-child"]);
       }),
-    ),
   );
 });
