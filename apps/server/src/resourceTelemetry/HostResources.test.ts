@@ -1,6 +1,7 @@
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import type * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -207,6 +208,40 @@ describe("HostResources.layer", () => {
     }).pipe(Effect.provide(linuxHost(unlimitedCgroup))),
   );
 
+  it.effect("counts CPU used by reclaimable cgroups as idle", () =>
+    Effect.gen(function* () {
+      setup();
+      const snapshot = yield* read;
+
+      // The host is 90% busy, and 4 of its 8 CPUs went to the reclaimable CI slice.
+      assert.strictEqual(snapshot.cpuCount, 8);
+      assert.closeTo(snapshot.cpuUtilization ?? Number.NaN, 0.4, 1e-9);
+    }).pipe(
+      Effect.provide(
+        linuxHost({
+          ...unlimitedCgroup,
+          "/proc/self/status": ["Name:\tnode\nCpus_allowed_list:\t0-7\n"],
+          // /proc/stat counts USER_HZ ticks, 20 per CPU over the 200 ms sample.
+          "/proc/stat": [0, 1].map((ticks) =>
+            Array.from(
+              { length: 8 },
+              (_, id) => `cpu${id} ${18 * ticks} 0 0 ${2 * ticks} 0 0 0 0`,
+            ).join("\n"),
+          ),
+          "/sys/fs/cgroup/ci.slice/cpu.stat": ["usage_usec 1000000\n", "usage_usec 1800000\n"],
+        }).pipe(
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                T3CODE_RECLAIMABLE_CPU_CGROUPS: "/sys/fs/cgroup/ci.slice",
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect("falls back to host load when the cgroup's cpu.stat is unreadable", () =>
     Effect.gen(function* () {
       setup(0.9);
@@ -224,4 +259,22 @@ describe("HostResources.layer", () => {
       ),
     ),
   );
+});
+
+const sample = (idle: number, total: number) => ({ idle, total, count: 4 });
+
+describe("hostCpuUtilization", () => {
+  it("reports the busy share of the interval", () => {
+    expect(HostResources.hostCpuUtilization(sample(0, 0), sample(100, 1000))).toBe(0.9);
+  });
+
+  it("counts reclaimable cgroup cores as idle", () => {
+    expect(HostResources.hostCpuUtilization(sample(0, 0), sample(100, 1000), 2.4)).toBeCloseTo(0.3);
+  });
+
+  it("returns null when the core count changes", () => {
+    expect(
+      HostResources.hostCpuUtilization(sample(0, 0), { ...sample(100, 1000), count: 8 }),
+    ).toBeNull();
+  });
 });
