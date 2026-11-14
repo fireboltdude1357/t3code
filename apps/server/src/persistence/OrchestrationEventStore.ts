@@ -679,9 +679,15 @@ const makeEventStore = Effect.gen(function* () {
     ),
   );
 
-  const prunedThroughSequence = sql<{ readonly last_sequence: number }>`
-    SELECT last_sequence FROM orchestration_v2_projection_metadata
-    WHERE projection_name = ${EVENT_LOG_PRUNED_THROUGH}
+  // Fork patch: the fork's old pruner deleted events below each thread's replay
+  // floor before upstream's mark existed, so a resume below either loads a snapshot.
+  const prunedThroughSequence = sql<{ readonly last_sequence: number | null }>`
+    SELECT MAX(sequence) AS last_sequence FROM (
+      SELECT last_sequence AS sequence FROM orchestration_v2_projection_metadata
+      WHERE projection_name = ${EVENT_LOG_PRUNED_THROUGH}
+      UNION ALL
+      SELECT MAX(replay_floor) AS sequence FROM orchestration_v2_event_retention
+    )
   `.pipe(
     NodeSqliteClient.readOnly,
     Effect.map((rows) => rows[0]?.last_sequence ?? 0),
