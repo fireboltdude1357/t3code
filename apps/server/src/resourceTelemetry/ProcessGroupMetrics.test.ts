@@ -65,6 +65,19 @@ describe("groupProcesses", () => {
       // `git` whose arguments mention claude, a parentless process, and a node script.
       other: { residentBytes: 220_000, cpuPercent: 220, count: 3 },
     });
+
+    const hosted = groupProcesses([
+      process(10, 1, "node", "server"),
+      process(20, 10, "node", "server-child", "node /srv/t3/bin.mjs __spawn-host"),
+      process(30, 20, "codex"),
+      process(31, 30, "bash"),
+      process(40, 20, "chrome-headless"),
+    ]);
+    assert.deepStrictEqual(Object.fromEntries(hosted), {
+      server: { residentBytes: 30_000, cpuPercent: 30, count: 2 },
+      codex: { residentBytes: 61_000, cpuPercent: 61, count: 2 },
+      browser: { residentBytes: 40_000, cpuPercent: 40, count: 1 },
+    });
   });
 });
 
