@@ -47,7 +47,8 @@ import {
   decodeOrDiscardOrchestrationCache,
 } from "../platform/orchestrationCache.ts";
 import * as RpcSession from "../rpc/session.ts";
-import { v2Now, v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
+import { presentThreadShell, type EnvironmentThreadShell } from "./models.ts";
+import { v2Now, v2Projection, v2ThreadId, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { onThreadRequestsResolved, type ThreadRequestsResolved } from "./threadRequests.ts";
 import { EMPTY_THREAD_HISTORY_META } from "./threadHistoryMerge.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
@@ -66,6 +67,7 @@ const TARGET = new PrimaryConnectionTarget({
   wsBaseUrl: "wss://environment.example.test",
 });
 const THREAD_ID = v2ThreadId;
+const SHELL_ENTRY = presentThreadShell(TARGET.environmentId, v2ThreadShell);
 const CACHED_SNAPSHOT_SEQUENCE = 7;
 const PREPARED: PreparedConnection = {
   environmentId: TARGET.environmentId,
@@ -120,6 +122,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly httpSnapshot?: ThreadSnapshotLoadResult;
   /** Answers per load call; the last one repeats. Overrides `httpSnapshot`. */
   readonly httpSnapshots?: readonly ThreadSnapshotLoadResult[];
+  readonly shellEntry?: EnvironmentThreadShell;
   /** The test sends the completion marker itself instead of the fake server sending it first. */
   readonly completionMarker?: boolean;
   readonly resumeCache?: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]>;
@@ -146,6 +149,9 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationV2ThreadDetailSnapshot>>([]);
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+  const shellEntry = yield* SubscriptionRef.make<EnvironmentThreadShell | null>(
+    options?.shellEntry ?? null,
+  );
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
     AVAILABLE_CONNECTION_STATE,
   );
@@ -252,7 +258,11 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     clearVcsRefs: () => Effect.void,
     clear: () => Effect.void,
   });
-  let makeThreadState = makeEnvironmentThreadState(THREAD_ID, options?.resumeCache).pipe(
+  let makeThreadState = makeEnvironmentThreadState(
+    THREAD_ID,
+    options?.resumeCache,
+    SubscriptionRef.changes(shellEntry),
+  ).pipe(
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
     Effect.provideService(ThreadSnapshotLoader.ThreadSnapshotLoader, snapshotLoader),
@@ -307,6 +317,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     supervisorSession,
     savedThreads,
     removedThreads,
+    shellEntry,
     wakeups,
     replaceSession: SubscriptionRef.set(
       supervisorSession,
@@ -2305,6 +2316,89 @@ describe("EnvironmentThreads", () => {
       );
       expect(advanced.history.latestLocalTurnOrdinal).toBe(22);
       expect(advanced.history.historyCursor).toBe("wm-cursor");
+    }),
+  );
+
+  it.effect("loads a thread that 404ed before it was created once the shell lists it", () =>
+    Effect.gen(function* () {
+      // A draft reserves its thread id before sending, so a subscriber can ask
+      // for the thread before the server creates it.
+      const harness = yield* makeHarness({
+        httpSnapshots: [
+          { _tag: "missing" },
+          {
+            _tag: "present",
+            snapshot: { projection: BASE_PROJECTION, snapshotSequence: CACHED_SNAPSHOT_SEQUENCE },
+          },
+        ],
+      });
+      yield* awaitThreadState(harness.observed, (value) => value.status === "deleted");
+
+      // The clock never reaches the backoff, so only the shell can trigger the retry.
+      yield* SubscriptionRef.set(harness.shellEntry, SHELL_ENTRY);
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(Option.getOrThrow(state.data).thread.title).toBe("Cached thread");
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(2);
+    }),
+  );
+
+  it.effect("retries a stale listed thread only when its shell entry changes", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        httpSnapshots: [
+          { _tag: "missing" },
+          { _tag: "missing" },
+          {
+            _tag: "present",
+            snapshot: { projection: BASE_PROJECTION, snapshotSequence: CACHED_SNAPSHOT_SEQUENCE },
+          },
+        ],
+        shellEntry: SHELL_ENTRY,
+      });
+      yield* Ref.get(harness.loaderCalls).pipe(Effect.repeat({ until: (calls) => calls >= 2 }));
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      // The entry that already missed does not trigger another load.
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(2);
+
+      yield* SubscriptionRef.set(harness.shellEntry, { ...SHELL_ENTRY });
+
+      yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(3);
+    }),
+  );
+
+  it.effect("reloads a retained deleted thread the shell already lists", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        httpSnapshot: {
+          _tag: "present",
+          snapshot: { projection: BASE_PROJECTION, snapshotSequence: CACHED_SNAPSHOT_SEQUENCE },
+        },
+        shellEntry: SHELL_ENTRY,
+        resumeCache: {
+          snapshot: {
+            state: { ...EMPTY_ENVIRONMENT_THREAD_STATE, status: "deleted" },
+            sequence: 0,
+            persisted: false,
+          },
+          owner: undefined,
+        },
+      });
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(Option.getOrThrow(state.data).thread.title).toBe("Cached thread");
     }),
   );
 
