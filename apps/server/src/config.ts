@@ -118,6 +118,12 @@ export class ServerConfig extends Context.Service<
 
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
 
+/** The desktop app that launched this server reported it can install updates, and listens for requests on its control fd. */
+export const canRequestDesktopAppUpdate = (config: ServerConfig["Service"]): boolean =>
+  config.mode === "desktop" &&
+  config.desktopAppUpdate === true &&
+  config.desktopTelemetryControlFd !== undefined;
+
 export const otlpResource = (
   config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,
   hostName: string,
