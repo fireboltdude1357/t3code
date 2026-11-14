@@ -1,14 +1,12 @@
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import * as Application from "expo-application";
-import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -21,11 +19,20 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
+import { appIdentity } from "./app-identity";
 import {
   formatStartupCrashReport,
   parseStartupCrashRecords,
   type StartupCrashRecord,
 } from "./crash-log-model";
+import {
+  type ConnectionTimingRecord,
+  connectionTimingLog,
+  formatConnectionTimingReport,
+  summarizeAttributes,
+} from "./connection-timings-model";
+
+const VISIBLE_TIMINGS = 50;
 
 // expo-updates retains only seven days of logs.
 const LOG_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -68,15 +75,6 @@ const UNAVAILABLE_CRASH_LOG_ATOM = Atom.make(
 function useCrashLogState(): CrashLogState {
   const result = useAtomValue(Updates.isEnabled ? crashLogAtom : UNAVAILABLE_CRASH_LOG_ATOM);
   return AsyncResult.isSuccess(result) ? result.value : { status: "loading" };
-}
-
-function appIdentity() {
-  return {
-    version: Constants.expoConfig?.version ?? "0.0.0",
-    // EAS assigns build numbers remotely, so expo-constants never sees them;
-    // only the installed binary knows its own.
-    build: Application.nativeBuildVersion ?? "dev",
-  };
 }
 
 export function SettingsDiagnosticsRouteScreen() {
@@ -143,6 +141,8 @@ export function SettingsDiagnosticsRouteScreen() {
             it over before sharing.
           </Text>
         </View>
+
+        <ConnectionTimingsSection />
       </ScrollView>
     </SettingsScreen>
   );
@@ -197,7 +197,7 @@ function CrashReportsSetting() {
 }
 
 function EmptyState(props: {
-  readonly icon: "exclamationmark.triangle" | "checkmark.circle";
+  readonly icon: "exclamationmark.triangle" | "checkmark.circle" | "clock";
   readonly title: string;
   readonly detail: string;
 }) {
@@ -233,4 +233,104 @@ function CrashRow(props: { readonly record: StartupCrashRecord; readonly first: 
       ) : null}
     </View>
   );
+}
+
+function ConnectionTimingsSection() {
+  const records = useSyncExternalStore(connectionTimingLog.subscribe, connectionTimingLog.records);
+  const [copied, setCopied] = useState(false);
+
+  const copyReport = async () => {
+    const report = formatConnectionTimingReport(
+      records,
+      connectionTimingLog.labelFor,
+      appIdentity(),
+    );
+    const ok = await tryCopyTextWithHaptic(report, { target: "connection report" });
+    if (ok) setCopied(true);
+  };
+
+  return (
+    <View className="gap-3">
+      <SettingsSection title="Connection timings">
+        {records.length === 0 ? (
+          <EmptyState
+            icon="clock"
+            title="No connection timings yet"
+            detail="Connecting to an environment, loading its threads, and opening a thread each add timings here."
+          />
+        ) : (
+          records
+            .slice(0, VISIBLE_TIMINGS)
+            .map((record, index) => (
+              <TimingRow key={record.spanId} record={record} first={index === 0} />
+            ))
+        )}
+      </SettingsSection>
+      <SettingsSection title="Timing actions">
+        <SettingsActionRow
+          icon={copied ? "checkmark" : "doc.on.doc"}
+          label={copied ? "Copied" : "Copy connection report"}
+          disabled={records.length === 0}
+          onPress={() => void copyReport()}
+        />
+        <SettingsActionRow
+          icon="trash"
+          label="Clear timings"
+          tone="danger"
+          disabled={records.length === 0}
+          onPress={() => {
+            connectionTimingLog.clear();
+            setCopied(false);
+          }}
+        />
+      </SettingsSection>
+      <Text className="px-2 text-sm leading-normal text-foreground-muted">
+        This screen keeps the latest {connectionTimingLog.capacity} steps in memory until the app
+        closes. Each step is also sent to the environment it is about, which saves it in its logs as
+        client-timings.ndjson. Clearing timings clears only this screen. Search the server&apos;s
+        trace log for an HTTP request&apos;s trace ID to find that request.
+      </Text>
+    </View>
+  );
+}
+
+function TimingRow(props: { readonly record: ConnectionTimingRecord; readonly first: boolean }) {
+  const { record } = props;
+  const environment =
+    record.environmentId === null ? null : connectionTimingLog.labelFor(record.environmentId);
+  const detail = [
+    environment,
+    new Date(record.startedAtMs).toLocaleTimeString(),
+    record.outcome === "ok" ? null : (record.failure ?? record.outcome),
+    summarizeAttributes(record),
+  ]
+    .filter((part) => part !== null && part !== "")
+    .join(" · ");
+  return (
+    <View
+      className={props.first ? "gap-1 px-4 py-3" : "gap-1 border-t border-border-subtle px-4 py-3"}
+    >
+      <View className="flex-row items-baseline justify-between gap-3">
+        <Text
+          className={
+            record.outcome === "failed"
+              ? "text-base text-danger-foreground"
+              : "text-base text-foreground"
+          }
+        >
+          {record.phase.label}
+        </Text>
+        <Text className="font-mono text-sm text-foreground-muted">
+          {formatDuration(record.durationMs)}
+        </Text>
+      </View>
+      <Text selectable className="text-xs leading-snug text-foreground-muted">
+        {detail}
+      </Text>
+    </View>
+  );
+}
+
+function formatDuration(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
