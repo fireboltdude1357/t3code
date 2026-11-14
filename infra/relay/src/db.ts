@@ -47,7 +47,7 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
   const mode = relayDatabaseMode(stage);
   // PlanetScale Postgres replaces the database when replicas change; size resizes in place.
   const clusterSize = yield* Config.NonEmptyString("RELAY_DB_CLUSTER_SIZE").pipe(
-    Config.withDefault("PS_80"),
+    Config.withDefault("PS_160"),
   );
   const replicas = yield* Config.Int("RELAY_DB_REPLICAS").pipe(Config.withDefault(2));
   const database =
