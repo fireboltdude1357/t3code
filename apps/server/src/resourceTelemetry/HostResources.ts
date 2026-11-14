@@ -3,6 +3,7 @@ import type { HostResourcesSnapshot } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -54,6 +55,21 @@ function readCpu() {
   return { ...cpu, count: cpus.length };
 }
 
+/**
+ * Busy share between two CPU samples, in whatever unit both totals share.
+ * `reclaimableCores` is the CPU that reclaimable cgroups used over the interval, in cores; it counts as idle.
+ */
+export function hostCpuUtilization(
+  previous: { readonly idle: number; readonly total: number; readonly count: number },
+  current: { readonly idle: number; readonly total: number; readonly count: number },
+  reclaimableCores = 0,
+): number | null {
+  const totalDelta = current.total - previous.total;
+  const idleDelta = current.idle - previous.idle;
+  if (previous.count !== current.count || totalDelta <= 0 || idleDelta < 0) return null;
+  return Math.min(1, Math.max(0, 1 - idleDelta / totalDelta - reclaimableCores / current.count));
+}
+
 function darwinAvailableMemory(output: string): number | null {
   const pageSize = /page size of (\d+) bytes/.exec(output)?.[1];
   const free = /^Pages free:\s+(\d+)\./m.exec(output)?.[1];
@@ -76,6 +92,27 @@ const make = Effect.fn("makeHostResources")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   const readFile = (path: string) => fs.readFileString(path).pipe(Effect.orElseSucceed(() => ""));
+  // Colon-separated cgroup v2 directories whose work yields to T3 on demand, such as a CI slice
+  // with a low cpu.weight. Their CPU time counts as idle so balancing doesn't skip a machine
+  // that is only busy with background jobs.
+  const reclaimableCgroups =
+    platform === "linux"
+      ? (yield* Config.String("T3CODE_RECLAIMABLE_CPU_CGROUPS").pipe(Config.withDefault("")))
+          .split(":")
+          .map((dir) => dir.trim())
+          .filter((dir) => dir.length > 0)
+      : [];
+  // Total usage_usec across those cgroups; null when none is configured or any is unreadable.
+  const readReclaimableUsage = Effect.forEach(reclaimableCgroups, (dir) =>
+    Effect.map(readFile(`${dir}/cpu.stat`), (stat) => cgroupNumber(stat, /^usage_usec (\d+)$/m)),
+  ).pipe(
+    Effect.map((usages) =>
+      usages.reduce<number | null>(
+        (sum, usec) => (sum === null || usec === null ? null : sum + usec),
+        usages.length > 0 ? 0 : null,
+      ),
+    ),
+  );
 
   const sample = Effect.fn("HostResources.sample")(function* () {
     // cgroup v2 only; limits of the server's own cgroup, which is `/` inside a container.
@@ -109,18 +146,22 @@ const make = Effect.fn("makeHostResources")(function* () {
 
     const previousCpu = yield* sampleCpu();
     const previousUsage = yield* readCpuUsage();
+    const previousReclaimable = yield* readReclaimableUsage;
     const startedAt = yield* Clock.currentTimeMillis;
     yield* Effect.sleep("200 millis");
     const cpu = yield* sampleCpu();
     const usage = yield* readCpuUsage();
+    const reclaimable = yield* readReclaimableUsage;
     const elapsedMicros = ((yield* Clock.currentTimeMillis) - startedAt) * 1000;
-    const totalDelta = cpu.total - previousCpu.total;
-    const idleDelta = cpu.idle - previousCpu.idle;
     let cpuCount = cpu.count;
-    const hostUtilization =
-      previousCpu.count === cpu.count && totalDelta > 0 && idleDelta >= 0
-        ? Math.min(1, Math.max(0, 1 - idleDelta / totalDelta))
-        : null;
+    // CPU samples come in ms (os.cpus) or ticks (/proc/stat), so reclaimable usage goes in as cores.
+    const hostUtilization = hostCpuUtilization(
+      previousCpu,
+      cpu,
+      previousReclaimable !== null && reclaimable !== null && elapsedMicros > 0
+        ? Math.max(0, reclaimable - previousReclaimable) / elapsedMicros
+        : 0,
+    );
     let cpuUtilization = hostUtilization;
     if (cpuMax) {
       const capacity = Math.min(Number(cpuMax[1]) / Number(cpuMax[2]), cpu.count);
