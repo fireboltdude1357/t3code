@@ -26,8 +26,6 @@ import { detachStackFrame } from "../git/detachStackFrame.ts";
 import { forkParked } from "../serverActivation.ts";
 
 const CONCURRENT_READS = 512;
-/** Invalidation excludes only reads whose scopes share its stripe, not every PR read. */
-const SCOPE_STRIPES = 64;
 // Entry filenames are the URI-encoded `<storeId>:<key>`; the scope revisions file has
 // no store id. Effect before 4.1 wrote `<storeId><key>`, still pruned here.
 const STORE_ID = "pr-v2";
@@ -45,7 +43,14 @@ const revisionCodec = Schema.fromJsonString(
   ),
 );
 class Read extends Persistable.Class<{
-  payload: { key: string; revision: string; lookup: Effect.Effect<string, ReadError> };
+  payload: {
+    key: string;
+    revision: string;
+    lookup: Effect.Effect<string, ReadError>;
+    /** The read's scopes and their generations once it held its permit. */
+    scopes: ReadonlyArray<string>;
+    generations: ReadonlyArray<number>;
+  };
 }>()("PullRequestRead", {
   primaryKey: ({ key }) => key,
   success: Schema.Struct({
@@ -62,11 +67,17 @@ class Read extends Persistable.Class<{
       .every((value, index) => value === "" || value === stored[index]);
   }
 
+  // Generations keep a read from joining a lookup that started before an invalidation of its scopes.
   [Equal.symbol](that: unknown): boolean {
-    return that instanceof Read && that.key === this.key && that.revision === this.revision;
+    return (
+      that instanceof Read &&
+      that.key === this.key &&
+      that.revision === this.revision &&
+      that.generations.join(",") === this.generations.join(",")
+    );
   }
   [Hash.symbol](): number {
-    return Hash.string(`${this.key}:${this.revision}`);
+    return Hash.string(`${this.key}:${this.revision}:${this.generations.join(",")}`);
   }
 }
 
@@ -89,11 +100,16 @@ export const make = Effect.gen(function* () {
   const clock = yield* Clock.Clock;
   let enabled = true;
   const lock = yield* Semaphore.make(CONCURRENT_READS);
-  const stripes = yield* Effect.forEach(Array.from({ length: SCOPE_STRIPES }), () =>
-    Semaphore.make(CONCURRENT_READS),
-  );
-  const stripeOf = (scope: string) => (Hash.string(scope) >>> 0) % SCOPE_STRIPES;
-  const revisionWrites = yield* Semaphore.make(1);
+  // Invalidations don't wait for reads in flight; they only exclude each other. An invalidation
+  // bumps its scope's generation when it starts and again once its revision is published, so an odd
+  // generation means one is in progress. A lookup that started mid-invalidation, or whose scopes
+  // moved meanwhile, still answers its caller but is never cached, in memory or on disk.
+  const invalidations = yield* Semaphore.make(1);
+  const scopeGenerations = new Map<string, number>();
+  const generationsOf = (scopes: ReadonlyArray<string>) =>
+    scopes.map((scope) => scopeGenerations.get(scope) ?? 0);
+  const bump = (scope: string) =>
+    scopeGenerations.set(scope, (scopeGenerations.get(scope) ?? 0) + 1);
   const digest = (key: string) =>
     digester.digest(Digest.sha256, new TextEncoder().encode(key)).pipe(Effect.map(Hex.encode));
   const revisions = yield* Cache.makeWith(
@@ -121,11 +137,19 @@ export const make = Effect.gen(function* () {
   const cache = yield* PersistedCache.make(
     (request: Read) =>
       request.lookup.pipe(
-        Effect.map((payload) => ({
-          payload,
-          expiresAt: clock.currentTimeMillisUnsafe() + 60_000,
-          revision: request.revision,
-        })),
+        Effect.map((payload) => {
+          const now = clock.currentTimeMillisUnsafe();
+          return {
+            payload,
+            // A zero time to live keeps the result out of both caches.
+            expiresAt: generationsOf(request.scopes).every(
+              (current, index) => current === request.generations[index] && current % 2 === 0,
+            )
+              ? now + 60_000
+              : now,
+            revision: request.revision,
+          };
+        }),
       ),
     {
       storeId: STORE_ID,
@@ -139,7 +163,11 @@ export const make = Effect.gen(function* () {
       const stored = yield* cache.get(request);
       if (request.matchesRevision(stored.revision)) return stored;
       yield* cache.invalidate(request);
-      return yield* cache.get(request);
+      const reloaded = yield* cache.get(request);
+      if (request.matchesRevision(reloaded.revision)) return reloaded;
+      // An older lookup's write landed between the removal and the reload.
+      yield* cache.invalidate(request);
+      return { payload: yield* request.lookup, expiresAt: 0, revision: request.revision };
     }),
     { capacity: CONCURRENT_READS, timeToLive: () => Duration.zero },
   );
@@ -150,6 +178,7 @@ export const make = Effect.gen(function* () {
       if (!enabled) return yield* lookup;
       const read = yield* Effect.cached(lookup);
       return yield* Effect.gen(function* () {
+        const generations = generationsOf(scopes);
         const current = yield* Cache.get(revisions, undefined);
         const now = clock.currentTimeMillisUnsafe();
         const revision = scopes
@@ -158,7 +187,13 @@ export const make = Effect.gen(function* () {
             return value !== undefined && value.expiresAt > now ? value.revision : "";
           })
           .join(":");
-        const request = new Read({ key: yield* digest(key), revision, lookup: read });
+        const request = new Read({
+          key: yield* digest(key),
+          revision,
+          lookup: read,
+          scopes,
+          generations,
+        });
         const stored = yield* cache.get(request);
         return (
           request.matchesRevision(stored.revision) ? stored : yield* Cache.get(refreshes, request)
@@ -169,17 +204,12 @@ export const make = Effect.gen(function* () {
           PersistenceError: () => read,
           SchemaError: () => read,
         }),
-        // A read stores its result under the revisions it started with, so an invalidation of
-        // one of its scopes must wait for it; reads of other scopes run on.
-        (effect) =>
-          [...new Set(scopes.map(stripeOf))]
-            .toSorted((left, right) => left - right)
-            .reduceRight((inner, stripe) => stripes[stripe]!.withPermits(1)(inner), effect),
         lock.withPermits(1),
       );
     }, detachStackFrame),
     invalidate: Effect.fn("PullRequestReadCache.invalidate")(
       function* (scope) {
+        bump(scope);
         const now = clock.currentTimeMillisUnsafe();
         const current = yield* Cache.get(revisions, undefined);
         const next = Object.fromEntries(
@@ -189,14 +219,14 @@ export const make = Effect.gen(function* () {
         const encoded = yield* Schema.encodeEffect(revisionCodec)(next);
         yield* backing.set("revisions", encoded);
         yield* Cache.set(revisions, undefined, next);
+        bump(scope);
       },
       Effect.catch(() => {
         enabled = false;
         return Effect.logWarning("PR cache disabled after clearing failed");
       }),
       Effect.uninterruptible,
-      revisionWrites.withPermits(1),
-      (effect, scope) => stripes[stripeOf(scope)]!.withPermits(CONCURRENT_READS)(effect),
+      invalidations.withPermits(1),
       detachStackFrame,
     ),
   });
