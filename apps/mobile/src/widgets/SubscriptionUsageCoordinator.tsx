@@ -1,6 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
-import * as Linking from "expo-linking";
 import { useEffect } from "react";
 import { Platform } from "react-native";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
@@ -14,7 +13,6 @@ import { createWidgetTheme } from "./widgetTheme";
 const snapshotAtom = Atom.make((get) =>
   buildSubscriptionUsageSnapshot(
     get(environmentPresentations.presentationsWithProvidersAtom),
-    Linking.createURL("settings/usage", { queryParams: { tab: "limits" } }),
     Platform.OS === "android" ? Infinity : 6,
   ),
 ).pipe(Atom.withEquality((a, b) => JSON.stringify(a) === JSON.stringify(b)));
