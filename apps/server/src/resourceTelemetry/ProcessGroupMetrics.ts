@@ -7,6 +7,7 @@ import * as Ref from "effect/Ref";
 
 import * as ServerConfig from "../config.ts";
 import { metricAttributes } from "../observability/Metrics.ts";
+import { isSpawnHostCommand } from "../process/spawnHostProcess.ts";
 import * as ResourceTelemetry from "./ResourceTelemetry.ts";
 
 const SAMPLE_INTERVAL = "1 minute";
@@ -70,11 +71,17 @@ export function groupProcesses(
     if (process.category === "resource-monitor") return "resource-monitor";
     if (process.category.startsWith("electron-")) return "electron";
     let current = process;
+    let below: ResourceTelemetryProcess | undefined;
     // Bounded by the table size, in case a reused PID makes the parent chain loop.
     for (let step = 0; step < processes.length; step++) {
-      if (current.ppid === serverPid) return childGroup(current.name, current.command);
+      if (current.ppid === serverPid) {
+        // A spawn host launches for the server: it counts as the server, its children as direct children.
+        if (!isSpawnHostCommand(current.command)) return childGroup(current.name, current.command);
+        return below === undefined ? "server" : childGroup(below.name, below.command);
+      }
       const parent = byPid.get(current.ppid);
       if (parent === undefined) break;
+      below = current;
       current = parent;
     }
     return "other";
