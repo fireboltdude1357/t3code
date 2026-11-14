@@ -20,6 +20,7 @@ import {
   collectUpdateEverythingResult,
   describeUpdateEverything,
   runUpdateEverything,
+  type SkippedMachine,
   type UpdateRunMachine,
 } from "./updateEverything.logic";
 import {
@@ -66,9 +67,37 @@ export function useUpdateEverything(
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
-  const { targets: servers, skipped } = channelSwitch
+  // A track switch's target came from the release feed already.
+  const { targets: behindServers, skipped: unreachable } = channelSwitch
     ? collectChannelSwitchTargets(machines, channelSwitch)
     : collectServerUpdateTargets(machines, targetVersion);
+  // Fork: servers install fork releases from GitHub (cliReleaseDownloadBaseUrl)
+  // or their desktop app's feed.
+  // Fleet's fork-build.sh publishes only the linux-x64 CLI archive, so other
+  // boot-service servers are skipped instead of failing on a missing archive.
+  // Track-only hosts install nothing, so they need no archive.
+  const platformById = new Map(
+    machines.map((machine) => [machine.environmentId, machine.serverConfig?.environment.platform]),
+  );
+  const hasForkArchive = (server: (typeof behindServers)[number]) => {
+    const platform = platformById.get(server.environmentId);
+    return (
+      server.trackOnly === true ||
+      server.selfUpdate === "desktop-managed" ||
+      (platform?.os === "linux" && platform.arch === "x64")
+    );
+  };
+  const servers = behindServers.filter(hasForkArchive);
+  const skipped: ReadonlyArray<SkippedMachine> = [
+    ...unreachable,
+    ...behindServers
+      .filter((server) => !hasForkArchive(server))
+      .map((server) => ({
+        environmentId: server.environmentId,
+        label: server.serverLabel,
+        reason: "fork builds have no CLI for this platform",
+      })),
+  ];
   // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
   const moving = servers.filter((server) => server.trackOnly !== true);
   const restarts = collectRestartingMachines(machines, moving, localUpdateVersion !== null);
