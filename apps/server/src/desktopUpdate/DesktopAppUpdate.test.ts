@@ -61,6 +61,7 @@ function report(
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
   readonly controlFd?: number | undefined;
+  readonly desktopAppUpdate?: boolean;
   readonly reports?: (requestId: string) => readonly DesktopUpdateStatusReport[];
   readonly keepOpen?: boolean;
 }
@@ -80,6 +81,7 @@ const makeHarness = Effect.fn("test.make_desktop_app_update_harness")(function* 
     ...("controlFd" in options
       ? { desktopTelemetryControlFd: options.controlFd }
       : { desktopTelemetryControlFd: 5 }),
+    desktopAppUpdate: options.desktopAppUpdate ?? true,
   };
   const reportsForRun = options.reports ?? (() => []);
   const changes = Stream.unwrap(
@@ -156,6 +158,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("desktop app upda
       expect(
         (yield* service.commit(prepared.desktopUpdateToken ?? "missing").pipe(Effect.flip)).reason,
       ).toBe("installer refused");
+    }),
+  );
+
+  it.effect("is unavailable when the desktop app reports it cannot update itself", () =>
+    Effect.gen(function* () {
+      const { service } = yield* makeHarness({ desktopAppUpdate: false });
+      expect(service.available).toBe(false);
     }),
   );
 
