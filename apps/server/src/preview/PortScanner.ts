@@ -447,7 +447,8 @@ const parseProcessTable = (raw: string): ReadonlyMap<number, ProcessTableRow> =>
 /**
  * The process group stopping `pid` signals. Shells with job control and agent tool shells give
  * every job its own group, so the group is the job. Null when the group also holds this server,
- * a direct child of it (agent CLIs and terminal shells), or one of its ancestors.
+ * one of its ancestors, or a process it launched (agent CLIs and terminal shells), directly or
+ * through a spawn host, which is a direct child left in the server's own group.
  */
 export const stoppableProcessGroup = (
   table: ReadonlyMap<number, ProcessTableRow>,
@@ -456,6 +457,11 @@ export const stoppableProcessGroup = (
 ): number | null => {
   const group = table.get(pid)?.pgid;
   if (group === undefined || group <= 1) return null;
+  const serverGroup = table.get(serverPid)?.pgid;
+  const launchers = new Set([serverPid]);
+  for (const row of table.values()) {
+    if (row.ppid === serverPid && row.pgid === serverGroup) launchers.add(row.pid);
+  }
   const guarded = new Set([serverPid]);
   for (
     let parent = table.get(serverPid)?.ppid;
@@ -465,7 +471,7 @@ export const stoppableProcessGroup = (
     guarded.add(parent);
   }
   for (const row of table.values()) {
-    if (row.pgid === group && (guarded.has(row.pid) || row.ppid === serverPid)) return null;
+    if (row.pgid === group && (guarded.has(row.pid) || launchers.has(row.ppid))) return null;
   }
   return group;
 };
