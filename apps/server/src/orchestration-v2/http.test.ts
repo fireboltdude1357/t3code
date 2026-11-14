@@ -383,7 +383,9 @@ it.effect("leaves older settled threads out of the HTTP shell only when asked", 
     expect(cut.threads.map((row) => row.id).toSorted()).toEqual(
       [thread.id, ...Array.from({ length: 25 }, (_, index) => `settled-${index + 1}`)].toSorted(),
     );
-    expect(cut.olderSettled?.counts).toEqual([{ projectId: thread.projectId, count: 1 }]);
+    expect(cut.olderSettled?.counts).toEqual([
+      { projectId: thread.projectId, count: 1, botCount: 0 },
+    ]);
 
     // A client that holds rows the socket can replay from keeps them; any other cursor reloads.
     expect(full.projectIdentities).toBeTypeOf("string");
