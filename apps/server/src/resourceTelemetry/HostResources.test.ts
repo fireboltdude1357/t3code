@@ -204,6 +204,7 @@ describe("HostResources.layer", () => {
 
       assert.strictEqual(snapshot.cpuCount, 8);
       assert.closeTo(snapshot.cpuUtilization ?? Number.NaN, 0.25, 1e-9);
+      assert.deepStrictEqual(snapshot.cpuCoreUtilization, Array(8).fill(0.25));
       assert.strictEqual(snapshot.availableMemoryBytes, 2 * GiB);
     }).pipe(Effect.provide(linuxHost(unlimitedCgroup))),
   );
@@ -276,5 +277,34 @@ describe("hostCpuUtilization", () => {
     expect(
       HostResources.hostCpuUtilization(sample(0, 0), { ...sample(100, 1000), count: 8 }),
     ).toBeNull();
+  });
+});
+
+const core = (idle: number, user: number): NodeOS.CpuInfo => ({
+  model: "test",
+  speed: 0,
+  times: { idle, user, nice: 0, sys: 0, irq: 0 },
+});
+
+describe("cpuCoreUtilization", () => {
+  it("reports each core's busy share in core order", () => {
+    expect(
+      HostResources.cpuCoreUtilization([core(0, 0), core(0, 0)], [core(100, 900), core(750, 250)]),
+    ).toEqual([0.9, 0.25]);
+  });
+
+  it("returns null for a core whose counters gave no valid delta", () => {
+    expect(
+      HostResources.cpuCoreUtilization(
+        [core(500, 500), core(500, 500), core(0, 0)],
+        [core(500, 500), core(400, 700), core(0, 100)],
+      ),
+    ).toEqual([null, null, 1]);
+  });
+
+  it("returns undefined when the core count changes", () => {
+    expect(
+      HostResources.cpuCoreUtilization([core(0, 0)], [core(100, 900), core(100, 900)]),
+    ).toBeUndefined();
   });
 });
