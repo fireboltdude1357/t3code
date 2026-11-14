@@ -178,6 +178,10 @@ const executeEnvironmentRequest = Effect.fnUntraced(function* <
   let httpBaseUrl = input.prepared.httpBaseUrl;
   const requestUrlFor = (baseUrl: string) =>
     input.url(makeEnvironmentHttpApiUrlBuilder(baseUrl)[input.group]);
+  yield* Effect.annotateCurrentSpan({
+    "environment.id": input.prepared.environmentId,
+    "http.path": new URL(requestUrlFor(httpBaseUrl)).pathname,
+  });
   return yield* Effect.gen(function* () {
     let rejectedAccessToken: string | undefined;
     for (;;) {
