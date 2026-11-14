@@ -297,6 +297,7 @@ export const DesktopUpdateStatusReport = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("desktopUpdateStatus"),
   requestId: Schema.optionalKey(TrimmedNonEmptyString),
+  preparedRequestId: Schema.optionalKey(TrimmedNonEmptyString),
   outcome: Schema.optionalKey(DesktopUpdateRemoteOutcome),
   reason: Schema.optionalKey(TrimmedNonEmptyString),
   state: DesktopUpdateStateSchema,
