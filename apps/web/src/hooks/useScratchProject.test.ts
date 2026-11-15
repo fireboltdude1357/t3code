@@ -17,9 +17,10 @@ function scratchEnvironment(environmentId: EnvironmentId, scratchWorkspaceRoot: 
 }
 
 function actions(
-  primary: EnvironmentId | null,
+  preferred: EnvironmentId | null,
   localRoot: string | null,
   remoteRoot: string | null = "/remote/scratch",
+  primary: EnvironmentId | null = null,
 ) {
   const environments = [
     scratchEnvironment(local, localRoot),
@@ -28,6 +29,7 @@ function actions(
   ];
   return createScratchProjectActions({
     environments: () => environments,
+    defaultEnvironmentId: () => preferred,
     primaryEnvironmentId: () => primary,
     registry: AtomRegistry.make(),
     handleNewThread: async () => null,
@@ -35,15 +37,20 @@ function actions(
 }
 
 describe("scratchEnvironmentId", () => {
-  it("prefers the primary environment over the one on screen", () => {
+  it("prefers the default machine over the one on screen", () => {
     expect(actions(local, "/local/scratch").scratchEnvironmentId(remote)).toBe(local);
     expect(actions(local, "/local/scratch").scratchEnvironmentId(null)).toBe(local);
   });
 
-  it("falls back when the primary environment offers no scratch root", () => {
+  it("falls back when the default machine offers no scratch root", () => {
     expect(actions(local, null).scratchEnvironmentId(remote)).toBe(remote);
     expect(actions(null, null).scratchEnvironmentId(remote)).toBe(remote);
     expect(actions(null, null, null).scratchEnvironmentId(remote)).toBe(other);
     expect(actions(local, null).scratchEnvironmentId(null)).toBeNull();
+  });
+
+  it("uses this device when the default machine offers no scratch root", () => {
+    expect(actions(remote, "/local/scratch", null, local).scratchEnvironmentId(other)).toBe(local);
+    expect(actions(remote, "/local/scratch", null, local).scratchEnvironmentId(null)).toBe(local);
   });
 });
