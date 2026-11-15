@@ -162,6 +162,11 @@ export interface GhosttyMouseInput {
   readonly anyButtonPressed: boolean;
 }
 
+// Ghostty sends modified F3 as CSI 13;m ~ to stay clear of cursor position reports, but the PTY
+// advertises xterm-256color, whose kf15/kf27/... are CSI 1;m R. Terminfo keys only apply in
+// keypad-transmit mode (smkx), so that mode marks a terminfo reader; raw parsers never set it.
+const MODIFIED_F3 = /^\x1b\[13;(\d+)~$/;
+
 const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const encoder = new TextEncoder();
 
@@ -248,6 +253,8 @@ export class GhosttyTerminalCore {
   private cellQuery = 0;
   private scrollbar = 0;
   private rows: GhosttyRow[] = [];
+  // Defaults the cached rows resolved; Ghostty marks no row dirty when OSC 10/11 change them.
+  private rowColors: Pick<GhosttySnapshot, "foreground" | "background"> | null = null;
   private disposed = false;
   private keyboardLayoutMap: GhosttyKeyboardLayoutMap | undefined;
 
@@ -600,7 +607,9 @@ export class GhosttyTerminalCore {
     );
     this.runtime.call("ghostty_wasm_free_usize", written);
     if (textPointer !== 0) this.runtime.free(textPointer, textBytes.length);
-    return encoded;
+    return MODIFIED_F3.test(encoded) && this.modeEnabled(66) && this.kittyKeyboardFlags() === 0
+      ? encoded.replace(MODIFIED_F3, "\x1b[1;$1R")
+      : encoded;
   }
 
   encodePaste(data: string): string {
@@ -865,9 +874,14 @@ export class GhosttyTerminalCore {
     );
     const cols = this.getU16(RENDER_DATA.cols);
     const rowCount = this.getU16(RENDER_DATA.rows);
-    const dirty = this.getU32(RENDER_DATA.dirty);
     const foreground = this.getColor(RENDER_DATA.foreground, { r: 229, g: 231, b: 235 });
     const background = this.getColor(RENDER_DATA.background, { r: 0, g: 0, b: 0 });
+    const colorsChanged =
+      this.rowColors !== null &&
+      (!sameColor(this.rowColors.foreground, foreground) ||
+        !sameColor(this.rowColors.background, background));
+    this.rowColors = { foreground, background };
+    const dirty = colorsChanged ? 2 : this.getU32(RENDER_DATA.dirty);
     const cursorHasValue = this.getBool(RENDER_DATA.cursorHasValue);
     const cursor = cursorHasValue ? this.getColor(RENDER_DATA.cursor, foreground) : foreground;
     const cursorInViewport = this.getBool(RENDER_DATA.cursorInViewport);
@@ -1031,6 +1045,12 @@ export class GhosttyTerminalCore {
     ]) {
       this.runtime.freeOpaque(slot);
     }
+  }
+
+  private kittyKeyboardFlags(): number {
+    this.runtime.bytes(this.scratch, 1)[0] = 0;
+    this.runtime.call("ghostty_terminal_get", this.terminal, 8, this.scratch);
+    return this.runtime.bytes(this.scratch, 1)[0]!;
   }
 
   /** Reads a DEC private mode; an unknown mode reads as off. */
