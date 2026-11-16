@@ -112,12 +112,14 @@ export function collectServerUpdateTargets(
       skip("update its desktop app on that machine");
       continue;
     }
-    const serverVersion = config.environment.serverVersion;
+    const serverChannel = cliReleaseChannelOf(config.environment.serverVersion);
+    // A desktop app installs its own track's newest release. Nightly builds run ahead of Stable, so a
+    // Nightly host behind a Stable target has something newer; a Stable host may not.
     if (
-      selfUpdate !== "desktop-managed" &&
-      cliReleaseChannelOf(serverVersion) !== cliReleaseChannelOf(targetVersion)
+      serverChannel !== cliReleaseChannelOf(targetVersion) &&
+      (selfUpdate !== "desktop-managed" || serverChannel === "stable")
     ) {
-      skip(`on the ${cliReleaseChannelOf(serverVersion)} channel`);
+      skip(`on the ${serverChannel} channel`);
       continue;
     }
     const target: ServerUpdateTarget = {
