@@ -12,7 +12,6 @@ import {
   lineLimit,
   progressViewStyle,
   tint,
-  widgetURL,
 } from "@expo/ui/swift-ui/modifiers";
 import { createWidget, type WidgetEnvironment } from "expo-widgets";
 
@@ -241,15 +240,14 @@ function SubscriptionUsage(
     <VStack
       alignment="leading"
       spacing={accessory || dense ? 2 : 6}
-      modifiers={[
-        ...(props.url ? [widgetURL(props.url)] : []),
-        ...(palette
+      modifiers={
+        palette
           ? [
               containerBackground(palette.background, "widget"),
               environment("colorScheme", appearance),
             ]
-          : []),
-      ]}
+          : []
+      }
     >
       {providers.length === 0 ? (
         <Text modifiers={[font({ textStyle: "caption" }), foregroundStyle(secondary)]}>
