@@ -93,7 +93,6 @@ describe("subscription widget snapshots", () => {
           },
         }),
       ]),
-      deepLink,
     );
     const session = snapshot.providers[0]?.windows.find((w) => w.kind === "session");
     expect(session?.accounts).toStrictEqual([
