@@ -9,7 +9,7 @@ import {
 import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
-import { searchableSetting } from "./settingsSearch";
+import { useSearchableSetting } from "./settingsSearch";
 
 const THIS_DEVICE_VALUE = "this-device";
 const selectDefaultEnvironmentId = (settings: ClientSettings) => settings.defaultEnvironmentId;
@@ -19,6 +19,7 @@ const selectDefaultEnvironmentId = (settings: ClientSettings) => settings.defaul
  * so the list offers this device once and then every other known machine.
  */
 export function DefaultEnvironmentSettingsRow() {
+  const searchableSetting = useSearchableSetting();
   const savedEnvironmentId = useClientSettings(selectDefaultEnvironmentId);
   const { environments } = useEnvironments();
   const connectedEnvironmentIds = useConnectedEnvironmentIds();
@@ -56,7 +57,7 @@ export function DefaultEnvironmentSettingsRow() {
       resetAction={
         savedEnvironmentId !== null ? (
           <SettingResetButton
-            label="default machine"
+            ariaLabel="Reset default machine to default"
             onClick={() => void updateClientSettings({ defaultEnvironmentId: null })}
           />
         ) : null
