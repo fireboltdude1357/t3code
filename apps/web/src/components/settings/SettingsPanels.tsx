@@ -2037,7 +2037,7 @@ export function ThreadsSettingsPanel() {
         />
         <SettingsRow
           serverScoped
-          {...searchableSetting("compact-before-cache-expires")}
+          {...setting("compact-before-cache-expires")}
           description="Send /compact to large idle Claude and Codex threads shortly before their prompt cache expires, so returning to them re-reads a short summary instead of the full history."
           settingKeys={["cacheExpiryCompactionMinTokens"]}
           control={
@@ -2059,7 +2059,7 @@ export function ThreadsSettingsPanel() {
           <SettingsRow
             serverScoped
             settingKeys={["cacheExpiryCompactionMinTokens"]}
-            title={searchableSetting("compact-before-cache-expires-min-context").title}
+            title={setting("compact-before-cache-expires-min-context").title}
             description="Only threads using at least this much context are compacted."
             control={
               <Select
