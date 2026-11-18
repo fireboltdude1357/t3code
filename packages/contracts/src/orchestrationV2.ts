@@ -4167,6 +4167,8 @@ export const OrchestrationV2ThreadHistoryPage = withRecordIdTable(
     ),
     nextCursor: Schema.NullOr(TrimmedNonEmptyString),
     hasMoreHistory: Schema.Boolean,
+    /** Records of the page's subagent items, which a bounded snapshot can omit. */
+    subagents: Schema.optionalKey(Schema.Array(OrchestrationV2Subagent)),
     idTable: IdTableMarker,
   }),
   () => null,
