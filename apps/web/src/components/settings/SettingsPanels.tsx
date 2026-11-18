@@ -118,6 +118,7 @@ import {
 import { useSearchableSetting } from "./settingsSearch";
 import { nativeLanguageName, SYSTEM_LANGUAGE } from "@t3tools/client-runtime/locales";
 import { SUPPORTED_LOCALES } from "../../i18n/locales";
+import { DefaultEnvironmentSettingsRow } from "./DefaultEnvironmentSettingsRow";
 import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PullRequestLinksOpenInAppSetting } from "./IntegrationsSettings";
@@ -616,6 +617,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
       ? [gt("Add project base directory")]
       : []),
+    ...(settings.defaultEnvironmentId !== DEFAULT_UNIFIED_SETTINGS.defaultEnvironmentId
+      ? ["Default machine"]
+      : []),
     ...(settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout
       ? [gt("Clone into host folders")]
       : []),
@@ -741,6 +745,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+      defaultEnvironmentId: DEFAULT_UNIFIED_SETTINGS.defaultEnvironmentId,
       ghqCloneLayout: DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmTerminalClose: DEFAULT_UNIFIED_SETTINGS.confirmTerminalClose,
@@ -1933,6 +1938,7 @@ export function ThreadsSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection id="new-projects" title={gt("New projects")}>
+        <DefaultEnvironmentSettingsRow />
         <SettingsRow
           serverScoped
           settingKeys={["addProjectBaseDirectory"]}
