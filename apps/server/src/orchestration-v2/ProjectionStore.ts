@@ -5165,7 +5165,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND json_extract(provider_thread.payload_json, '$.driver') IN ('claudeAgent', 'codex')
             AND provider_thread.provider_instance_id
               = json_extract(t.payload_json, '$.modelSelection.instanceId')
-            AND lower(trim(json_extract(message.payload_json, '$.text'), ${javascriptTrimWhitespace})) <> '/compact'
+            AND lower(trim(json_extract(message.payload_json, '$.text'), ${JAVASCRIPT_TRIM_WHITESPACE})) <> '/compact'
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runs active
               WHERE active.thread_id = t.thread_id
