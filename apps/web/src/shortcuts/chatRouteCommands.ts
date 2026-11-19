@@ -22,6 +22,7 @@ import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/pro
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
+import { readDefaultEnvironmentId } from "../state/defaultEnvironment";
 import { readProjects, readThreadShell } from "../state/entities";
 import { defaultProjectFallbackReadyAtom } from "../state/projects";
 import { environmentPresentations } from "../state/presentation";
@@ -47,6 +48,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       [...appAtomRegistry.get(environmentPresentations.presentationsAtom)].map(
         ([environmentId, presentation]) => ({ ...presentation, environmentId }),
       ),
+    defaultEnvironmentId: readDefaultEnvironmentId,
     primaryEnvironmentId: () => appAtomRegistry.get(primaryEnvironmentIdAtom),
     registry: appAtomRegistry,
     handleNewThread,
