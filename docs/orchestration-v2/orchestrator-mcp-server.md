@@ -360,6 +360,14 @@ or a lost reply, resend the same request with the same key from the same
 provider session. This reuses any thread already created by that request. If the
 initial request had no key, check for the thread before launching again.
 
+A bot that launches work on its own passes `bot` with its short name. The new
+thread's id becomes `bot:<name>:<id>`. Threads that a marked thread creates
+through `t3_thread_launch`, `create_threads`, or a `t3_thread_transfer` fork keep the
+marker; `bot: null` launches ordinary work from one instead. Clients list
+marked threads in the sidebar's Bots section instead of the inbox, and they
+notify only when the thread needs an approval, an answer, or a decision on a
+proposed plan. The id carries the marker so it needs no new thread state.
+
 ### `t3_thread_list`
 
 Lists durable thread shells in one project, newest first: `projectId` when
