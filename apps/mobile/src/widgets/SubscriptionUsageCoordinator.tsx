@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { useLocale, useMessages } from "gt-react-native";
-import * as Linking from "expo-linking";
 import { useEffect, useEffectEvent } from "react";
 import { Platform } from "react-native";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
@@ -21,7 +20,6 @@ function makeSnapshotAtom(resolve: MessageResolver) {
   return Atom.make((get) =>
     buildSubscriptionUsageSnapshot(
       get(environmentPresentations.presentationsWithProvidersAtom),
-      Linking.createURL("settings/usage", { queryParams: { tab: "limits" } }),
       Platform.OS === "android" ? Infinity : 6,
       resolve,
     ),
