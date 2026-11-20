@@ -1,5 +1,6 @@
 import { requireOptionalNativeModule } from "expo";
 import * as Linking from "expo-linking";
+import { tryOpenExternalUrl } from "../lib/openExternalUrl";
 import type { SubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
 
 let listening = false;
@@ -15,7 +16,7 @@ export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapsh
     listening = true;
     addUserInteractionListener((event) => {
       // A bare scheme URL opens the app without navigating; App.tsx filters it out of linking.
-      if (event.source === "SubscriptionUsage") void Linking.openURL(Linking.createURL(""));
+      if (event.source === "SubscriptionUsage") void tryOpenExternalUrl(Linking.createURL(""));
     });
   }
   widget.updateSnapshot(snapshot);
