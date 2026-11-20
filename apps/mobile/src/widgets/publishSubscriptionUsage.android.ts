@@ -1,8 +1,8 @@
 import { requireOptionalNativeModule } from "expo";
+import * as Linking from "expo-linking";
 import { tryOpenExternalUrl } from "../lib/openExternalUrl";
 import type { SubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
 
-let tapUrl: string | undefined;
 let listening = false;
 
 export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapshot) {
@@ -11,12 +11,12 @@ export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapsh
     import("./SubscriptionUsage"),
     import("expo-widgets"),
   ]);
-  tapUrl = snapshot.url;
   if (!listening) {
     // expo-widgets lacks Android widgetURL. Button events need a live JS runtime to open the app.
     listening = true;
     addUserInteractionListener((event) => {
-      if (event.source === "SubscriptionUsage" && tapUrl) void tryOpenExternalUrl(tapUrl);
+      // A bare scheme URL opens the app without navigating; App.tsx filters it out of linking.
+      if (event.source === "SubscriptionUsage") void tryOpenExternalUrl(Linking.createURL(""));
     });
   }
   widget.updateSnapshot(snapshot);
