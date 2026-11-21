@@ -90,6 +90,7 @@ export function FontFamilyPicker({
   defaultFamily,
   selectedFamily,
   requireMonospace = false,
+  requireLatinLetters = false,
   initialOpen = false,
   onSelect,
 }: {
@@ -97,6 +98,7 @@ export function FontFamilyPicker({
   defaultFamily: string;
   selectedFamily: string;
   requireMonospace?: boolean;
+  requireLatinLetters?: boolean;
   initialOpen?: boolean;
   onSelect: (family: string) => void;
 }) {
@@ -143,7 +145,7 @@ export function FontFamilyPicker({
 
   const handlePick = (value: string) => {
     setOpen(false);
-    if (value !== DEFAULT_FONT_VALUE && !hasAllLatinLetters(value)) {
+    if (value !== DEFAULT_FONT_VALUE && requireLatinLetters && !hasAllLatinLetters(value)) {
       toastManager.add(
         stackedThreadToast({
           type: "error",

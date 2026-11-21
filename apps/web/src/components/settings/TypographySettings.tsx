@@ -77,6 +77,7 @@ function InterfaceFontRow({ preview }: { preview?: ReactNode }) {
   const defaults = useFontDefaultFamilies();
   return (
     <FontFamilySettingsRow
+      requireLatinLetters
       {...searchableSetting("interface-font")}
       resetLabel={gt("Reset interface font to default")}
       description={gt("Everything outside code blocks and the terminal.")}
@@ -111,6 +112,7 @@ function PromptFontRow() {
   const defaults = useFontDefaultFamilies();
   return (
     <FontFamilySettingsRow
+      requireLatinLetters
       {...searchableSetting("prompt-font")}
       resetLabel={gt("Reset prompt font to default")}
       description={gt("Only the box you write prompts in. Mono works well here.")}
@@ -399,6 +401,7 @@ function FontFamilySettingsRow({
   onValueChange,
   onReset,
   requireMonospace = false,
+  requireLatinLetters = false,
   size,
 }: {
   id?: string;
@@ -412,6 +415,7 @@ function FontFamilySettingsRow({
   onValueChange: (value: string) => void;
   onReset: () => void;
   requireMonospace?: boolean;
+  requireLatinLetters?: boolean;
   size: {
     label: string;
     min: number;
@@ -450,7 +454,7 @@ function FontFamilySettingsRow({
   );
   const acceptsFamily = (candidate: string) =>
     isFontFamilyAvailable(candidate) &&
-    hasAllLatinLetters(candidate) &&
+    (!requireLatinLetters || hasAllLatinLetters(candidate)) &&
     (!requireMonospace || isMonospaceFamily(candidate));
   const commitDraft = (next: string) => {
     setDraftSettled(true);
@@ -484,6 +488,7 @@ function FontFamilySettingsRow({
         defaultFamily={defaultFamily}
         selectedFamily={trimmed}
         requireMonospace={requireMonospace}
+        requireLatinLetters={requireLatinLetters}
         initialOpen={inputFocused}
         onSelect={onValueChange}
       />

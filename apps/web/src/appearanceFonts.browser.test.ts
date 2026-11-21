@@ -144,9 +144,12 @@ describe("applyAppearanceFontVariables", () => {
         ascentOverride: "86%",
         descentOverride: "14%",
       });
-      applyAppearanceFontVariables(root, { ...interfacePreferences, sans: "Balanced Symbols" });
-      document.fonts.delete(balanced);
-      expect(root.style.getPropertyValue("--font-sans")).toMatch(/^"Balanced Symbols", /);
+      try {
+        applyAppearanceFontVariables(root, { ...interfacePreferences, sans: "Balanced Symbols" });
+        expect(root.style.getPropertyValue("--font-sans")).toMatch(/^"Balanced Symbols", /);
+      } finally {
+        document.fonts.delete(balanced);
+      }
     } finally {
       control.remove();
       applyAppearanceFontVariables(root, { ...interfacePreferences, sans: "" });

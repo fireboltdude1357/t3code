@@ -177,8 +177,8 @@ const METRICS_FONT_CAP_HEIGHT_OFFSET = METRICS_FONT_OS2_OFFSET + 88;
 const METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET = 180;
 const METRICS_PROBE_FONT_SIZE = 100;
 // The face costs real ellipses (engines draw "...") and layout time, so fonts whose capitals
-// already sit this close to center go without it. Canvas reports whole pixels at the probe size,
-// so offsets land on a 0.005em grid; the tolerance sits between grid points.
+// already sit this close to center go without it. Canvas reported whole pixels at the probe size
+// on Linux, so offsets landed on a 0.005em grid there; the tolerance sits between grid points.
 const METRICS_CENTERED_TOLERANCE_EM = 0.0725;
 const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: string }>();
 
@@ -220,7 +220,7 @@ function centeredMetricsFamily(variable: string, stack: string | null): string |
     METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET,
     (0xb1b0afba - checksum(0, data.length)) >>> 0,
   );
-  const percent = (units: number) => `${(units / METRICS_FONT_UNITS_PER_EM) * 100}%`;
+  const percent = (units: number) => `${units / (METRICS_FONT_UNITS_PER_EM / 100)}%`;
   const face = new FontFace(family, data, {
     unicodeRange: "U+20",
     weight: "1 1000",
@@ -239,6 +239,8 @@ function measureCenteredMetrics(stack: string) {
   if (typeof FontFace === "undefined" || !("ascentOverride" in FontFace.prototype)) return null;
   const context = probeContext();
   if (context === null) return null;
+  // Canvas ignores an invalid font string and keeps the last one, so start from a known font.
+  context.font = `${METRICS_PROBE_FONT_SIZE}px serif`;
   context.font = `${METRICS_PROBE_FONT_SIZE}px ${stack}`;
   const capitals = context.measureText("H");
   const height = capitals.fontBoundingBoxAscent + capitals.fontBoundingBoxDescent;
@@ -284,8 +286,8 @@ const GENERIC_FAMILY_PATTERN = /^(system-ui|sans-serif|serif|monospace|ui-monosp
 // Printable ASCII, space included. A family that draws none of it leaves interface text alone.
 const ASCII_CHARACTERS = Array.from({ length: 95 }, (_, index) => String.fromCharCode(32 + index));
 const LATIN_LETTERS = ASCII_CHARACTERS.filter((character) => /[A-Za-z]/.test(character));
-// Three generics, so a browser that maps two of them to one font still shows a fallback.
-const PROBE_GENERICS = ["serif", "monospace", "sans-serif"] as const;
+// Several generics, so a browser that maps some of them to one font still shows a fallback.
+const PROBE_GENERICS = ["serif", "monospace", "sans-serif", "cursive"] as const;
 
 function characterWidths(stack: string, characters: readonly string[]): number[] | null {
   const context = probeContext();
@@ -316,12 +318,14 @@ export function hasAllLatinLetters(family: string): boolean {
   const first = cssFontFamilies(family.split(",").find(drawsInterfaceText) ?? "");
   if (first === null) return false;
   if (GENERIC_FAMILY_PATTERN.test(first)) return true;
-  if (probeContext() === null) return true;
+  const context = probeContext();
+  if (context === null) return true;
   // Letter by letter, since fallback widths can cancel out in a sum.
-  const [reference = [], ...others] = PROBE_GENERICS.map(
-    (generic) => characterWidths(`${first}, ${generic}`, LATIN_LETTERS) ?? [],
-  );
-  return others.every((widths) => widths.every((width, index) => width === reference[index]));
+  const widths = PROBE_GENERICS.map((generic) => {
+    context.font = `${PROBE_FONT_SIZE}px ${first}, ${generic}`;
+    return LATIN_LETTERS.map((letter) => context.measureText(letter).width);
+  });
+  return widths.every((row) => row.every((width, index) => width === widths[0]?.[index]));
 }
 
 /** Probes canvas metrics because document.fonts.check() accepts uninstalled families. */
