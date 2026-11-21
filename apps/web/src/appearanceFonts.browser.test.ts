@@ -4,10 +4,13 @@ import "~/index.css";
 import { applyAppearanceFontVariables, hasAllLatinLetters } from "./appearanceFonts";
 import symbolsFontUrl from "./terminal/ghostty/fonts/SymbolsNerdFontMono-Regular.woff2?url";
 
-// A face with no Latin letters and a deep descent, like Al Tarikh on macOS.
-async function loadLopsidedSymbolsFont(family: string): Promise<FontFace> {
+// A face with no Latin letters and a deep descent by default, like Al Tarikh on macOS.
+async function loadLopsidedSymbolsFont(
+  family: string,
+  metrics = { ascentOverride: "50%", descentOverride: "90%" },
+): Promise<FontFace> {
   const data = await fetch(symbolsFontUrl).then((response) => response.arrayBuffer());
-  const face = new FontFace(family, data, { ascentOverride: "50%", descentOverride: "90%" });
+  const face = new FontFace(family, data, metrics);
   document.fonts.add(await face.load());
   return face;
 }
@@ -130,8 +133,18 @@ describe("applyAppearanceFontVariables", () => {
       // `cap` units and `text-box: trim-both cap` read the first font's cap height.
       const capUnit = control.querySelector("b")!.getBoundingClientRect().height;
       expect(Math.abs(capUnit - capHeight)).toBeLessThan(0.5);
+
+      // A font that already centers its capitals keeps the plain stack.
+      const balanced = await loadLopsidedSymbolsFont("Balanced Symbols", {
+        ascentOverride: "86%",
+        descentOverride: "14%",
+      });
+      applyAppearanceFontVariables(root, { ...interfacePreferences, sans: "Balanced Symbols" });
+      document.fonts.delete(balanced);
+      expect(root.style.getPropertyValue("--font-sans")).toMatch(/^"Balanced Symbols", /);
     } finally {
       control.remove();
+      applyAppearanceFontVariables(root, { ...interfacePreferences, sans: "" });
       document.fonts.delete(face);
       if (style === null) root.removeAttribute("style");
       else root.setAttribute("style", style);

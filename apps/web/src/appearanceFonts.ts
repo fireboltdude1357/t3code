@@ -159,16 +159,19 @@ function clampCodeFontSize(value: number): number {
   return clampFontSize(value, MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE, DEFAULT_CODE_FONT_SIZE);
 }
 
-// A TrueType font with no glyphs but .notdef. First in a stack, it sets the line box while every
-// glyph, space included, falls through to the next family.
+// A TrueType font with no glyphs but .notdef, built by fontTools FontBuilder with an empty cmap.
+// First in a stack, it sets the line box while every glyph, space included, falls through.
 const METRICS_FONT_BASE64 =
   "AAEAAAAKAIAAAwAgT1MvMkTfQZwAAAEoAAAAYGNtYXAADABGAAABjAAAACxnbHlmAAAAAAAAAbwAAAABaGVhZC1k4VQAAACsAAAANmhoZWEDIf86AAAA5AAAACRobXR4AAAAAAAAAYgAAAAEbG9jYQAAAAAAAAG4AAAABG1heHAAAgACAAABCAAAACBuYW1lYHiIugAAAcAAAABgcG9zdAADAAAAAAIgAAAAJAABAAAAAQAA+blHGF8PPPUAAwPoAAAAAOcnUDoAAAAA5ydQOgAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAEAAAABAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwAAAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz8/PwAAAAAAAAMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAgAAAAMAAAAUAAMAAQAAABQABAAYAAAAAgACAAAAAP//AAD//wABAAAAAAAAAAAAAAAAAAQANgABAAAAAAABAAcAAAABAAAAAAACAAcABwADAAEECQABAA4ADgADAAEECQACAA4AHE1ldHJpY3NSZWd1bGFyAE0AZQB0AHIAaQBjAHMAUgBlAGcAdQBsAGEAcgACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAA==";
-// The font has 1000 units per em. CSS `cap`, `ex` and `text-box` read these OS/2 fields from
-// the first font, so each face carries the measured values.
+// CSS `cap`, `ex` and `text-box` read these OS/2 fields (table at byte 296, 1000 units per em)
+// from the first font, so each face carries the measured values.
 const METRICS_FONT_UNITS_PER_EM = 1000;
 const METRICS_FONT_X_HEIGHT_OFFSET = 296 + 86;
 const METRICS_FONT_CAP_HEIGHT_OFFSET = 296 + 88;
 const METRICS_PROBE_FONT_SIZE = 100;
+// The face costs real ellipses (engines draw "...") and Firefox tab stops, so fonts whose
+// capitals already sit this close to center go without it.
+const METRICS_CENTERED_TOLERANCE_EM = 0.03;
 const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: string }>();
 
 /**
@@ -217,6 +220,8 @@ function measureCenteredMetrics(stack: string) {
   const height = capitals.fontBoundingBoxAscent + capitals.fontBoundingBoxDescent;
   const cap = capitals.actualBoundingBoxAscent;
   if (!(height > cap && cap > 0)) return null;
+  const offset = capitals.fontBoundingBoxAscent - capitals.fontBoundingBoxDescent - cap;
+  if (Math.abs(offset / 2 / METRICS_PROBE_FONT_SIZE) < METRICS_CENTERED_TOLERANCE_EM) return null;
   const units = (pixels: number) =>
     Math.round((pixels / METRICS_PROBE_FONT_SIZE) * METRICS_FONT_UNITS_PER_EM);
   return {
