@@ -163,11 +163,16 @@ function clampCodeFontSize(value: number): number {
 // First in a stack, it sets the line box while every glyph, space included, falls through.
 const METRICS_FONT_BASE64 =
   "AAEAAAAKAIAAAwAgT1MvMkTfQZwAAAEoAAAAYGNtYXAADABGAAABjAAAACxnbHlmAAAAAAAAAbwAAAABaGVhZC1k4VQAAACsAAAANmhoZWEDIf86AAAA5AAAACRobXR4AAAAAAAAAYgAAAAEbG9jYQAAAAAAAAG4AAAABG1heHAAAgACAAABCAAAACBuYW1lYHiIugAAAcAAAABgcG9zdAADAAAAAAIgAAAAJAABAAAAAQAA+blHGF8PPPUAAwPoAAAAAOcnUDoAAAAA5ydQOgAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAEAAAABAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwAAAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz8/PwAAAAAAAAMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAgAAAAMAAAAUAAMAAQAAABQABAAYAAAAAgACAAAAAP//AAD//wABAAAAAAAAAAAAAAAAAAQANgABAAAAAAABAAcAAAABAAAAAAACAAcABwADAAEECQABAA4ADgADAAEECQACAA4AHE1ldHJpY3NSZWd1bGFyAE0AZQB0AHIAaQBjAHMAUgBlAGcAdQBsAGEAcgACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAA==";
-// CSS `cap`, `ex` and `text-box` read these OS/2 fields (table at byte 296, 1000 units per em)
-// from the first font, so each face carries the measured values.
+// CSS `cap`, `ex` and `text-box` read OS/2 fields from the first font, so each face carries the
+// measured values. Byte offsets: OS/2 is 96 bytes at 296 with its checksum at 16, and
+// head.checkSumAdjustment is at 180; units are 1000 per em.
 const METRICS_FONT_UNITS_PER_EM = 1000;
-const METRICS_FONT_X_HEIGHT_OFFSET = 296 + 86;
-const METRICS_FONT_CAP_HEIGHT_OFFSET = 296 + 88;
+const METRICS_FONT_OS2_OFFSET = 296;
+const METRICS_FONT_OS2_LENGTH = 96;
+const METRICS_FONT_OS2_CHECKSUM_OFFSET = 16;
+const METRICS_FONT_X_HEIGHT_OFFSET = METRICS_FONT_OS2_OFFSET + 86;
+const METRICS_FONT_CAP_HEIGHT_OFFSET = METRICS_FONT_OS2_OFFSET + 88;
+const METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET = 180;
 const METRICS_PROBE_FONT_SIZE = 100;
 // The face costs real ellipses (engines draw "...") and Firefox tab stops, so fonts whose
 // capitals already sit this close to center go without it.
@@ -194,6 +199,23 @@ function centeredMetricsFamily(variable: string, stack: string | null): string |
   const view = new DataView(data.buffer);
   view.setInt16(METRICS_FONT_X_HEIGHT_OFFSET, metrics.xHeight);
   view.setInt16(METRICS_FONT_CAP_HEIGHT_OFFSET, metrics.capHeight);
+  // Some font loaders verify sfnt checksums, so recompute the two the edit touched.
+  const checksum = (start: number, length: number) => {
+    let sum = 0;
+    for (let offset = start; offset < start + length; offset += 4) {
+      sum = (sum + view.getUint32(offset)) >>> 0;
+    }
+    return sum;
+  };
+  view.setUint32(
+    METRICS_FONT_OS2_CHECKSUM_OFFSET,
+    checksum(METRICS_FONT_OS2_OFFSET, METRICS_FONT_OS2_LENGTH),
+  );
+  view.setUint32(METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET, 0);
+  view.setUint32(
+    METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET,
+    (0xb1b0afba - checksum(0, data.length)) >>> 0,
+  );
   const percent = (units: number) => `${(units / METRICS_FONT_UNITS_PER_EM) * 100}%`;
   const face = new FontFace(family, data, {
     unicodeRange: "U+20",
