@@ -165,14 +165,21 @@ describe("hasAllLatinLetters", () => {
     );
     const faces = [
       new FontFace("Digits Only", `url(${inter.href})`, { unicodeRange: "U+2E, U+30-39" }),
-      new FontFace("Period Only", `url(${inter.href})`, { unicodeRange: "U+2E" }),
+      new FontFace("Percent Only", `url(${inter.href})`, { unicodeRange: "U+25" }),
+      new FontFace("Space Only", `url(${inter.href})`, { unicodeRange: "U+20" }),
+      new FontFace("Missing A", `url(${inter.href})`, { unicodeRange: "U+20-40, U+42-7E" }),
+      new FontFace("Full Inter", `url(${inter.href})`),
     ];
     for (const face of faces) document.fonts.add(await face.load());
     try {
       expect(hasAllLatinLetters("Digits Only")).toBe(false);
       expect(hasAllLatinLetters("Digits Only, sans-serif")).toBe(false);
       expect(hasAllLatinLetters("Not An Installed Font, Digits Only")).toBe(false);
-      expect(hasAllLatinLetters("Period Only, sans-serif")).toBe(false);
+      expect(hasAllLatinLetters("Percent Only, sans-serif")).toBe(false);
+      expect(hasAllLatinLetters("Space Only, sans-serif")).toBe(false);
+      expect(hasAllLatinLetters("Missing A")).toBe(false);
+      expect(hasAllLatinLetters("Full Inter")).toBe(true);
+      expect(hasAllLatinLetters("Not An Installed Font, Full Inter")).toBe(true);
       expect(hasAllLatinLetters("Not An Installed Font")).toBe(false);
       expect(hasAllLatinLetters("Not An Installed Font, sans-serif")).toBe(true);
       expect(hasAllLatinLetters("sans-serif")).toBe(true);

@@ -176,7 +176,7 @@ const METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET = 180;
 const METRICS_PROBE_FONT_SIZE = 100;
 // The face costs real ellipses (engines draw "...") and Firefox tab stops, so fonts whose
 // capitals already sit this close to center go without it.
-const METRICS_CENTERED_TOLERANCE_EM = 0.05;
+const METRICS_CENTERED_TOLERANCE_EM = 0.07;
 const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: string }>();
 
 /**
@@ -273,20 +273,28 @@ function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
 }
 
 const GENERIC_FAMILY_PATTERN = /^(system-ui|sans-serif|serif|monospace|ui-monospace)$/i;
-const LATIN_PROBE_TEXT = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+// Printable ASCII, space included. A family that draws none of it leaves interface text alone.
+const ASCII_CHARACTERS = Array.from({ length: 95 }, (_, index) => String.fromCharCode(32 + index));
+const LATIN_LETTERS = ASCII_CHARACTERS.filter((character) => /[A-Za-z]/.test(character));
 
-// A family that draws none of these leaves interface text to the fonts after it.
-const INTERFACE_TEXT_PROBE_TEXT = `${LATIN_PROBE_TEXT}0123456789.,:;!?'"()-/@#`;
+function characterWidths(stack: string, characters: readonly string[]): number[] | null {
+  const context = probeContext();
+  if (context === null) return null;
+  context.font = `${PROBE_FONT_SIZE}px ${stack}`;
+  return characters.map((character) => context.measureText(character).width);
+}
 
 function drawsInterfaceText(family: string): boolean {
   const families = cssFontFamilies(family);
   if (families === null) return false;
   if (GENERIC_FAMILY_PATTERN.test(families)) return true;
-  return ["serif", "monospace"].some(
-    (generic) =>
-      probeWidth(`${families}, ${generic}`, INTERFACE_TEXT_PROBE_TEXT) !==
-      probeWidth(generic, INTERFACE_TEXT_PROBE_TEXT),
-  );
+  return ["serif", "monospace"].some((generic) => {
+    // Generic first: canvas ignores an invalid font string and keeps measuring the last one.
+    const fallback = characterWidths(generic, ASCII_CHARACTERS);
+    const withFamily = characterWidths(`${families}, ${generic}`, ASCII_CHARACTERS);
+    if (fallback === null || withFamily === null) return true;
+    return withFamily.some((width, index) => width !== fallback[index]);
+  });
 }
 
 /**
@@ -298,9 +306,11 @@ export function hasAllLatinLetters(family: string): boolean {
   const first = cssFontFamilies(family.split(",").find(drawsInterfaceText) ?? "");
   if (first === null) return false;
   if (GENERIC_FAMILY_PATTERN.test(first)) return true;
-  const serif = probeWidth(`${first}, serif`, LATIN_PROBE_TEXT);
-  const monospace = probeWidth(`${first}, monospace`, LATIN_PROBE_TEXT);
-  return serif === null || monospace === null || serif === monospace;
+  // Letter by letter, since fallback widths can cancel out in a sum.
+  const serif = characterWidths(`${first}, serif`, LATIN_LETTERS);
+  const monospace = characterWidths(`${first}, monospace`, LATIN_LETTERS);
+  if (serif === null || monospace === null) return true;
+  return serif.every((width, index) => width === monospace[index]);
 }
 
 /** Probes canvas metrics because document.fonts.check() accepts uninstalled families. */
