@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import "~/index.css";
 import { applyAppearanceFontVariables, hasAllLatinLetters } from "./appearanceFonts";
+import interFontUrl from "@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url";
 import symbolsFontUrl from "./terminal/ghostty/fonts/SymbolsNerdFontMono-Regular.woff2?url";
 
 // A face with no Latin glyphs and, by default, a deep descent.
@@ -159,16 +160,12 @@ describe("applyAppearanceFontVariables", () => {
 describe("hasAllLatinLetters", () => {
   it("rejects a face whose Latin letters fall back to another font", async () => {
     // Inter cut down to digits and periods draws punctuation but no letters, like Al Tarikh.
-    const inter = new URL(
-      "../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",
-      import.meta.url,
-    );
     const faces = [
-      new FontFace("Digits Only", `url(${inter.href})`, { unicodeRange: "U+2E, U+30-39" }),
-      new FontFace("Percent Only", `url(${inter.href})`, { unicodeRange: "U+25" }),
-      new FontFace("Space Only", `url(${inter.href})`, { unicodeRange: "U+20" }),
-      new FontFace("Missing A", `url(${inter.href})`, { unicodeRange: "U+20-40, U+42-7E" }),
-      new FontFace("Full Inter", `url(${inter.href})`),
+      new FontFace("Digits Only", `url(${interFontUrl})`, { unicodeRange: "U+2E, U+30-39" }),
+      new FontFace("Percent Only", `url(${interFontUrl})`, { unicodeRange: "U+25" }),
+      new FontFace("Space Only", `url(${interFontUrl})`, { unicodeRange: "U+20" }),
+      new FontFace("Missing A", `url(${interFontUrl})`, { unicodeRange: "U+20-40, U+42-7E" }),
+      new FontFace("Full Inter", `url(${interFontUrl})`),
     ];
     for (const face of faces) document.fonts.add(await face.load());
     try {

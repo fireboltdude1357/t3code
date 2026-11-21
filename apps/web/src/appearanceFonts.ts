@@ -176,9 +176,10 @@ const METRICS_FONT_X_HEIGHT_OFFSET = METRICS_FONT_OS2_OFFSET + 86;
 const METRICS_FONT_CAP_HEIGHT_OFFSET = METRICS_FONT_OS2_OFFSET + 88;
 const METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET = 180;
 const METRICS_PROBE_FONT_SIZE = 100;
-// The face costs real ellipses (engines draw "...") and Firefox tab stops, so fonts whose
-// capitals already sit this close to center go without it.
-const METRICS_CENTERED_TOLERANCE_EM = 0.07;
+// The face costs real ellipses (engines draw "...") and layout time, so fonts whose capitals
+// already sit this close to center go without it. Canvas reports whole pixels at the probe size,
+// so offsets land on a 0.005em grid; the tolerance sits between grid points.
+const METRICS_CENTERED_TOLERANCE_EM = 0.0725;
 const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: string }>();
 
 /**
@@ -283,6 +284,8 @@ const GENERIC_FAMILY_PATTERN = /^(system-ui|sans-serif|serif|monospace|ui-monosp
 // Printable ASCII, space included. A family that draws none of it leaves interface text alone.
 const ASCII_CHARACTERS = Array.from({ length: 95 }, (_, index) => String.fromCharCode(32 + index));
 const LATIN_LETTERS = ASCII_CHARACTERS.filter((character) => /[A-Za-z]/.test(character));
+// Three generics, so a browser that maps two of them to one font still shows a fallback.
+const PROBE_GENERICS = ["serif", "monospace", "sans-serif"] as const;
 
 function characterWidths(stack: string, characters: readonly string[]): number[] | null {
   const context = probeContext();
@@ -295,7 +298,7 @@ function drawsInterfaceText(family: string): boolean {
   const families = cssFontFamilies(family);
   if (families === null) return false;
   if (GENERIC_FAMILY_PATTERN.test(families)) return true;
-  return ["serif", "monospace"].some((generic) => {
+  return PROBE_GENERICS.some((generic) => {
     // Generic first: canvas ignores an invalid font string and keeps measuring the last one.
     const fallback = characterWidths(generic, ASCII_CHARACTERS);
     const withFamily = characterWidths(`${families}, ${generic}`, ASCII_CHARACTERS);
@@ -313,11 +316,12 @@ export function hasAllLatinLetters(family: string): boolean {
   const first = cssFontFamilies(family.split(",").find(drawsInterfaceText) ?? "");
   if (first === null) return false;
   if (GENERIC_FAMILY_PATTERN.test(first)) return true;
+  if (probeContext() === null) return true;
   // Letter by letter, since fallback widths can cancel out in a sum.
-  const serif = characterWidths(`${first}, serif`, LATIN_LETTERS);
-  const monospace = characterWidths(`${first}, monospace`, LATIN_LETTERS);
-  if (serif === null || monospace === null) return true;
-  return serif.every((width, index) => width === monospace[index]);
+  const [reference = [], ...others] = PROBE_GENERICS.map(
+    (generic) => characterWidths(`${first}, ${generic}`, LATIN_LETTERS) ?? [],
+  );
+  return others.every((widths) => widths.every((width, index) => width === reference[index]));
 }
 
 /** Probes canvas metrics because document.fonts.check() accepts uninstalled families. */
