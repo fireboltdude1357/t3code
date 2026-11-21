@@ -163,19 +163,22 @@ describe("hasAllLatinLetters", () => {
       "../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",
       import.meta.url,
     );
-    const face = new FontFace("Digits Only", `url(${inter.href})`, {
-      unicodeRange: "U+2E, U+30-39",
-    });
-    document.fonts.add(await face.load());
+    const faces = [
+      new FontFace("Digits Only", `url(${inter.href})`, { unicodeRange: "U+2E, U+30-39" }),
+      new FontFace("Period Only", `url(${inter.href})`, { unicodeRange: "U+2E" }),
+    ];
+    for (const face of faces) document.fonts.add(await face.load());
     try {
       expect(hasAllLatinLetters("Digits Only")).toBe(false);
       expect(hasAllLatinLetters("Digits Only, sans-serif")).toBe(false);
       expect(hasAllLatinLetters("Not An Installed Font, Digits Only")).toBe(false);
+      expect(hasAllLatinLetters("Period Only, sans-serif")).toBe(false);
+      expect(hasAllLatinLetters("Not An Installed Font")).toBe(false);
       expect(hasAllLatinLetters("Not An Installed Font, sans-serif")).toBe(true);
       expect(hasAllLatinLetters("sans-serif")).toBe(true);
       expect(hasAllLatinLetters("ui-monospace")).toBe(true);
     } finally {
-      document.fonts.delete(face);
+      for (const face of faces) document.fonts.delete(face);
     }
   });
 });

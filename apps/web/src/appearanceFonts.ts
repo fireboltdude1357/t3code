@@ -275,13 +275,29 @@ function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
 const GENERIC_FAMILY_PATTERN = /^(system-ui|sans-serif|serif|monospace|ui-monospace)$/i;
 const LATIN_PROBE_TEXT = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
+// A family that draws none of these leaves interface text to the fonts after it.
+const INTERFACE_TEXT_PROBE_TEXT = `${LATIN_PROBE_TEXT}0123456789.,:;!?'"()-/@#`;
+
+function drawsInterfaceText(family: string): boolean {
+  const families = cssFontFamilies(family);
+  if (families === null) return false;
+  if (GENERIC_FAMILY_PATTERN.test(families)) return true;
+  return ["serif", "monospace"].some(
+    (generic) =>
+      probeWidth(`${families}, ${generic}`, INTERFACE_TEXT_PROBE_TEXT) !==
+      probeWidth(generic, INTERFACE_TEXT_PROBE_TEXT),
+  );
+}
+
 /**
- * False when any Latin letter falls back past the first installed family, as in Arabic-only
- * faces like Al Tarikh. Later families in a typed list don't count, since that one draws digits.
+ * False when the first family that draws interface text is missing any Latin letter, as
+ * Arabic-only faces like Al Tarikh are, or when no listed family draws any.
  */
 export function hasAllLatinLetters(family: string): boolean {
-  const first = cssFontFamilies(family.split(",").find(isFontFamilyAvailable) ?? "");
-  if (first === null || GENERIC_FAMILY_PATTERN.test(first)) return true;
+  if (cssFontFamilies(family) === null) return true;
+  const first = cssFontFamilies(family.split(",").find(drawsInterfaceText) ?? "");
+  if (first === null) return false;
+  if (GENERIC_FAMILY_PATTERN.test(first)) return true;
   const serif = probeWidth(`${first}, serif`, LATIN_PROBE_TEXT);
   const monospace = probeWidth(`${first}, monospace`, LATIN_PROBE_TEXT);
   return serif === null || monospace === null || serif === monospace;
