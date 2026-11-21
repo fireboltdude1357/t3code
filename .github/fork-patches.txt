@@ -25,3 +25,4 @@ event-history-retention  patch/event-history-retention  pingdotgg/t3code#28144
 spawn-host  patch/spawn-host  pingdotgg/t3code#30209
 widget-opens-app  patch/widget-opens-app
 relay-db-size  patch/relay-db-size
+interface-font-metrics  patch/interface-font-metrics
