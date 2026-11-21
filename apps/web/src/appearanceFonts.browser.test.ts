@@ -1,7 +1,26 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import "~/index.css";
-import { applyAppearanceFontVariables } from "./appearanceFonts";
+import { applyAppearanceFontVariables, hasLatinLetters } from "./appearanceFonts";
+import symbolsFontUrl from "./terminal/ghostty/fonts/SymbolsNerdFontMono-Regular.woff2?url";
+
+// A face with no Latin letters and a deep descent, like Al Tarikh on macOS.
+async function loadLopsidedSymbolsFont(family: string): Promise<FontFace> {
+  const data = await fetch(symbolsFontUrl).then((response) => response.arrayBuffer());
+  const face = new FontFace(family, data, { ascentOverride: "50%", descentOverride: "90%" });
+  document.fonts.add(await face.load());
+  return face;
+}
+
+const interfacePreferences = {
+  code: "",
+  composer: "",
+  sizeInterface: 16,
+  sizePrompt: 14,
+  sizeCode: 13,
+  smoothing: true,
+  separate: false,
+};
 
 function renderedFontSize(style: (probe: HTMLElement) => void): string {
   const probe = document.createElement("div");
@@ -86,6 +105,44 @@ describe("applyAppearanceFontVariables", () => {
     } finally {
       if (style === null) root.removeAttribute("style");
       else root.setAttribute("style", style);
+    }
+  });
+
+  it("centers capitals in a control when the interface font's ascent and descent are unbalanced", async () => {
+    const root = document.documentElement;
+    const style = root.getAttribute("style");
+    const face = await loadLopsidedSymbolsFont("Lopsided Symbols");
+    const control = document.createElement("div");
+    control.style.cssText =
+      "display:flex;align-items:center;height:40px;font-family:var(--font-sans);font-size:20px;line-height:20px";
+    control.innerHTML = '<span>H<i style="display:inline-block;width:0;height:0"></i></span>';
+    try {
+      applyAppearanceFontVariables(root, { ...interfacePreferences, sans: "Lopsided Symbols" });
+      await document.fonts.ready;
+      document.body.append(control);
+      const context = document.createElement("canvas").getContext("2d")!;
+      context.font = `20px ${getComputedStyle(control).fontFamily}`;
+      const capHeight = context.measureText("H").actualBoundingBoxAscent;
+      const baseline = control.querySelector("i")!.getBoundingClientRect().top;
+      const box = control.getBoundingClientRect();
+      expect(Math.abs(baseline - capHeight / 2 - (box.top + box.height / 2))).toBeLessThan(0.5);
+    } finally {
+      control.remove();
+      document.fonts.delete(face);
+      if (style === null) root.removeAttribute("style");
+      else root.setAttribute("style", style);
+    }
+  });
+});
+
+describe("hasLatinLetters", () => {
+  it("rejects a face whose Latin letters fall back to another font", async () => {
+    const face = await loadLopsidedSymbolsFont("Symbols Only");
+    try {
+      expect(hasLatinLetters("Symbols Only")).toBe(false);
+      expect(hasLatinLetters("sans-serif")).toBe(true);
+    } finally {
+      document.fonts.delete(face);
     }
   });
 });

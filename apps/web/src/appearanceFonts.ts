@@ -81,10 +81,14 @@ export function applyAppearanceFontVariables(
   ];
   for (const [variable, custom, fallback] of families) {
     const list = cssFontFamilies(custom);
+    const metrics = variable === "--font-mono" ? null : centeredMetricsFamily(variable, list);
     if (list === null) {
       root.style.removeProperty(variable);
     } else {
-      root.style.setProperty(variable, `${list}, ${fallback}`);
+      root.style.setProperty(
+        variable,
+        metrics === null ? `${list}, ${fallback}` : `${metrics}, ${list}, ${fallback}`,
+      );
     }
   }
 
@@ -136,6 +140,58 @@ function clampCodeFontSize(value: number): number {
   return clampFontSize(value, MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE, DEFAULT_CODE_FONT_SIZE);
 }
 
+// A TrueType font with no glyphs but .notdef. First in a stack, it sets the line box while every
+// glyph, space included, falls through to the next family.
+const METRICS_FONT_BASE64 =
+  "AAEAAAAKAIAAAwAgT1MvMkTfQZwAAAEoAAAAYGNtYXAADABGAAABjAAAACxnbHlmAAAAAAAAAbwAAAABaGVhZC1k4VQAAACsAAAANmhoZWEDIf86AAAA5AAAACRobXR4AAAAAAAAAYgAAAAEbG9jYQAAAAAAAAG4AAAABG1heHAAAgACAAABCAAAACBuYW1lYHiIugAAAcAAAABgcG9zdAADAAAAAAIgAAAAJAABAAAAAQAA+blHGF8PPPUAAwPoAAAAAOcnUDoAAAAA5ydQOgAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAEAAAABAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwAAAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz8/PwAAAAAAAAMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAgAAAAMAAAAUAAMAAQAAABQABAAYAAAAAgACAAAAAP//AAD//wABAAAAAAAAAAAAAAAAAAQANgABAAAAAAABAAcAAAABAAAAAAACAAcABwADAAEECQABAA4ADgADAAEECQACAA4AHE1ldHJpY3NSZWd1bGFyAE0AZQB0AHIAaQBjAHMAUgBlAGcAdQBsAGEAcgACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAA==";
+const METRICS_PROBE_FONT_SIZE = 100;
+const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: string }>();
+
+/**
+ * Browsers place the baseline from a font's ascent and descent, so capitals sit off-center
+ * in every control when those are unbalanced. This registers a metrics-only face that keeps
+ * the line height and centers capitals, and returns its family name.
+ */
+function centeredMetricsFamily(variable: string, list: string | null): string | null {
+  const family = `t3-metrics${variable.slice("--font".length)}`;
+  const overrides = list === null ? null : centeredMetricsOverrides(list);
+  const key =
+    overrides === null ? null : `${overrides.ascentOverride} ${overrides.descentOverride}`;
+  const previous = metricsFaces.get(variable);
+  if (previous?.key === key) return family;
+  if (previous !== undefined) {
+    document.fonts.delete(previous.face);
+    metricsFaces.delete(variable);
+  }
+  if (overrides === null || key === null) return null;
+  const face = new FontFace(
+    family,
+    Uint8Array.from(atob(METRICS_FONT_BASE64), (char) => char.charCodeAt(0)),
+    { unicodeRange: "U+20", weight: "1 1000", lineGapOverride: "0%", ...overrides },
+  );
+  document.fonts.add(face);
+  metricsFaces.set(variable, { face, key });
+  return family;
+}
+
+function centeredMetricsOverrides(list: string) {
+  if (typeof FontFace === "undefined") return null;
+  if (fontProbeContext === undefined) {
+    fontProbeContext = document.createElement("canvas").getContext("2d");
+  }
+  if (fontProbeContext === null) return null;
+  fontProbeContext.font = `${METRICS_PROBE_FONT_SIZE}px ${list}, ${DEFAULT_SANS_FONT_STACK}`;
+  const metrics = fontProbeContext.measureText("H");
+  const height = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+  const cap = metrics.actualBoundingBoxAscent;
+  if (!(height > cap && cap > 0)) return null;
+  const percent = (value: number) => `${((value / METRICS_PROBE_FONT_SIZE) * 100).toFixed(2)}%`;
+  return {
+    ascentOverride: percent((height + cap) / 2),
+    descentOverride: percent((height - cap) / 2),
+  };
+}
+
 const FONT_PROBE_TEXT = "mmmmmmmmMMWli1O0@# fjord";
 // The widest single-digit `ol` marker; CSS can't measure it to size the list gutter.
 const LIST_MARKER_PROBE_TEXT = "0. ";
@@ -149,6 +205,17 @@ function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
   if (fontProbeContext === null) return null;
   fontProbeContext.font = `${PROBE_FONT_SIZE}px ${fontList}`;
   return fontProbeContext.measureText(text).width;
+}
+
+const LATIN_PROBE_TEXT = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/** False when Latin letters fall back to another font, as in Arabic-only faces like Al Tarikh. */
+export function hasLatinLetters(family: string): boolean {
+  const families = cssFontFamilies(family);
+  if (families === null) return true;
+  const serif = probeWidth(`${families}, serif`, LATIN_PROBE_TEXT);
+  const monospace = probeWidth(`${families}, monospace`, LATIN_PROBE_TEXT);
+  return serif === null || monospace === null || serif === monospace;
 }
 
 /** Probes canvas metrics because document.fonts.check() accepts uninstalled families. */
