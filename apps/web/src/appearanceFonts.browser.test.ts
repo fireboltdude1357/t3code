@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import "~/index.css";
-import { applyAppearanceFontVariables, hasLatinLetters } from "./appearanceFonts";
+import { applyAppearanceFontVariables, hasAllLatinLetters } from "./appearanceFonts";
 import symbolsFontUrl from "./terminal/ghostty/fonts/SymbolsNerdFontMono-Regular.woff2?url";
 
 // A face with no Latin letters and a deep descent, like Al Tarikh on macOS.
@@ -135,12 +135,12 @@ describe("applyAppearanceFontVariables", () => {
   });
 });
 
-describe("hasLatinLetters", () => {
+describe("hasAllLatinLetters", () => {
   it("rejects a face whose Latin letters fall back to another font", async () => {
     const face = await loadLopsidedSymbolsFont("Symbols Only");
     try {
-      expect(hasLatinLetters("Symbols Only")).toBe(false);
-      expect(hasLatinLetters("sans-serif")).toBe(true);
+      expect(hasAllLatinLetters("Symbols Only")).toBe(false);
+      expect(hasAllLatinLetters("sans-serif")).toBe(true);
     } finally {
       document.fonts.delete(face);
     }

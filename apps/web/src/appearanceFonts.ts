@@ -74,14 +74,25 @@ export function applyAppearanceFontVariables(
   root: HTMLElement,
   preferences: AppearanceFontPreferences,
 ): void {
-  const families: ReadonlyArray<readonly [variable: string, custom: string, fallback: string]> = [
-    ["--font-sans", preferences.sans, DEFAULT_SANS_FONT_STACK],
-    ["--font-mono", preferences.code, DEFAULT_CODE_FONT_STACK],
-    ["--font-composer", preferences.separate ? preferences.composer : "", "var(--font-sans)"],
+  // The last entry is the fallback stack as canvas can measure it, or null to skip centering.
+  const families: ReadonlyArray<
+    readonly [variable: string, custom: string, fallback: string, measured: string | null]
+  > = [
+    ["--font-sans", preferences.sans, DEFAULT_SANS_FONT_STACK, DEFAULT_SANS_FONT_STACK],
+    ["--font-mono", preferences.code, DEFAULT_CODE_FONT_STACK, null],
+    [
+      "--font-composer",
+      preferences.separate ? preferences.composer : "",
+      "var(--font-sans)",
+      appearanceFontStack(preferences.sans, DEFAULT_SANS_FONT_STACK),
+    ],
   ];
-  for (const [variable, custom, fallback] of families) {
+  for (const [variable, custom, fallback, measured] of families) {
     const list = cssFontFamilies(custom);
-    const metrics = variable === "--font-mono" ? null : centeredMetricsFamily(variable, list);
+    const metrics = centeredMetricsFamily(
+      variable,
+      list === null || measured === null ? null : `${list}, ${measured}`,
+    );
     if (list === null) {
       root.style.removeProperty(variable);
     } else {
@@ -152,9 +163,9 @@ const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: st
  * in every control when those are unbalanced. This registers a metrics-only face that keeps
  * the line height and centers capitals, and returns its family name.
  */
-function centeredMetricsFamily(variable: string, list: string | null): string | null {
+function centeredMetricsFamily(variable: string, stack: string | null): string | null {
   const family = `t3-metrics${variable.slice("--font".length)}`;
-  const overrides = list === null ? null : centeredMetricsOverrides(list);
+  const overrides = stack === null ? null : centeredMetricsOverrides(stack);
   const key =
     overrides === null ? null : `${overrides.ascentOverride} ${overrides.descentOverride}`;
   const previous = metricsFaces.get(variable);
@@ -174,13 +185,13 @@ function centeredMetricsFamily(variable: string, list: string | null): string | 
   return family;
 }
 
-function centeredMetricsOverrides(list: string) {
+function centeredMetricsOverrides(stack: string) {
   if (typeof FontFace === "undefined") return null;
   if (fontProbeContext === undefined) {
     fontProbeContext = document.createElement("canvas").getContext("2d");
   }
   if (fontProbeContext === null) return null;
-  fontProbeContext.font = `${METRICS_PROBE_FONT_SIZE}px ${list}, ${DEFAULT_SANS_FONT_STACK}`;
+  fontProbeContext.font = `${METRICS_PROBE_FONT_SIZE}px ${stack}`;
   const metrics = fontProbeContext.measureText("H");
   const height = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
   const cap = metrics.actualBoundingBoxAscent;
@@ -209,8 +220,8 @@ function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
 
 const LATIN_PROBE_TEXT = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-/** False when Latin letters fall back to another font, as in Arabic-only faces like Al Tarikh. */
-export function hasLatinLetters(family: string): boolean {
+/** False when any Latin letter falls back to another font, as in Arabic-only faces like Al Tarikh. */
+export function hasAllLatinLetters(family: string): boolean {
   const families = cssFontFamilies(family);
   if (families === null) return true;
   const serif = probeWidth(`${families}, serif`, LATIN_PROBE_TEXT);

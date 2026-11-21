@@ -5,7 +5,7 @@ import { CheckIcon } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   displayFontFamily,
-  hasLatinLetters,
+  hasAllLatinLetters,
   isMonospaceFamily,
   queryInstalledFontFamilies,
 } from "../../appearanceFonts";
@@ -143,11 +143,11 @@ export function FontFamilyPicker({
 
   const handlePick = (value: string) => {
     setOpen(false);
-    if (value !== DEFAULT_FONT_VALUE && !hasLatinLetters(value)) {
+    if (value !== DEFAULT_FONT_VALUE && !hasAllLatinLetters(value)) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: gt('"{font}" has no Latin letters', { font: value }),
+          title: gt('"{font}" is missing Latin letters', { font: value }),
           description: gt("T3 Code's text needs them, so the current font was kept."),
         }),
       );

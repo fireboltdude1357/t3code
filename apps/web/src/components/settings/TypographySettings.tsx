@@ -20,7 +20,7 @@ import { Input } from "../ui/input";
 import {
   DEFAULT_CODE_FONT_STACK,
   DEFAULT_SANS_FONT_STACK,
-  hasLatinLetters,
+  hasAllLatinLetters,
   isFontFamilyAvailable,
   isMonospaceFamily,
   resolveDefaultFamilyLabel,
@@ -450,7 +450,7 @@ function FontFamilySettingsRow({
   );
   const acceptsFamily = (candidate: string) =>
     isFontFamilyAvailable(candidate) &&
-    hasLatinLetters(candidate) &&
+    hasAllLatinLetters(candidate) &&
     (!requireMonospace || isMonospaceFamily(candidate));
   const commitDraft = (next: string) => {
     setDraftSettled(true);
