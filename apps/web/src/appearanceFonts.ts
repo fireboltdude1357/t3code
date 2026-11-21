@@ -74,20 +74,28 @@ export function applyAppearanceFontVariables(
   root: HTMLElement,
   preferences: AppearanceFontPreferences,
 ): void {
-  // The last entry is the fallback stack as canvas can measure it, or null to skip centering.
-  const families: ReadonlyArray<
-    readonly [variable: string, custom: string, fallback: string, measured: string | null]
-  > = [
-    ["--font-sans", preferences.sans, DEFAULT_SANS_FONT_STACK, DEFAULT_SANS_FONT_STACK],
-    ["--font-mono", preferences.code, DEFAULT_CODE_FONT_STACK, null],
-    [
-      "--font-composer",
-      preferences.separate ? preferences.composer : "",
-      "var(--font-sans)",
-      appearanceFontStack(preferences.sans, DEFAULT_SANS_FONT_STACK),
-    ],
-  ];
-  for (const [variable, custom, fallback, measured] of families) {
+  // `measured` is the fallback as canvas can resolve it; null leaves the family uncentered.
+  const families = [
+    {
+      variable: "--font-sans",
+      custom: preferences.sans,
+      fallback: DEFAULT_SANS_FONT_STACK,
+      measured: DEFAULT_SANS_FONT_STACK,
+    },
+    {
+      variable: "--font-mono",
+      custom: preferences.code,
+      fallback: DEFAULT_CODE_FONT_STACK,
+      measured: null,
+    },
+    {
+      variable: "--font-composer",
+      custom: preferences.separate ? preferences.composer : "",
+      fallback: "var(--font-sans)",
+      measured: appearanceFontStack(preferences.sans, DEFAULT_SANS_FONT_STACK),
+    },
+  ] as const;
+  for (const { variable, custom, fallback, measured } of families) {
     const list = cssFontFamilies(custom);
     const metrics = centeredMetricsFamily(
       variable,
@@ -155,6 +163,11 @@ function clampCodeFontSize(value: number): number {
 // glyph, space included, falls through to the next family.
 const METRICS_FONT_BASE64 =
   "AAEAAAAKAIAAAwAgT1MvMkTfQZwAAAEoAAAAYGNtYXAADABGAAABjAAAACxnbHlmAAAAAAAAAbwAAAABaGVhZC1k4VQAAACsAAAANmhoZWEDIf86AAAA5AAAACRobXR4AAAAAAAAAYgAAAAEbG9jYQAAAAAAAAG4AAAABG1heHAAAgACAAABCAAAACBuYW1lYHiIugAAAcAAAABgcG9zdAADAAAAAAIgAAAAJAABAAAAAQAA+blHGF8PPPUAAwPoAAAAAOcnUDoAAAAA5ydQOgAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAEAAAABAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwAAAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz8/PwAAAAAAAAMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAgAAAAMAAAAUAAMAAQAAABQABAAYAAAAAgACAAAAAP//AAD//wABAAAAAAAAAAAAAAAAAAQANgABAAAAAAABAAcAAAABAAAAAAACAAcABwADAAEECQABAA4ADgADAAEECQACAA4AHE1ldHJpY3NSZWd1bGFyAE0AZQB0AHIAaQBjAHMAUgBlAGcAdQBsAGEAcgACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAA==";
+// The font has 1000 units per em. CSS `cap`, `ex` and `text-box` read these OS/2 fields from
+// the first font, so each face carries the measured values.
+const METRICS_FONT_UNITS_PER_EM = 1000;
+const METRICS_FONT_X_HEIGHT_OFFSET = 296 + 86;
+const METRICS_FONT_CAP_HEIGHT_OFFSET = 296 + 88;
 const METRICS_PROBE_FONT_SIZE = 100;
 const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: string }>();
 
@@ -165,41 +178,51 @@ const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: st
  */
 function centeredMetricsFamily(variable: string, stack: string | null): string | null {
   const family = `t3-metrics${variable.slice("--font".length)}`;
-  const overrides = stack === null ? null : centeredMetricsOverrides(stack);
-  const key =
-    overrides === null ? null : `${overrides.ascentOverride} ${overrides.descentOverride}`;
+  const metrics = stack === null ? null : measureCenteredMetrics(stack);
+  const key = metrics === null ? null : Object.values(metrics).join(" ");
   const previous = metricsFaces.get(variable);
   if (previous?.key === key) return family;
   if (previous !== undefined) {
     document.fonts.delete(previous.face);
     metricsFaces.delete(variable);
   }
-  if (overrides === null || key === null) return null;
-  const face = new FontFace(
-    family,
-    Uint8Array.from(atob(METRICS_FONT_BASE64), (char) => char.charCodeAt(0)),
-    { unicodeRange: "U+20", weight: "1 1000", lineGapOverride: "0%", ...overrides },
-  );
+  if (metrics === null || key === null) return null;
+  const data = Uint8Array.from(atob(METRICS_FONT_BASE64), (char) => char.charCodeAt(0));
+  const view = new DataView(data.buffer);
+  view.setInt16(METRICS_FONT_X_HEIGHT_OFFSET, metrics.xHeight);
+  view.setInt16(METRICS_FONT_CAP_HEIGHT_OFFSET, metrics.capHeight);
+  const percent = (units: number) => `${(units / METRICS_FONT_UNITS_PER_EM) * 100}%`;
+  const face = new FontFace(family, data, {
+    unicodeRange: "U+20",
+    weight: "1 1000",
+    ascentOverride: percent(metrics.ascent),
+    descentOverride: percent(metrics.descent),
+    lineGapOverride: "0%",
+  });
   document.fonts.add(face);
   metricsFaces.set(variable, { face, key });
   return family;
 }
 
-function centeredMetricsOverrides(stack: string) {
+/** Font-unit metrics that keep the stack's line height and put its capitals at the center. */
+function measureCenteredMetrics(stack: string) {
   if (typeof FontFace === "undefined") return null;
   if (fontProbeContext === undefined) {
     fontProbeContext = document.createElement("canvas").getContext("2d");
   }
   if (fontProbeContext === null) return null;
   fontProbeContext.font = `${METRICS_PROBE_FONT_SIZE}px ${stack}`;
-  const metrics = fontProbeContext.measureText("H");
-  const height = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
-  const cap = metrics.actualBoundingBoxAscent;
+  const capitals = fontProbeContext.measureText("H");
+  const height = capitals.fontBoundingBoxAscent + capitals.fontBoundingBoxDescent;
+  const cap = capitals.actualBoundingBoxAscent;
   if (!(height > cap && cap > 0)) return null;
-  const percent = (value: number) => `${((value / METRICS_PROBE_FONT_SIZE) * 100).toFixed(2)}%`;
+  const units = (pixels: number) =>
+    Math.round((pixels / METRICS_PROBE_FONT_SIZE) * METRICS_FONT_UNITS_PER_EM);
   return {
-    ascentOverride: percent((height + cap) / 2),
-    descentOverride: percent((height - cap) / 2),
+    ascent: units((height + cap) / 2),
+    descent: units((height - cap) / 2),
+    capHeight: units(cap),
+    xHeight: units(fontProbeContext.measureText("x").actualBoundingBoxAscent),
   };
 }
 

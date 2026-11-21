@@ -115,7 +115,8 @@ describe("applyAppearanceFontVariables", () => {
     const control = document.createElement("div");
     control.style.cssText =
       "display:flex;align-items:center;height:40px;font-family:var(--font-sans);font-size:20px;line-height:20px";
-    control.innerHTML = '<span>H<i style="display:inline-block;width:0;height:0"></i></span>';
+    control.innerHTML =
+      '<span>H<i style="display:inline-block;width:0;height:0"></i></span><b style="height:1cap"></b>';
     try {
       applyAppearanceFontVariables(root, { ...interfacePreferences, sans: "Lopsided Symbols" });
       await document.fonts.ready;
@@ -126,6 +127,9 @@ describe("applyAppearanceFontVariables", () => {
       const baseline = control.querySelector("i")!.getBoundingClientRect().top;
       const box = control.getBoundingClientRect();
       expect(Math.abs(baseline - capHeight / 2 - (box.top + box.height / 2))).toBeLessThan(0.5);
+      // `cap` units and `text-box: trim-both cap` read the first font's cap height.
+      const capUnit = control.querySelector("b")!.getBoundingClientRect().height;
+      expect(Math.abs(capUnit - capHeight)).toBeLessThan(0.5);
     } finally {
       control.remove();
       document.fonts.delete(face);
