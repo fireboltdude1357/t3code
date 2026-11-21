@@ -176,7 +176,7 @@ const METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET = 180;
 const METRICS_PROBE_FONT_SIZE = 100;
 // The face costs real ellipses (engines draw "...") and Firefox tab stops, so fonts whose
 // capitals already sit this close to center go without it.
-const METRICS_CENTERED_TOLERANCE_EM = 0.03;
+const METRICS_CENTERED_TOLERANCE_EM = 0.05;
 const metricsFaces = new Map<string, { readonly face: FontFace; readonly key: string }>();
 
 /**
@@ -233,12 +233,10 @@ function centeredMetricsFamily(variable: string, stack: string | null): string |
 function measureCenteredMetrics(stack: string) {
   // Without the overrides the face would apply its own placeholder metrics (Safari before 27.3).
   if (typeof FontFace === "undefined" || !("ascentOverride" in FontFace.prototype)) return null;
-  if (fontProbeContext === undefined) {
-    fontProbeContext = document.createElement("canvas").getContext("2d");
-  }
-  if (fontProbeContext === null) return null;
-  fontProbeContext.font = `${METRICS_PROBE_FONT_SIZE}px ${stack}`;
-  const capitals = fontProbeContext.measureText("H");
+  const context = probeContext();
+  if (context === null) return null;
+  context.font = `${METRICS_PROBE_FONT_SIZE}px ${stack}`;
+  const capitals = context.measureText("H");
   const height = capitals.fontBoundingBoxAscent + capitals.fontBoundingBoxDescent;
   const cap = capitals.actualBoundingBoxAscent;
   if (!(height > cap && cap > 0)) return null;
@@ -250,7 +248,7 @@ function measureCenteredMetrics(stack: string) {
     ascent: units((height + cap) / 2),
     descent: units((height - cap) / 2),
     capHeight: units(cap),
-    xHeight: units(fontProbeContext.measureText("x").actualBoundingBoxAscent),
+    xHeight: units(context.measureText("x").actualBoundingBoxAscent),
   };
 }
 
@@ -260,13 +258,18 @@ const LIST_MARKER_PROBE_TEXT = "0. ";
 const PROBE_FONT_SIZE = 16;
 let fontProbeContext: CanvasRenderingContext2D | null | undefined;
 
-function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
+function probeContext(): CanvasRenderingContext2D | null {
   if (fontProbeContext === undefined) {
     fontProbeContext = document.createElement("canvas").getContext("2d");
   }
-  if (fontProbeContext === null) return null;
-  fontProbeContext.font = `${PROBE_FONT_SIZE}px ${fontList}`;
-  return fontProbeContext.measureText(text).width;
+  return fontProbeContext;
+}
+
+function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
+  const context = probeContext();
+  if (context === null) return null;
+  context.font = `${PROBE_FONT_SIZE}px ${fontList}`;
+  return context.measureText(text).width;
 }
 
 const GENERIC_FAMILY_PATTERN = /^(system-ui|sans-serif|serif|monospace|ui-monospace)$/i;
@@ -322,11 +325,8 @@ export function isMonospaceFamily(family: string): boolean {
   const families = cssFontFamilies(family);
   if (families === null) return true;
   try {
-    if (fontProbeContext === undefined) {
-      fontProbeContext = document.createElement("canvas").getContext("2d");
-    }
-    if (fontProbeContext === null) return true;
-    const context = fontProbeContext;
+    const context = probeContext();
+    if (context === null) return true;
     for (const variant of MONOSPACE_PROBE_VARIANTS) {
       context.font = `${variant} 32px ${families}, monospace`;
       const advances = MONOSPACE_PROBE_GLYPHS.map((glyph) => context.measureText(glyph).width);
