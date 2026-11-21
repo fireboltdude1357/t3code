@@ -247,15 +247,16 @@ function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
   return fontProbeContext.measureText(text).width;
 }
 
+const GENERIC_FAMILY_PATTERN = /^(system-ui|sans-serif|serif|monospace|ui-monospace)$/i;
 const LATIN_PROBE_TEXT = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 /**
- * False when any Latin letter falls back past the first family, as in Arabic-only faces like
- * Al Tarikh. Later families in a typed list don't count, since the first one draws the digits.
+ * False when any Latin letter falls back past the first installed family, as in Arabic-only
+ * faces like Al Tarikh. Later families in a typed list don't count, since that one draws digits.
  */
 export function hasAllLatinLetters(family: string): boolean {
-  const first = cssFontFamilies(family.split(",")[0] ?? "");
-  if (first === null) return true;
+  const first = cssFontFamilies(family.split(",").find(isFontFamilyAvailable) ?? "");
+  if (first === null || GENERIC_FAMILY_PATTERN.test(first)) return true;
   const serif = probeWidth(`${first}, serif`, LATIN_PROBE_TEXT);
   const monospace = probeWidth(`${first}, monospace`, LATIN_PROBE_TEXT);
   return serif === null || monospace === null || serif === monospace;
@@ -265,7 +266,7 @@ export function hasAllLatinLetters(family: string): boolean {
 export function isFontFamilyAvailable(family: string): boolean {
   const families = cssFontFamilies(family);
   if (families === null) return false;
-  if (/^(system-ui|sans-serif|serif|monospace|ui-monospace)$/i.test(families)) return true;
+  if (GENERIC_FAMILY_PATTERN.test(families)) return true;
   try {
     for (const generic of ["monospace", "serif", "sans-serif"]) {
       const baseline = probeWidth(generic);
