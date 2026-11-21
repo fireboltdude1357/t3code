@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
-import { skippedV2Migrations } from "../persistence/Migrations.ts";
+import { migrationManifest, skippedV2Migrations } from "../persistence/Migrations.ts";
 import { reconciledV2PreviewHistory } from "../persistence/reconcileV2PreviewMigration.ts";
 import type * as ProcessRunner from "../processRunner.ts";
 import {
@@ -29,6 +29,8 @@ export type ServicePreflightResult =
       readonly version: string;
       /** The launcher protocol the server named; it accepts no other in reply. */
       readonly launcherProtocol: SupportedLauncherProtocol;
+      /** The launcher compares these with the database to decide whether the update needs a backup. */
+      readonly migrations?: typeof migrationManifest;
     }
   | {
       readonly status: "blocked";
@@ -89,7 +91,7 @@ export function runServicePreflight(input: {
     };
   }
 
-  return { status: "ready", version, launcherProtocol };
+  return { status: "ready", version, launcherProtocol, migrations: migrationManifest };
 }
 
 function decodeServicePreflightResult(
