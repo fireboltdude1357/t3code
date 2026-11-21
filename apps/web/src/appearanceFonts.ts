@@ -170,6 +170,8 @@ const METRICS_FONT_UNITS_PER_EM = 1000;
 const METRICS_FONT_OS2_OFFSET = 296;
 const METRICS_FONT_OS2_LENGTH = 96;
 const METRICS_FONT_OS2_CHECKSUM_OFFSET = 16;
+// Browsers size inputs without a set width from xAvgCharWidth; 0 collapses them in Firefox.
+const METRICS_FONT_AVERAGE_WIDTH_OFFSET = METRICS_FONT_OS2_OFFSET + 2;
 const METRICS_FONT_X_HEIGHT_OFFSET = METRICS_FONT_OS2_OFFSET + 86;
 const METRICS_FONT_CAP_HEIGHT_OFFSET = METRICS_FONT_OS2_OFFSET + 88;
 const METRICS_FONT_CHECKSUM_ADJUSTMENT_OFFSET = 180;
@@ -197,6 +199,7 @@ function centeredMetricsFamily(variable: string, stack: string | null): string |
   if (metrics === null || key === null) return null;
   const data = Uint8Array.from(atob(METRICS_FONT_BASE64), (char) => char.charCodeAt(0));
   const view = new DataView(data.buffer);
+  view.setInt16(METRICS_FONT_AVERAGE_WIDTH_OFFSET, metrics.averageWidth);
   view.setInt16(METRICS_FONT_X_HEIGHT_OFFSET, metrics.xHeight);
   view.setInt16(METRICS_FONT_CAP_HEIGHT_OFFSET, metrics.capHeight);
   // Some font loaders verify sfnt checksums, so recompute the two the edit touched.
@@ -249,6 +252,10 @@ function measureCenteredMetrics(stack: string) {
     descent: units((height - cap) / 2),
     capHeight: units(cap),
     xHeight: units(context.measureText("x").actualBoundingBoxAscent),
+    averageWidth: units(
+      ASCII_CHARACTERS.reduce((sum, character) => sum + context.measureText(character).width, 0) /
+        ASCII_CHARACTERS.length,
+    ),
   };
 }
 
