@@ -144,6 +144,7 @@ describe("hasAllLatinLetters", () => {
     const face = await loadLopsidedSymbolsFont("Symbols Only");
     try {
       expect(hasAllLatinLetters("Symbols Only")).toBe(false);
+      expect(hasAllLatinLetters("Symbols Only, sans-serif")).toBe(false);
       expect(hasAllLatinLetters("sans-serif")).toBe(true);
     } finally {
       document.fonts.delete(face);

@@ -206,7 +206,8 @@ function centeredMetricsFamily(variable: string, stack: string | null): string |
 
 /** Font-unit metrics that keep the stack's line height and put its capitals at the center. */
 function measureCenteredMetrics(stack: string) {
-  if (typeof FontFace === "undefined") return null;
+  // Without the overrides the face would apply its own placeholder metrics (Safari before 27.3).
+  if (typeof FontFace === "undefined" || !("ascentOverride" in FontFace.prototype)) return null;
   if (fontProbeContext === undefined) {
     fontProbeContext = document.createElement("canvas").getContext("2d");
   }
@@ -243,12 +244,15 @@ function probeWidth(fontList: string, text = FONT_PROBE_TEXT): number | null {
 
 const LATIN_PROBE_TEXT = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-/** False when any Latin letter falls back to another font, as in Arabic-only faces like Al Tarikh. */
+/**
+ * False when any Latin letter falls back past the first family, as in Arabic-only faces like
+ * Al Tarikh. Later families in a typed list don't count, since the first one draws the digits.
+ */
 export function hasAllLatinLetters(family: string): boolean {
-  const families = cssFontFamilies(family);
-  if (families === null) return true;
-  const serif = probeWidth(`${families}, serif`, LATIN_PROBE_TEXT);
-  const monospace = probeWidth(`${families}, monospace`, LATIN_PROBE_TEXT);
+  const first = cssFontFamilies(family.split(",")[0] ?? "");
+  if (first === null) return true;
+  const serif = probeWidth(`${first}, serif`, LATIN_PROBE_TEXT);
+  const monospace = probeWidth(`${first}, monospace`, LATIN_PROBE_TEXT);
   return serif === null || monospace === null || serif === monospace;
 }
 
