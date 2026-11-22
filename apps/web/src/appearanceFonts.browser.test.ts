@@ -126,8 +126,9 @@ describe("applyAppearanceFontVariables", () => {
       await document.fonts.ready;
       document.body.append(control);
       const context = document.createElement("canvas").getContext("2d")!;
-      context.font = `20px ${getComputedStyle(control).fontFamily}`;
-      const capHeight = context.measureText("H").actualBoundingBoxAscent;
+      // Canvas reports whole pixels on Linux, so measure at 100px and scale to the 20px control.
+      context.font = `100px ${getComputedStyle(control).fontFamily}`;
+      const capHeight = context.measureText("H").actualBoundingBoxAscent / 5;
       const baseline = control.querySelector("i")!.getBoundingClientRect().top;
       const box = control.getBoundingClientRect();
       expect(Math.abs(baseline - capHeight / 2 - (box.top + box.height / 2))).toBeLessThan(0.5);
@@ -136,7 +137,7 @@ describe("applyAppearanceFontVariables", () => {
         (unit) => unit.getBoundingClientRect().height,
       );
       expect(Math.abs(capUnit! - capHeight)).toBeLessThan(0.5);
-      const xHeight = context.measureText("x").actualBoundingBoxAscent;
+      const xHeight = context.measureText("x").actualBoundingBoxAscent / 5;
       expect(Math.abs(exUnit! - xHeight)).toBeLessThan(0.5);
 
       // A font that already centers its capitals keeps the plain stack.
