@@ -1,0 +1,28 @@
+# Patches the fork merges onto each upstream nightly, in this order.
+# Format: <name> <fork branch> [<owner>/<repo>#<pr> the branch follows]
+# See docs/operations/fork-nightly.md.
+
+release           patch/release
+bots              patch/bots
+cache-compaction  patch/cache-expiry-compaction  pingdotgg/t3code#18713
+mobile-fork-identity  patch/mobile-fork-identity
+full-access-never-asks  patch/full-access-never-asks
+desktop-update-capability  patch/desktop-update-capability
+pr-read-cache-lock  patch/pr-read-cache-lock
+launcher-skip-backup  patch/launcher-skip-backup
+default-machine  patch/default-machine
+codex-usage-chatgpt-only  patch/codex-usage-chatgpt-only
+draft-404-reload  patch/draft-404-reload
+mobile-connection-timings  patch/mobile-connection-timings
+host-network  patch/host-network
+shell-subagent-trim  patch/shell-subagent-trim
+# event-history-retention creates its table at startup instead of a numbered migration.
+# Before dropping it when #28144 lands upstream, make upstream's migration CREATE TABLE IF NOT EXISTS,
+# or servers that already have the table fail to start.
+event-history-retention  patch/event-history-retention  pingdotgg/t3code#28144
+# spawn-host is #30209 plus fork fixes from fireboltdude1357/t3code#182 (wiring, a 2-helper pool, process guards).
+# #30209 alone never runs its helpers, so drop this line only once upstream ships those fixes too.
+spawn-host  patch/spawn-host  pingdotgg/t3code#30209
+widget-opens-app  patch/widget-opens-app
+relay-db-size  patch/relay-db-size
+interface-font-metrics  patch/interface-font-metrics
