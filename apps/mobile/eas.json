@@ -34,6 +34,7 @@
       "channel": "preview",
       "environment": "preview",
       "distribution": "internal",
+      "autoIncrement": true,
       "ios": {
         "image": "macos-tahoe-26.6-xcode-27.1"
       }
