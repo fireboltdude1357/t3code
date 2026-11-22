@@ -618,6 +618,7 @@ describe("OrchestratorMcpService", () => {
       const childThreadId = ThreadId.make("thread:mcp-next-child");
       const taskId = NodeId.make("node:mcp-next-task");
       let finished = false;
+      let firstRun = false;
       let pendingRequest: "live" | "message" | null = null;
       const parentProjection = () =>
         ({
@@ -641,12 +642,17 @@ describe("OrchestratorMcpService", () => {
       const childRun = () => ({
         id: RunId.make("run:mcp-next-child"),
         ordinal: 1,
-        status: finished ? ("completed" as const) : ("running" as const),
-        delegatedTaskId: taskId,
+        status: finished && !firstRun ? ("completed" as const) : ("running" as const),
+        // A task's first run is untagged; the child's fork node names the task.
+        ...(firstRun ? {} : { delegatedTaskId: taskId }),
       });
       const childProjection = () =>
         ({
-          thread: { id: childThreadId, title: "Child task" },
+          thread: {
+            id: childThreadId,
+            title: "Child task",
+            forkedFrom: { type: "node", nodeId: taskId },
+          },
           runs: [childRun()],
           contextTransfers: [],
           messages: [],
@@ -678,7 +684,7 @@ describe("OrchestratorMcpService", () => {
             Effect.succeed({
               threadId: childThreadId,
               run: childRun() as unknown as OrchestrationV2ThreadProjection["runs"][number],
-              timedOut: !finished,
+              timedOut: !finished || firstRun,
             }),
           dispatch: () => Effect.succeed({} as never),
         }),
@@ -726,7 +732,17 @@ describe("OrchestratorMcpService", () => {
         assert.equal(working.next, ORCHESTRATOR_MCP_RUNNING_TASK_NEXT);
         pendingRequest = null;
 
+        firstRun = true;
+        const first = yield* service.waitForThread(scope, { threadId: childThreadId });
+        assert.equal(first.next, ORCHESTRATOR_MCP_RUNNING_TASK_NEXT);
+
+        // An untagged run after the task has its result is no longer that task.
         finished = true;
+        const followUp = yield* service.waitForThread(scope, { threadId: childThreadId });
+        assert.isTrue(followUp.timedOut);
+        assert.notProperty(followUp, "next");
+        firstRun = false;
+
         const completed = yield* service.taskStatus(scope, taskId);
         assert.equal(completed.status, "completed");
         assert.notProperty(completed, "next");
