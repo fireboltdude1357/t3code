@@ -115,7 +115,7 @@ export function collectServerUpdateTargets(
       continue;
     }
     if (selfUpdate === "desktop-managed" && !desktopAppUpdate) {
-      skip(resolve(msg("needs a newer desktop app")));
+      skip(resolve(msg("update its desktop app on that machine")));
       continue;
     }
     const serverChannel = cliReleaseChannelOf(config.environment.serverVersion);
