@@ -21,6 +21,8 @@ Logs emitted inside an active span (`Effect.log*`) attach as span events unless 
 
 Event-loop stalls (>2 s) write `server.eventLoop.stall` spans and append to `event-loop-stalls.ndjson` beside the trace file. SQLite spans carry `db.connection` (`writer`/`reader`) and `db.lock_wait_ms` (queue wait off the event loop—subtract it before blaming query speed). Metrics live only in-process unless OTLP export is enabled.
 
+The mobile app sends its connection timings to the server each one is about, which appends them to `client-timings.ndjson` beside the trace file (the current file plus 5 rotated 1 MB files). A reconnect during a send can save a record twice, so count records by `spanId`.
+
 ## Local OTLP stack (Grafana LGTM)
 
 ```sh
