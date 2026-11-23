@@ -11,6 +11,7 @@ import {
   ProviderTurnId,
   RunAttemptId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2DomainEvent,
@@ -20,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
@@ -56,6 +58,7 @@ const stopEarlierBackgroundWork = ({
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
     const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
     const interrupts: ProviderAdapter.ProviderAdapterV2InterruptInput[] = [];
+    const interruptCalls = yield* Queue.unbounded<void>();
     const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
       instanceId,
       driver,
@@ -143,7 +146,7 @@ const stopEarlierBackgroundWork = ({
             interruptTurn: (interrupt) =>
               Effect.sync(() => {
                 interrupts.push(interrupt);
-              }),
+              }).pipe(Effect.andThen(Queue.offer(interruptCalls, undefined))),
             respondToRuntimeRequest: () => Effect.die("unused"),
             readThreadSnapshot: () => Effect.die("unused"),
             rollbackThread: () => Effect.die("unused"),
@@ -156,6 +159,13 @@ const stopEarlierBackgroundWork = ({
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const sink = yield* EventSink.EventSinkV2;
       const threadId = ThreadId.make("thread:background-work-stop");
+      // This provider never confirms Stop, so Stop gives up waiting at its bound.
+      const drainUnconfirmedStop = Effect.gen(function* () {
+        const drained = yield* Effect.forkChild(worker.drain());
+        yield* Queue.take(interruptCalls);
+        yield* TestClock.adjust("2 seconds");
+        yield* Fiber.join(drained);
+      });
       const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
         orchestrator.streamDomainEvents.pipe(
           Stream.filter(predicate),
@@ -219,7 +229,7 @@ const stopEarlierBackgroundWork = ({
         assert.isTrue(followUp?.queueHeld);
         assert.isTrue(wake?.queueHeld);
 
-        yield* worker.drain();
+        yield* drainUnconfirmedStop;
         yield* orchestrator.resumeQueuedRuns;
         yield* worker.drain();
         const after = yield* orchestrator.getThreadProjection(threadId);
@@ -376,6 +386,79 @@ const stopEarlierBackgroundWork = ({
             },
           ],
         });
+        // Shaped like CodexAdapterV2's buildApprovalRequestArtifacts output.
+        const approvalRequestId = RuntimeRequestId.make("request:stalled-approval");
+        const approvalNodeId = NodeId.make("node:stalled-approval");
+        const approvalItemId = TurnItemId.make("turn-item:stalled-approval");
+        if (stalledRun === "returned-interrupt") {
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("stalled-approval-node"),
+                type: "node.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  ...node,
+                  id: approvalNodeId,
+                  parentNodeId: node.id,
+                  kind: "approval_request",
+                  status: "waiting",
+                  countsForRun: false,
+                  runtimeRequestId: approvalRequestId,
+                },
+              },
+              {
+                id: EventId.make("stalled-approval-request"),
+                type: "runtime-request.updated",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  id: approvalRequestId,
+                  nodeId: approvalNodeId,
+                  providerTurnId: codexTurn.id,
+                  nativeRequestRef: { driver, nativeId: "approval", strength: "strong" },
+                  kind: "command",
+                  status: "pending",
+                  responseCapability: {
+                    type: "live",
+                    providerSessionId: first.providerThread.providerSessionId!,
+                  },
+                  createdAt: now,
+                  resolvedAt: null,
+                },
+              },
+              {
+                id: EventId.make("stalled-approval-item"),
+                type: "turn-item.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  id: approvalItemId,
+                  threadId,
+                  runId: run.id,
+                  nodeId: approvalNodeId,
+                  providerThreadId: codexTurn.providerThreadId,
+                  providerTurnId: codexTurn.id,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 101,
+                  status: "waiting",
+                  title: null,
+                  startedAt: now,
+                  completedAt: null,
+                  updatedAt: now,
+                  type: "approval_request",
+                  requestId: approvalRequestId,
+                  requestKind: "command",
+                  prompt: "rm -rf build",
+                },
+              },
+            ],
+          });
+        }
         if (stalledRun === "superseded-attempt") {
           yield* sink.write({
             events: [
@@ -404,7 +487,7 @@ const stopEarlierBackgroundWork = ({
                 threadId,
               },
         );
-        yield* worker.drain();
+        yield* stalledRun === "returned-interrupt" ? drainUnconfirmedStop : worker.drain();
         const after = yield* orchestrator.getThreadProjection(threadId);
         const interrupted = stalledRun !== "superseded-attempt";
         assert.equal(after.runs[0]?.status, interrupted ? "interrupted" : "running");
@@ -437,6 +520,16 @@ const stopEarlierBackgroundWork = ({
           interrupted ? 1 : 0,
         );
         assert.isEmpty(after.runs.filter((candidate) => candidate.status === "waiting"));
+        if (stalledRun === "returned-interrupt") {
+          assert.deepEqual(
+            [
+              after.runtimeRequests.find((candidate) => candidate.id === approvalRequestId)?.status,
+              after.nodes.find((candidate) => candidate.id === approvalNodeId)?.status,
+              after.turnItems.find((candidate) => candidate.id === approvalItemId)?.status,
+            ],
+            ["cancelled", "interrupted", "interrupted"],
+          );
+        }
         return;
       }
       const settled = yield* watch(
