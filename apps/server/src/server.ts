@@ -371,7 +371,8 @@ const layerRelayClient = Layer.unwrap(
 ).pipe(Layer.provide(ManagedPolicy.layer));
 
 // NodeServices and NodeHttpServer each output Node's own spawner, so each is followed by this one.
-// Linux spawns through SpawnHost's helper process; other platforms use SpawnWorker.
+// ProcessLauncher wraps this on Linux, so SpawnHost spawns only when its launcher cannot start.
+// Other platforms use SpawnWorker.
 const layerSpawner = Layer.unwrap(
   Effect.map(HostProcess.Platform, (platform) =>
     platform === "linux" ? SpawnHost.layer : SpawnWorker.layerServer,
