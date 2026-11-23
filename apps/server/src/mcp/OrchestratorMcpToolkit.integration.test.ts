@@ -81,6 +81,7 @@ const cancellationPrompt = "Remain active until the parent cancels this delegate
 const queuedFollowupPrompt = "Complete the queued follow-up and return the final result.";
 const queuedFollowupResult = "Queued delegated follow-up completed.";
 const decodeThreadRead = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
+const longFollowupResult = "Long delegated follow-up line. ".repeat(1_500);
 
 const decodeDelegateTaskResult = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
 const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
@@ -102,8 +103,15 @@ const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTran
   function* (followupResult: string) {
     const fs = yield* FileSystem.FileSystem;
     const text = yield* fs.readFileString(NodeURL.fileURLToPath(delegatedTaskStatusTranscriptFile));
+    // The recording names the parent, then the child, after the fixture's titles; this test's differ.
+    const threadNames = ["MCP replay parent", delegatedPrompt];
     const transcript = yield* decodeProviderReplayNdjson(
-      text.replaceAll(queuedFollowupResult, followupResult),
+      text
+        .replaceAll(queuedFollowupResult, followupResult)
+        .replace(
+          /"name":"Replay fixture: delegated_task_status"/g,
+          () => `"name":${JSON.stringify(threadNames.shift())}`,
+        ),
     );
     // The recording ends when the recorder closes the app-server while the parent
     // turn is still open. This test keeps acting as that parent afterwards, and
@@ -201,11 +209,7 @@ describe("orchestrator MCP toolkit", () => {
     { label: "distinct", result: queuedFollowupResult, latestSummary: queuedFollowupResult },
     { label: "identical", result: delegatedResult, latestSummary: null },
     { label: "emoji", result: "😀", latestSummary: "😀" },
-    {
-      label: "paginated",
-      result: "git safety ".repeat(120),
-      latestSummary: "git safety ".repeat(120),
-    },
+    { label: "long", result: longFollowupResult, latestSummary: longFollowupResult },
   ])("reports $label child results", ({ result, latestSummary }) =>
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace("delegated-task-status");
@@ -274,7 +278,9 @@ describe("orchestrator MCP toolkit", () => {
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
         Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(
+          Layer.mock(ProjectService.ProjectService)({ workspaceScanDirectory: Effect.succeed }),
+        ),
         Layer.provideMerge(
           SecretRequests.layer.pipe(
             Layer.provide(layerMemorySecretStore),
@@ -708,7 +714,7 @@ describe("orchestrator MCP toolkit", () => {
           {
             threadId: delegated.childThreadId,
             limit: 100,
-            maxCharsPerItem: result === "😀" ? 1 : 20_000,
+            maxCharsPerItem: result === "😀" ? 1 : 50_000,
           },
           { ...invocation, thread: undefined },
         ).pipe(Effect.withTracer(tracer));
@@ -751,6 +757,7 @@ describe("orchestrator MCP toolkit", () => {
             threadId: delegated.childThreadId,
             itemId: finalItem!.itemId,
             textOffset: nextTextOffset,
+            maxCharsPerItem: 50_000,
           }).pipe(Effect.withTracer(tracer));
           const nextPage = yield* decodeThreadRead(continuation.structuredContent);
           text += nextPage.items[0]?.text ?? "";
