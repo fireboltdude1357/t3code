@@ -402,7 +402,7 @@ const CLAUDE_STOP_CONFIRM_TIMEOUT_MS = 10_000;
 const CLAUDE_STDERR_TAIL_LENGTH = 2_048;
 // The process group is killed on exit, so its stderr closes promptly.
 const CLAUDE_STDERR_DRAIN_TIMEOUT = Duration.seconds(1);
-// How often the CLI's process tree is recorded when no agent scope will stop what it leaves.
+// How often a working CLI's process tree is recorded when no agent scope will stop what it leaves.
 const CLAUDE_DESCENDANT_POLL = "1 second";
 // Claude Code's refusal of bypassPermissions as root, which it explains only on stderr.
 const CLAUDE_ROOT_REFUSAL =
@@ -556,8 +556,9 @@ function makeClaudeDescendantTracker(cliPid: number) {
 }
 
 /**
- * Process table reads for every running CLI. A poll reads the table once for all of them, so the
- * `ps` cost does not grow with open sessions.
+ * Process table reads for every working CLI. A poll reads the table once for all of them, so the
+ * `ps` cost does not grow with open sessions. Jobs start only while a CLI works, so an idle CLI is
+ * left out of polls; its turn ends with one last read.
  */
 export function makeClaudeDescendantPoll(
   readProcessTable: Effect.Effect<ReadonlyArray<ClaudeProcessRow>>,
@@ -570,27 +571,44 @@ export function makeClaudeDescendantPoll(
     reading.withPermits(1)(readProcessTable.pipe(Effect.map(apply)));
   return {
     // A table read before a CLI started may list an older process under its pid, so a poll records
-    // only into the CLIs tracked when its read began.
-    poll: reading
-      .withPermits(1)(
-        Effect.suspend(() => {
-          const tracked = [...live];
-          return readProcessTable.pipe(
-            Effect.map((rows) => {
-              for (const tracker of tracked) if (live.has(tracker)) tracker.record(rows, true);
-            }),
-          );
-        }),
-      )
-      .pipe(Effect.withSpan("ClaudeAgentSdkQueryRunner.trackDescendants")),
+    // only into the CLIs working when its read began.
+    poll: Effect.suspend(() =>
+      live.size === 0
+        ? Effect.void
+        : reading
+            .withPermits(1)(
+              Effect.suspend(() => {
+                const working = [...live];
+                return readProcessTable.pipe(
+                  Effect.map((rows) => {
+                    for (const tracker of working)
+                      if (live.has(tracker)) tracker.record(rows, true);
+                  }),
+                );
+              }),
+            )
+            .pipe(Effect.withSpan("ClaudeAgentSdkQueryRunner.trackDescendants")),
+    ),
     track: (cliPid: number) => {
       const tracker = makeClaudeDescendantTracker(cliPid);
-      live.add(tracker);
+      let exited = false;
+      const refresh = read((rows) => void tracker.record(rows, true));
       return {
         tracked: tracker.tracked,
-        refresh: read((rows) => void tracker.record(rows, true)),
+        refresh,
+        /** Polls this CLI from now until its turn settles. */
+        work: () => {
+          if (!exited) live.add(tracker);
+        },
+        settle: Effect.suspend(() => {
+          live.delete(tracker);
+          return exited ? Effect.void : refresh;
+        }),
         /** Reads the table after the CLI exited: what it left that is still the same process. */
-        leftovers: Effect.sync(() => live.delete(tracker)).pipe(
+        leftovers: Effect.sync(() => {
+          exited = true;
+          live.delete(tracker);
+        }).pipe(
           Effect.andThen(
             read((rows) => {
               const running = tracker.record(rows, false);
@@ -1587,8 +1605,7 @@ export const layerQueryRunner: Layer.Layer<
     const descendantPoll = makeClaudeDescendantPoll(readProcessTable);
     // One poll serves every CLI. The first tracked CLI starts it; it stops once none is left.
     let polling: Fiber.Fiber<unknown> | undefined;
-    const trackDescendants = (cliPid: number) => {
-      const tracker = descendantPoll.track(cliPid);
+    const startPolling = () => {
       polling ??= runFork(
         descendantPoll.poll.pipe(
           Effect.repeat({
@@ -1602,12 +1619,20 @@ export const layerQueryRunner: Layer.Layer<
           }),
         ),
       );
+    };
+    const trackDescendants = (cliPid: number) => {
+      const tracker = descendantPoll.track(cliPid);
+      const work = () => {
+        tracker.work();
+        startPolling();
+      };
+      work();
       const stop = tracker.leftovers.pipe(
         Effect.map((rows) => {
           for (const row of rows) killClaudeDescendant(row);
         }),
       );
-      return { refresh: tracker.refresh, stop };
+      return { refresh: tracker.refresh, work, settle: tracker.settle, stop };
     };
 
     // The open span below is the tracing boundary for both attempts.
@@ -1700,7 +1725,7 @@ export const layerQueryRunner: Layer.Layer<
         if (answered) return;
         stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
       };
-      let refreshDescendants: Effect.Effect<void> = Effect.void;
+      let descendants: ReturnType<typeof trackDescendants> | undefined;
       const spawnProcess =
         options.spawnClaudeCodeProcess ??
         ((spawnOptions: ClaudeSpawnOptions) => {
@@ -1718,7 +1743,7 @@ export const layerQueryRunner: Layer.Layer<
             if (unit === undefined && child.pid !== undefined) {
               const tracker = trackDescendants(child.pid);
               child.once("exit", () => runFork(tracker.stop));
-              refreshDescendants = tracker.refresh;
+              descendants = tracker;
             }
             return child;
           }
@@ -1899,6 +1924,16 @@ export const layerQueryRunner: Layer.Layer<
               }
             }),
           ),
+          // The result waits for the turn's last tree read, so a session closed on it keeps that job.
+          Stream.tap((message) =>
+            descendants === undefined
+              ? Effect.void
+              : message.type === "result"
+                ? descendants.settle
+                : message.type === "assistant"
+                  ? Effect.sync(descendants.work)
+                  : Effect.void,
+          ),
           Stream.tap((message) =>
             logProtocolEvent({
               direction: "incoming",
@@ -1910,7 +1945,12 @@ export const layerQueryRunner: Layer.Layer<
         offer: (message, onQueued) =>
           Effect.uninterruptibleMask((restore) =>
             restore(Queue.offer(promptQueue, message)).pipe(
-              Effect.tap(() => Effect.sync(() => onQueued?.())),
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  descendants?.work();
+                  onQueued?.();
+                }),
+              ),
             ),
           ).pipe(
             Effect.asVoid,
@@ -2101,7 +2141,9 @@ export const layerQueryRunner: Layer.Layer<
           ),
         ),
         // A job started since the last poll is recorded before the CLI is told to exit.
-        close: Effect.suspend(() => (processExited ? Effect.void : refreshDescendants)).pipe(
+        close: Effect.suspend(() =>
+          processExited || descendants === undefined ? Effect.void : descendants.refresh,
+        ).pipe(
           Effect.andThen(Queue.shutdown(promptQueue)),
           Effect.andThen(closeClaudeQuery(queryRuntime)),
           Effect.tap(() =>
@@ -5230,6 +5272,8 @@ interface ActiveClaudeTurnContext {
   retryBudgetFailure?: OrchestrationV2ProviderFailure;
   // Set when the prompt starts or a request goes out; cleared by the turn's next frame.
   unansweredRequestSince?: DateTime.Utc | undefined;
+  // Interrupted once the silence clears, so the session scope stops holding this context.
+  unansweredRequestWatch?: Fiber.Fiber<unknown> | undefined;
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly autoCompactWindow: string;
@@ -5240,6 +5284,7 @@ interface ActiveClaudeTurnContext {
   readonly providerTurnOrdinal: number;
   readonly startedAt: DateTime.Utc;
   readonly itemOrdinals: Map<string, number>;
+  readonly planIds: Map<string, OrchestrationV2PlanArtifact["id"]>;
   readonly assistant: {
     fallbackText: string;
     // Result-only replies of steered segments that ended before the current one.
@@ -6192,9 +6237,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const taskListsByNativeThread = yield* Ref.make(
           new Map<string, ClaudeTaskList | undefined>(),
         );
-        const planIdsByNativeItem = yield* Ref.make(
-          new Map<string, OrchestrationV2PlanArtifact["id"]>(),
-        );
         const providerRetries = yield* Ref.make(
           new Map<OrchestrationV2ProviderTurn["id"], ActiveClaudeProviderRetry>(),
         );
@@ -6732,6 +6774,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Effect.map(Ref.get(activeTurn), (active) => active === context),
           );
         });
+
+        const clearUnansweredRequestWatch = (context: ActiveClaudeTurnContext) => {
+          const watch = context.unansweredRequestWatch;
+          context.unansweredRequestWatch = undefined;
+          return watch === undefined ? Effect.void : Fiber.interrupt(watch);
+        };
 
         const failStalledTurn = Effect.fn("ClaudeAdapterV2.failStalledTurn")(function* (
           context: ActiveClaudeTurnContext,
@@ -8623,8 +8671,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         }) {
           const updatedAt = yield* DateTime.now;
           const projectionNativeItemId = `${input.kind}:${input.nativeItemId}`;
-          const planKey = `${input.context.input.threadId}:${projectionNativeItemId}`;
-          const existingPlanId = (yield* Ref.get(planIdsByNativeItem)).get(planKey);
+          const existingPlanId = input.context.planIds.get(projectionNativeItemId);
           const planId =
             existingPlanId ??
             (yield* idAllocator.allocate.plan({
@@ -8632,13 +8679,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               runId: input.context.input.runId,
               driver: CLAUDE_PROVIDER,
             }));
-          if (existingPlanId === undefined) {
-            yield* Ref.update(planIdsByNativeItem, (current) => {
-              const updated = new Map(current);
-              updated.set(planKey, planId);
-              return updated;
-            });
-          }
+          input.context.planIds.set(projectionNativeItemId, planId);
           const nodeId = idAllocator.derive.nodeFromProviderItem({
             driver: CLAUDE_PROVIDER,
             nativeItemId: projectionNativeItemId,
@@ -10046,6 +10087,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* Ref.update(activeTurn, (current) =>
             current?.providerTurnId === input.context.providerTurnId ? null : current,
           );
+          yield* clearUnansweredRequestWatch(input.context);
           if (input.status === "completed") {
             settledTurnByNativeThread.set(input.context.nativeThreadId, input.context);
           } else {
@@ -11097,10 +11139,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ) {
               const since = yield* DateTime.now;
               context.unansweredRequestSince = since;
-              yield* failUnansweredRequest(context, since).pipe(
-                Effect.delay(PROVIDER_RETRY_BUDGET_MS),
+              const previousWatch = context.unansweredRequestWatch;
+              // Only the wait is interruptible: a fired failure runs on its own fiber.
+              context.unansweredRequestWatch = yield* Effect.sleep(PROVIDER_RETRY_BUDGET_MS).pipe(
+                Effect.andThen(
+                  failUnansweredRequest(context, since).pipe(Effect.forkIn(sessionScope)),
+                ),
                 Effect.forkIn(sessionScope),
               );
+              if (previousWatch !== undefined) yield* Fiber.interrupt(previousWatch);
+              // A turn that settled meanwhile already cleared its watch, so drop the new one too.
+              if ((yield* Ref.get(activeTurn)) !== context) {
+                yield* clearUnansweredRequestWatch(context);
+              }
             } else if (
               // Background tasks from earlier turns keep streaming while the root request hangs.
               // Only the root starts depth-1 tasks, so such a start (a forked skill) is this turn's.
@@ -11112,6 +11163,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               )
             ) {
               context.unansweredRequestSince = undefined;
+              yield* clearUnansweredRequestWatch(context);
             }
           }
           const focusedPlugin = claudeFocusRequestedPanePlugin(message);
@@ -13789,6 +13841,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               providerTurnOrdinal,
               startedAt,
               itemOrdinals: new Map(),
+              planIds: new Map(),
               assistant: {
                 fallbackText: "",
                 earlierFallbackText: "",
@@ -15092,7 +15145,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     }),
                     handoffIds: rollbackInput.providerThread.handoffIds,
                   },
-                  providerTurns: [],
                   messages: [],
                   runtimeRequests: [],
                 };
@@ -15114,7 +15166,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   lastRunOrdinal: rollbackInput.target.appRunOrdinal,
                   updatedAt: now,
                 },
-                providerTurns: [],
                 messages: [],
                 runtimeRequests: [],
               };
