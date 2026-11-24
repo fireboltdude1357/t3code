@@ -8,7 +8,7 @@ import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 
 import { connectionTimingLog } from "../diagnostics/connection-timings-model";
-import { setDiagnosticsSending } from "./diagnosticsSetting";
+import { setConnectionTracesEnabled } from "./diagnosticsSetting";
 import * as Tracing from "./tracing";
 
 vi.mock("expo-constants", () => ({
@@ -34,7 +34,7 @@ const layerTracingTo = (fetchFn: typeof fetch) =>
   ).pipe(Layer.provide(layerRemoteHttpClient(fetchFn)));
 
 it.effect.each([false, true])("gates relay sends and preserves typed failures (%s)", (enabled) => {
-  setDiagnosticsSending(enabled);
+  setConnectionTracesEnabled(enabled);
   const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
   const layerTracing = layerTracingTo(fetchFn);
   const failure = { durationNanos: 1n };
@@ -70,7 +70,7 @@ it.effect.each([false, true])("gates relay sends and preserves typed failures (%
 
 it.effect("records connection timings on the local and relay tracers, and still exports", () => {
   connectionTimingLog.clear();
-  setDiagnosticsSending(true);
+  setConnectionTracesEnabled(true);
   const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
   const layerTracedApplication = Layer.effectDiscard(
     Effect.all([
