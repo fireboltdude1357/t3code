@@ -60,7 +60,7 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
   const receiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
   const inFlight = yield* Ref.make(false);
 
-  const available = config.mode === "desktop" && config.desktopTelemetryControlFd !== undefined;
+  const available = ServerConfig.canRequestDesktopAppUpdate(config);
   const failWith = (reason: string, cause?: unknown) =>
     cause === undefined
       ? new ServerSelfUpdateError({ reason })
