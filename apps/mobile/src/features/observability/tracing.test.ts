@@ -8,6 +8,7 @@ import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 
 import { connectionTimingLog } from "../diagnostics/connection-timings-model";
+import { setConnectionTracesEnabled } from "./diagnosticsSetting";
 import * as Tracing from "./tracing";
 
 vi.mock("expo-constants", () => ({
@@ -18,7 +19,7 @@ vi.mock("expo-constants", () => ({
   },
 }));
 
-const layerTracingWith = (fetchFn: typeof fetch) =>
+const layerTracingTo = (fetchFn: typeof fetch) =>
   Tracing.layerFromConfig(
     {
       tracesUrl: "https://api.axiom.test/v1/traces",
@@ -32,9 +33,10 @@ const layerTracingWith = (fetchFn: typeof fetch) =>
     },
   ).pipe(Layer.provide(layerRemoteHttpClient(fetchFn)));
 
-it.effect("does not let OTLP serialization failures alter application effects", () => {
+it.effect.each([false, true])("gates relay sends and preserves typed failures (%s)", (enabled) => {
+  setConnectionTracesEnabled(enabled);
   const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
-  const layerTracing = layerTracingWith(fetchFn);
+  const layerTracing = layerTracingTo(fetchFn);
   const failure = { durationNanos: 1n };
   const layerTracedApplication = Layer.effectDiscard(
     Effect.fail(failure).pipe(
@@ -56,7 +58,8 @@ it.effect("does not let OTLP serialization failures alter application effects", 
     Effect.scoped,
     Effect.andThen(
       Effect.sync(() => {
-        expect(fetchFn).toHaveBeenCalledOnce();
+        expect(fetchFn).toHaveBeenCalledTimes(Number(enabled));
+        if (!enabled) return;
         expect(new TextDecoder().decode(fetchFn.mock.calls[0]?.[1]?.body as Uint8Array)).toContain(
           "mobile.test.failed-span",
         );
@@ -67,13 +70,14 @@ it.effect("does not let OTLP serialization failures alter application effects", 
 
 it.effect("records connection timings on the local and relay tracers, and still exports", () => {
   connectionTimingLog.clear();
+  setConnectionTracesEnabled(true);
   const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
   const layerTracedApplication = Layer.effectDiscard(
     Effect.all([
       Effect.void.pipe(Effect.withSpan("environment.websocket.open"), withRelayClientTracing),
       Effect.void.pipe(Effect.withSpan("environment.websocket.connect")),
     ]),
-  ).pipe(Layer.provide(layerTracingWith(fetchFn)));
+  ).pipe(Layer.provide(layerTracingTo(fetchFn)));
 
   return Layer.build(layerTracedApplication).pipe(
     Effect.scoped,
