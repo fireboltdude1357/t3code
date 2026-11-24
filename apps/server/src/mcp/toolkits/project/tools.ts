@@ -1,5 +1,6 @@
 import { McpAttachmentInput } from "../attachment/input.ts";
 import {
+  BotName,
   clampedPositiveInt,
   NonNegativeInt,
   ModelSelection,
@@ -161,6 +162,12 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     outputSchema: Schema.optional(
       Schema.Record(Schema.String, Schema.Json).annotate({
         description: "As in `t3_thread_send`. Needs `message`.",
+      }),
+    ),
+    bot: Schema.optional(
+      Schema.NullOr(BotName).annotate({
+        description:
+          "Set only when a bot launches this thread on its own: the bot's short name, such as warden. The thread lists under that bot in the sidebar's Bots section and stays out of the user's inbox until it needs them. A thread launched from a bot's thread is marked for the same bot when this is omitted; pass null to launch ordinary work for the user from one.",
       }),
     ),
     clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
