@@ -33,6 +33,22 @@ it.each([1])("blocks legacy launcher protocol %i with exact recovery steps", (la
   expect(reason).toContain("which -a t3");
 });
 
+// The launcher skips the update backup only when every migration listed here is already applied.
+it("lists every migration as id and name pairs when ready", () => {
+  const result = runServicePreflight({
+    databasePath: "/missing/state.sqlite",
+    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+  });
+
+  const printed: unknown = JSON.parse(JSON.stringify(result));
+  expect(printed).toMatchObject({ status: "ready", launcherProtocol: SERVICE_LAUNCHER_PROTOCOL });
+  expect(printed).toHaveProperty(
+    "migrations",
+    migrationManifest.map(([id, name]) => [id, name]),
+  );
+  expect(migrationManifest.length).toBeGreaterThan(0);
+});
+
 // regression: #34502 every installed launcher was protocol 3, so protocol 4 blocked every remote update
 it.each([3, SERVICE_LAUNCHER_PROTOCOL])(
   "is ready under launcher protocol %i and reports it back",
@@ -44,7 +60,12 @@ it.each([3, SERVICE_LAUNCHER_PROTOCOL])(
         launcherProtocol,
         version: "9.8.7",
       }),
-    ).toEqual({ status: "ready", version: "9.8.7", launcherProtocol });
+    ).toEqual({
+      status: "ready",
+      version: "9.8.7",
+      launcherProtocol,
+      migrations: migrationManifest,
+    });
   },
 );
 
