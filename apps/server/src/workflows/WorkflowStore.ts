@@ -7,6 +7,7 @@ import {
   WorkflowRunStatus,
   WorkflowStep,
 } from "@t3tools/contracts";
+import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -32,7 +33,8 @@ export interface RunParent {
   readonly wait: string;
 }
 
-export interface RunRow {
+/** A run as lists show it: everything but what it was started with, which can be a whole payload. */
+export interface RunSummaryRow {
   readonly run_id: string;
   readonly workflow: string;
   readonly idempotency_key: string;
@@ -42,7 +44,6 @@ export interface RunRow {
   readonly status: WorkflowRunStatus;
   readonly detail: string | null;
   readonly result_json: string | null;
-  readonly input_json: string | null;
   readonly parent_run_id: string | null;
   readonly parent_wait: string | null;
   readonly pauses: number | bigint;
@@ -51,6 +52,9 @@ export interface RunRow {
   readonly started_at: string;
   readonly updated_at: string;
   readonly ended_at: string | null;
+}
+export interface RunRow extends RunSummaryRow {
+  readonly input_json: string | null;
 }
 export interface StepRow {
   readonly name: string;
@@ -130,6 +134,15 @@ const WAKE_REDONE_AFTER = Duration.seconds(30);
 // Long enough for a sender's retries, short enough that the table stays small.
 // Enough to read what a step said; the page that shows it is not a place for a whole report.
 const STEP_RESULT_KEPT = 8_000;
+const stepResultCut = (text: string) => {
+  const end = splitsSurrogatePair(text, STEP_RESULT_KEPT) ? STEP_RESULT_KEPT - 1 : STEP_RESULT_KEPT;
+  return `${text.slice(0, end)}…`;
+};
+const DETAIL_KEPT = 2_000;
+export const detailCut = (text: string) =>
+  text.length <= DETAIL_KEPT
+    ? text
+    : text.slice(0, splitsSurrogatePair(text, DETAIL_KEPT) ? DETAIL_KEPT - 1 : DETAIL_KEPT);
 const SIGNAL_IDS_KEPT = Duration.days(7);
 const REFERENCE_TITLE_KEPT = 300;
 const idsKeptUntil = Effect.map(DateTime.now, (at) =>
@@ -341,13 +354,15 @@ export class WorkflowStore extends Context.Service<
     readonly run: (runId: string) => Effect.Effect<RunRow | undefined>;
     /** The run a workflow was started as under `key`, of whichever version. */
     readonly runByKey: (workflow: string, key: string) => Effect.Effect<RunRow | undefined>;
-    readonly runs: (status: WorkflowRunStatus | undefined) => Effect.Effect<ReadonlyArray<RunRow>>;
+    readonly runs: (
+      status: WorkflowRunStatus | undefined,
+    ) => Effect.Effect<ReadonlyArray<RunSummaryRow>>;
     /** Runs by what they are a run of and what they were started as, newest first. */
     readonly runsWhere: (filter: {
       readonly workflow?: string | undefined;
       readonly status?: WorkflowRunStatus | undefined;
       readonly keyPrefix?: string | undefined;
-    }) => Effect.Effect<ReadonlyArray<RunRow>>;
+    }) => Effect.Effect<ReadonlyArray<RunSummaryRow>>;
     readonly triggerNext: (triggerId: string) => Effect.Effect<string | undefined>;
     readonly triggerSet: (triggerId: string, nextAt: string) => Effect.Effect<void>;
     /** Forgets every trigger but these, so one that comes back starts over. */
@@ -377,6 +392,7 @@ export const make = Effect.gen(function* () {
   const write = <A, E>(runId: string, effect: Effect.Effect<A, E>) =>
     effect.pipe(Effect.orDie, Effect.andThen(PubSub.publish(changes, runId)), Effect.asVoid);
   const waitColumns = sql`run_id, name, token, schema_json, request_json, watch_json, deadline, opened_at, woke_json`;
+  const summaryColumns = sql`run_id, workflow, idempotency_key, version, engine_tag, title, status, detail, result_json, parent_run_id, parent_wait, pauses, held, started_at, updated_at, ended_at`;
 
   const hub = yield* Effect.serviceOption(MilestoneHub.MilestoneHub);
   /** Tells the milestone hub of a transition this store just wrote, under an id stable for it. */
@@ -493,7 +509,7 @@ export const make = Effect.gen(function* () {
     }),
     runPaused: Effect.fn("WorkflowStore.runPaused")(function* (runId, detail, held) {
       const at = yield* now;
-      const reason = detail.slice(0, 2000);
+      const reason = detailCut(detail);
       const paused = yield* sql`
         UPDATE workflow_runs
         SET status = 'paused', detail = ${reason}, pauses = pauses + 1,
@@ -563,10 +579,8 @@ export const make = Effect.gen(function* () {
       return true;
     }),
     runTitle: Effect.fn("WorkflowStore.runTitle")(function* (runId, title) {
-      yield* write(
-        runId,
-        sql`UPDATE workflow_runs SET title = ${title.slice(0, 200)} WHERE run_id = ${runId}`,
-      );
+      const kept = title.slice(0, splitsSurrogatePair(title, 200) ? 199 : 200);
+      yield* write(runId, sql`UPDATE workflow_runs SET title = ${kept} WHERE run_id = ${runId}`);
     }),
     stepStarted: Effect.fn("WorkflowStore.stepStarted")(function* (runId, name, kind) {
       const at = yield* now;
@@ -589,7 +603,7 @@ export const make = Effect.gen(function* () {
           Effect.andThen(
             sql`
               UPDATE workflow_steps
-              SET status = ${status}, detail = ${detail === null ? null : detail.slice(0, 2000)}, ended_at = ${at}
+              SET status = ${status}, detail = ${detail === null ? null : detailCut(detail)}, ended_at = ${at}
               WHERE run_id = ${runId} AND name = ${name}
             `,
             // A step that finished is progress: the next pause is the first in a row again.
@@ -909,15 +923,10 @@ export const make = Effect.gen(function* () {
     ),
     stepResult: Effect.fn("WorkflowStore.stepResult")(function* (runId, name, value, said) {
       const full = jsonText(value);
-      const kept =
-        full.length <= STEP_RESULT_KEPT ? full : jsonText(`${full.slice(0, STEP_RESULT_KEPT)}…`);
+      const kept = full.length <= STEP_RESULT_KEPT ? full : jsonText(stepResultCut(full));
       const words = said?.trim() ?? "";
       const keptSaid =
-        words === ""
-          ? null
-          : words.length <= STEP_RESULT_KEPT
-            ? words
-            : `${words.slice(0, STEP_RESULT_KEPT)}…`;
+        words === "" ? null : words.length <= STEP_RESULT_KEPT ? words : stepResultCut(words);
       yield* sql`
         UPDATE workflow_steps SET result_json = ${kept}, said = ${keptSaid}
         WHERE run_id = ${runId} AND name = ${name}
@@ -992,8 +1001,8 @@ export const make = Effect.gen(function* () {
     runsWhere: Effect.fn("WorkflowStore.runsWhere")(function* (filter) {
       const prefix = filter.keyPrefix ?? null;
       // A range, not LIKE, which would read `%` and `_` in a key as patterns.
-      return yield* sql<RunRow>`
-        SELECT * FROM workflow_runs
+      return yield* sql<RunSummaryRow>`
+        SELECT ${summaryColumns} FROM workflow_runs
         WHERE (${filter.workflow ?? null} IS NULL OR workflow = ${filter.workflow ?? null})
           AND (${filter.status ?? null} IS NULL OR status = ${filter.status ?? null})
           AND (${prefix} IS NULL OR (
@@ -1007,22 +1016,22 @@ export const make = Effect.gen(function* () {
         status === undefined
           ? // Skipped runs are counted apart, so a trigger that skips most of what it brings does
             // not push the runs that did something out of the list.
-            sql<RunRow>`
-              SELECT * FROM (
-                SELECT * FROM workflow_runs
+            sql<RunSummaryRow>`
+              SELECT ${summaryColumns} FROM (
+                SELECT ${summaryColumns} FROM workflow_runs
                 WHERE NOT (status = 'skipped' AND parent_run_id IS NULL)
                 ORDER BY started_at DESC LIMIT 500
               )
               UNION ALL
-              SELECT * FROM (
-                SELECT * FROM workflow_runs
+              SELECT ${summaryColumns} FROM (
+                SELECT ${summaryColumns} FROM workflow_runs
                 WHERE status = 'skipped' AND parent_run_id IS NULL
                 ORDER BY started_at DESC LIMIT 500
               )
               ORDER BY started_at DESC
             `
-          : sql<RunRow>`
-              SELECT * FROM workflow_runs WHERE status = ${status}
+          : sql<RunSummaryRow>`
+              SELECT ${summaryColumns} FROM workflow_runs WHERE status = ${status}
               ORDER BY started_at DESC LIMIT 500
             `
       ).pipe(Effect.orDie);
