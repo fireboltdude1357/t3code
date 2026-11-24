@@ -57,6 +57,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     shelfPreferencesLoaded: true,
     workingShelfEnabled: true,
     workingShelfExpanded: false,
+    botShelfExpanded: false,
     snoozedShelfExpanded: false,
     settledShelfExpanded: true,
     selectedThreadKey: null,
@@ -199,6 +200,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     before,
     beforeMs: Date.parse(before),
     counts: new Map([[ProjectId.make("project-test"), 575]]),
+    owners: new Map([[ProjectId.make("project-test"), "user" as const]]),
   };
   await act(async () => {
     registry.set(
