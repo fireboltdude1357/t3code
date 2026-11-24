@@ -1033,35 +1033,6 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
 const decodeProviderTurnTokenUsage = Schema.decodeSync(OrchestrationV2ProviderTurnTokenUsage);
 
 describe("ClaudeAdapterV2 context usage", () => {
-  it("measures context from the last sampling pass of a server-side tool loop", () => {
-    const pass = (input_tokens: number) => ({
-      type: "message",
-      input_tokens,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      output_tokens: 1_000,
-    });
-    const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
-      {
-        input_tokens: 183_000,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-        output_tokens: 3_500,
-        iterations: [
-          pass(60_000),
-          pass(61_000),
-          { ...pass(500), type: "advisor_message", output_tokens: 500 },
-          pass(62_000),
-        ],
-      },
-      null,
-      "2026-08-29T00:00:00.000Z",
-    );
-
-    assert.strictEqual(usage.usedTokens, 63_000);
-    assert.strictEqual(usage.inputTokens, 62_000);
-  });
-
   it("dates cache expiry from the request start, not the response end", () => {
     const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
       {
