@@ -17,15 +17,19 @@ restarts never depend on npm cache eviction or a moving tag.
 ## Commit boundary and database rollback
 
 1. Record the pending update durably (atomic rename + fsync) before stopping the old child.
-2. Refuse the update if a database snapshot will not fit on disk. After the old child exits, snapshot
-   SQLite (main, WAL, SHM) once per update so failed trial migrations are reversible without down
-   migrations. Never overwrite that snapshot on retry. Files outside SQLite (such as attachments)
+2. Decide whether the update needs a database snapshot. Skip it only when the target's
+   `__service-preflight` lists no migration the database lacks; a failed or missing check takes
+   one. Refuse the update if a needed snapshot will not fit on disk. After the old child exits,
+   snapshot SQLite (main, WAL, SHM) once per update so failed trial migrations are reversible
+   without down migrations. Never overwrite that snapshot on retry. Files outside SQLite (such as attachments)
    are outside this rollback boundary.
 3. Start the new runtime as a trial. It must finish migrations, acquire fallible dependencies, bind
    HTTP, and hold long-running roots at the activation gate before reporting `prepared`.
 4. Only after the launcher commits the new version durably and replies `committed` may the child
    release activation gates and accept work. A failed or timed-out trial stops and restores the
-   snapshot before booting the old version.
+   snapshot, if the update took one, before booting the old version. Without a snapshot the trial's
+   writes stay, the old version may not decode rows in a new format, and the rollback reason ends
+   in `:no-backup`.
 
 ## Client acknowledgement
 
