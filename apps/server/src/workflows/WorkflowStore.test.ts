@@ -120,6 +120,43 @@ it.effect("a key is taken by the first run started under it, whatever its versio
   ),
 );
 
+it.effect("lists of runs leave out what each run was started with", () =>
+  withStore(
+    Effect.gen(function* () {
+      const store = yield* WorkflowStore.WorkflowStore;
+      const input = { payload: "x".repeat(20_000) };
+      yield* store.runStarted({
+        runId: "r1",
+        workflow: "intake",
+        version: 1,
+        engineTag: "intake@1",
+        idempotencyKey: "k",
+        input,
+      });
+      const listed = [
+        ...(yield* store.runs(undefined)),
+        ...(yield* store.runs("running")),
+        ...(yield* store.runsWhere({ workflow: "intake" })),
+      ];
+      assert.deepStrictEqual(
+        listed.map((row) => [row.run_id, "input_json" in row]),
+        [
+          ["r1", false],
+          ["r1", false],
+          ["r1", false],
+        ],
+      );
+      const one = yield* store.run("r1");
+      assert.deepStrictEqual(
+        one?.input_json === null || one?.input_json === undefined
+          ? undefined
+          : WorkflowStore.jsonValue(one.input_json),
+        input,
+      );
+    }),
+  ),
+);
+
 it.effect("keeps each thing a run touched once, with what the latest touch knew", () =>
   withStore(
     Effect.gen(function* () {
@@ -220,6 +257,74 @@ it.effect("counts what waits on a person, and finds the run's latest agent threa
         threadId: "thread-2",
         environmentId: "env-b",
       });
+    }),
+  ),
+);
+
+it.effect("a long step result is cut without leaving half an emoji", () =>
+  withStore(
+    Effect.gen(function* () {
+      const store = yield* WorkflowStore.WorkflowStore;
+      yield* store.stepStarted("r1", "write", "step");
+      yield* store.stepResult("r1", "write", `${"a".repeat(7_998)}\u{1F680}tail`);
+      const [step] = yield* store.steps("r1");
+      // The cut is of the JSON text, which opens with a quote.
+      assert.equal(WorkflowStore.jsonValue(step?.result_json ?? "null"), `"${"a".repeat(7_998)}…`);
+    }),
+  ),
+);
+
+it.effect("what a long agent step said is cut without leaving half an emoji", () =>
+  withStore(
+    Effect.gen(function* () {
+      const store = yield* WorkflowStore.WorkflowStore;
+      yield* store.stepStarted("r1", "write", "agent");
+      yield* store.stepResult("r1", "write", null, `${"a".repeat(7_999)}\u{1F680}tail`);
+      const [step] = yield* store.steps("r1");
+      assert.equal(step?.said, `${"a".repeat(7_999)}…`);
+    }),
+  ),
+);
+
+it.effect("a long failure detail is cut without leaving half an emoji", () =>
+  withStore(
+    Effect.gen(function* () {
+      const store = yield* WorkflowStore.WorkflowStore;
+      yield* store.runStarted({
+        runId: "r1",
+        workflow: "fail",
+        version: 1,
+        engineTag: "fail@1",
+        idempotencyKey: "k",
+        input: {},
+      });
+      yield* store.stepStarted("r1", "work", "step");
+      const detail = `${"a".repeat(1_999)}\u{1F680}tail`;
+      yield* store.stepEnded("r1", "work", "failed", detail);
+      yield* store.runPaused("r1", detail);
+      const [step] = yield* store.steps("r1");
+      const run = yield* store.run("r1");
+      assert.equal(step?.detail, "a".repeat(1_999));
+      assert.equal(run?.detail, "a".repeat(1_999));
+    }),
+  ),
+);
+
+it.effect("a long run title is cut without leaving half an emoji", () =>
+  withStore(
+    Effect.gen(function* () {
+      const store = yield* WorkflowStore.WorkflowStore;
+      yield* store.runStarted({
+        runId: "r1",
+        workflow: "titled",
+        version: 1,
+        engineTag: "titled@1",
+        idempotencyKey: "k",
+        input: {},
+      });
+      yield* store.runTitle("r1", `${"a".repeat(199)}\u{1F680}tail`);
+      const run = yield* store.run("r1");
+      assert.equal(run?.title, "a".repeat(199));
     }),
   ),
 );
