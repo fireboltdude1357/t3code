@@ -86,6 +86,7 @@ export const layer = HttpApiBuilder.group(
     const loadShellSnapshot = Effect.fn("http.orchestration.loadShellSnapshot")(
       function* (options: {
         readonly omitIdleSubagents: boolean;
+        readonly omitIdleSubagentParents: boolean;
         readonly omitOlderSettled: boolean;
       }) {
         const { snapshot } = yield* loadSubscriberShellSnapshot({
@@ -108,6 +109,7 @@ export const layer = HttpApiBuilder.group(
     // A client that holds rows names their cursor; a small answer tells it to keep them.
     const answerShellSnapshot = Effect.fn("http.orchestration.answerShellSnapshot")((query: {
       readonly omitIdleSubagents?: string;
+      readonly omitIdleSubagentParents?: string;
       readonly omitOlderSettled?: string;
       readonly resumeFrom?: string;
     }) => {
@@ -117,6 +119,7 @@ export const layer = HttpApiBuilder.group(
         resumeFrom: Number.isSafeInteger(resumeFrom) && resumeFrom >= 0 ? resumeFrom : undefined,
         loadSnapshot: loadShellSnapshot({
           omitIdleSubagents: query.omitIdleSubagents === "1",
+          omitIdleSubagentParents: query.omitIdleSubagentParents === "1",
           omitOlderSettled: query.omitOlderSettled === "1",
         }),
       });
