@@ -8,7 +8,7 @@ import * as RelayTracing from "@t3tools/shared/relayTracing";
 
 import { hasTracingPublicConfig, resolveCloudPublicConfig } from "../cloud/publicConfig";
 import { recordConnectionTimings } from "../diagnostics/connection-timings-model";
-import { diagnosticsSendingEnabled } from "./diagnosticsSetting";
+import { connectionTracesEnabled } from "./diagnosticsSetting";
 
 export interface TracingConfig {
   readonly tracesUrl: string;
@@ -52,7 +52,7 @@ export function layerFromConfig(config: TracingConfig | null, resource: TracingR
       client: `mobile-${resource.appVariant}`,
       attributes: channel && releaseResourceAttributes(channel),
     },
-    { isEnabled: diagnosticsSendingEnabled },
+    { isEnabled: connectionTracesEnabled },
   );
   // Relay-traced work swaps the tracer, so both tracers record connection timings.
   return Layer.merge(
