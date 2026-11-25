@@ -3,6 +3,7 @@ import { useComposerDraftStore } from "~/composerDraftStore";
 import { resolveEnvironmentMachineKind, type ScopedProjectRef } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { isBotProjectRow } from "@t3tools/client-runtime/state/thread-inbox";
 import { T, useGT, Var } from "gt-react";
 import { FolderPlusIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
@@ -22,7 +23,7 @@ import {
   buildSidebarProjectPickerEntries,
   projectGroupsSpanEnvironments,
 } from "~/sidebarProjectGrouping";
-import { useProjects } from "~/state/entities";
+import { useBotProjectKeys, useProjects } from "~/state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { ProjectEnvironmentBadge } from "../ProjectEnvironmentBadge";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -65,6 +66,7 @@ export function DraftHeroHeadline({
 }: DraftHeroHeadlineProps) {
   const gt = useGT();
   const projects = useProjects();
+  const botProjects = useBotProjectKeys();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   // A boolean, so typing in a draft does not re-render the hero.
@@ -115,8 +117,9 @@ export function DraftHeroHeadline({
   const canChooseProject = projectPickerEntries.length > 0;
   const shouldShowProjectMenu = canChooseProject;
   const menuEntries = projectPickerEntries.filter(
-    ({ targetProject }) =>
-      !isScratchProject(targetProject, scratchWorkspaceRootFor(targetProject.environmentId)),
+    ({ group, targetProject }) =>
+      !isScratchProject(targetProject, scratchWorkspaceRootFor(targetProject.environmentId)) &&
+      !isBotProjectRow(group.memberProjects, botProjects),
   );
   const activeProject =
     activeProjectRef === null
