@@ -1,5 +1,5 @@
 import type { DraftId } from "~/composerDraftStore";
-import { composerDraftHasUserContent, useComposerDraftStore } from "~/composerDraftStore";
+import { useComposerDraftStore } from "~/composerDraftStore";
 import { resolveEnvironmentMachineKind, type ScopedProjectRef } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
@@ -14,16 +14,11 @@ import { shortcutLabelForCommand } from "~/keybindings";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useOrderWhileOpen } from "~/hooks/useOrderWhileOpen";
+import { moveDraftToProject } from "~/lib/moveDraftToProject";
 import { useProjectPin } from "~/hooks/useProjectGroupUpdate";
 import { useScratchProject } from "~/hooks/useScratchProject";
 import { isTriagePrompt } from "@t3tools/shared/triagePrompt";
-import { useClientSettings } from "~/hooks/useSettings";
-import { seedDraftModelSelection } from "~/lib/seedDraftModelSelection";
-import {
-  deriveLogicalProjectKeyFromSettings,
-  pickableProjectGroups,
-  selectProjectGroupingSettings,
-} from "@t3tools/client-runtime/state/project-grouping";
+import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import {
   buildSidebarProjectPickerEntries,
   projectGroupsSpanEnvironments,
@@ -44,7 +39,8 @@ import {
   ComboboxTrigger,
   useComboboxFilter,
 } from "../ui/combobox";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipScrollDismissArea, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { InlineButton } from "../ui/button";
 import { DraftProjectName } from "./DraftProjectName";
 import { DraftHeroProjectHeading } from "./DraftHeroProjectHeading";
@@ -73,16 +69,11 @@ export function DraftHeroHeadline({
   const botProjects = useBotProjectKeys();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const setLogicalProjectDraftThreadId = useComposerDraftStore(
-    (store) => store.setLogicalProjectDraftThreadId,
-  );
-  const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
   // A boolean, so typing in a draft does not re-render the hero.
   const isTriageDraftPrompt = useComposerDraftStore((store) =>
     draftId ? isTriagePrompt(store.getComposerDraft(draftId)?.prompt ?? "") : false,
   );
-  const openAddProject = () => openCommandPalette({ open: "add-project" });
+  const openAddProject = () => openCommandPalette({ open: "add-project", draftId });
   const { scratchEnvironmentId, scratchWorkspaceRootFor, openScratchProject } = useScratchProject();
   const openProjectDraft = useNewThreadHandler();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -175,19 +166,14 @@ export function DraftHeroHeadline({
       ? `${session.environmentId}:${session.projectId}:${session.logicalProjectKey}`
       : null;
   };
-  // Retargeting an empty draft would overwrite the project's draft and strand browser tabs.
-  const selectProject = (project: (typeof projects)[number], logicalProjectKey: string) => {
+  const selectProject = (project: (typeof projects)[number]) => {
     if (!draftId) {
       return;
     }
     pendingScratchRef.current = null;
-    const projectRef = scopeProjectRef(project.environmentId, project.id);
-    if (!composerDraftHasUserContent(getComposerDraft(draftId))) {
-      void openProjectDraft(projectRef);
-      return;
+    if (!moveDraftToProject(draftId, project)) {
+      void openProjectDraft(scopeProjectRef(project.environmentId, project.id));
     }
-    setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId);
-    seedDraftModelSelection(draftId, projectRef);
   };
   const startScratch = async (): Promise<boolean> => {
     if (scratchTargetEnvironmentId === null || isScratchDraft) {
@@ -201,7 +187,7 @@ export function DraftHeroHeadline({
       return false;
     }
     pendingScratchRef.current = null;
-    selectProject(project, deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings));
+    selectProject(project);
     return true;
   };
 
@@ -232,7 +218,7 @@ export function DraftHeroHeadline({
         if (!entry || item.value === activeProjectKey) {
           return;
         }
-        selectProject(entry.targetProject, entry.group.projectKey);
+        selectProject(entry.targetProject);
       }}
     >
       <Tooltip>
@@ -256,7 +242,11 @@ export function DraftHeroHeadline({
           <TooltipPopup side="top">{activeProjectTitle}</TooltipPopup>
         ) : null}
       </Tooltip>
-      <ComboboxPopup align="center" className="w-72 overflow-hidden">
+      <ComboboxPopup
+        align="center"
+        className="w-72 overflow-hidden"
+        render={<TooltipScrollDismissArea holdPositionOnExit />}
+      >
         <ComboboxSearchInput
           aria-label={gt("Search projects")}
           placeholder={gt("Search projects...")}
@@ -286,12 +276,12 @@ export function DraftHeroHeadline({
                 ) : entry ? (
                   <ProjectFavicon project={entry.group} className="size-4 shrink-0" />
                 ) : null}
-                <Tooltip>
-                  <TooltipTrigger render={<span className="min-w-0 flex-1 text-sm" />}>
-                    <DraftProjectName value={item.label} />
-                  </TooltipTrigger>
-                  <TooltipPopup side="top">{item.label}</TooltipPopup>
-                </Tooltip>
+                <SharedTooltipTrigger
+                  render={<span className="min-w-0 flex-1 text-sm" />}
+                  label={item.label}
+                >
+                  <DraftProjectName value={item.label} />
+                </SharedTooltipTrigger>
                 {entry && canPinProjectGroup(entry.group) ? (
                   <ProjectPinButton
                     name={entry.group.displayName}
