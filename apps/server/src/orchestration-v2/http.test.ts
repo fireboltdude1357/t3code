@@ -10,6 +10,7 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   OrchestrationV2AppThread,
   OrchestrationV2Run,
+  OrchestrationV2ThreadDetailSnapshot,
   OrchestrationV2TurnItem,
   OrchestrationV2ThreadTranscript,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
@@ -37,6 +38,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import { ProjectEnrichmentService } from "../project/ProjectEnrichmentService.ts";
 import * as OrchestrationHttp from "./http.ts";
+import { OrchestratorProjectionError } from "./Orchestrator.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -118,7 +120,10 @@ const rolledBackRun = Schema.decodeSync(OrchestrationV2Run)({
 });
 
 // Serves the orchestration HTTP routes over real stores; `allowed` gates the read scope.
-const serveOrchestrationHttp = (allowed: () => boolean) =>
+const serveOrchestrationHttp = (
+  allowed: () => boolean,
+  getThreadSnapshot?: ThreadManagementService.ThreadManagementServiceShape["getThreadSnapshot"],
+) =>
   Effect.gen(function* () {
     const runtime = ProviderReplayHarness.layerWithRegistry(
       { name: "thread-transcript" },
@@ -170,7 +175,16 @@ const serveOrchestrationHttp = (allowed: () => boolean) =>
           ),
         ),
       ),
-      Layer.provide(Layer.succeedContext(services)),
+      Layer.provide(
+        Layer.succeedContext(
+          getThreadSnapshot === undefined
+            ? services
+            : Context.add(services, ThreadManagementService.ThreadManagementService, {
+                ...Context.get(services, ThreadManagementService.ThreadManagementService),
+                getThreadSnapshot,
+              }),
+        ),
+      ),
       Layer.provide(Layer.mock(ProjectEnrichmentService)({})),
       Layer.provide(HttpPlatform.layer),
       Layer.provide(Etag.layerWeak),
@@ -340,6 +354,81 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
   }),
 );
 
+const decodeThreadSnapshot = Schema.decodeUnknownSync(
+  Schema.toCodecJson(OrchestrationV2ThreadDetailSnapshot),
+);
+
+it.effect("streams the full snapshot with the endpoint's errors", () =>
+  Effect.gen(function* () {
+    const { services, eventSink, handler } = yield* serveOrchestrationHttp(() => true);
+    yield* eventSink.write({
+      events: items.map((item) => ({
+        id: EventId.make(`create-${item.id}`),
+        type: "turn-item.updated" as const,
+        threadId: thread.id,
+        occurredAt: now,
+        payload: item,
+      })),
+    });
+    const read = (serve: typeof handler, threadId: ThreadId) =>
+      Effect.promise(() =>
+        serve(
+          new Request(`http://localhost/api/orchestration/threads/${threadId}`, {
+            headers: { [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT },
+          }),
+        ),
+      );
+    const snapshot = yield* Context.get(
+      services,
+      ThreadManagementService.ThreadManagementService,
+    ).getThreadSnapshot(thread.id);
+
+    const response = yield* read(handler, thread.id);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    const body = decodeThreadSnapshot(yield* Effect.promise(() => response.json()));
+    expect(body.snapshotSequence).toBe(snapshot.snapshotSequence);
+    expect(body.projection.turnItems).toHaveLength(snapshot.projection.turnItems.length);
+
+    const missing = yield* read(handler, ThreadId.make("missing"));
+    expect(missing.status).toBe(404);
+    expect(yield* Effect.promise(() => missing.json())).toMatchObject({
+      _tag: "EnvironmentResourceNotFoundError",
+      reason: "thread_not_found",
+    });
+    const failing = yield* serveOrchestrationHttp(
+      () => true,
+      (threadId) =>
+        Effect.fail(new OrchestratorProjectionError({ threadId, cause: new Error("disk I/O") })),
+    );
+    const failed = yield* read(failing.handler, thread.id);
+    expect(failed.status).toBe(500);
+    expect(yield* Effect.promise(() => failed.json())).toMatchObject({
+      _tag: "EnvironmentInternalError",
+      reason: "orchestration_thread_snapshot_failed",
+    });
+    // A projection its schema rejects is an empty 500, as a failed response encoding is.
+    const [first, ...rest] = snapshot.projection.turnItems;
+    const unencodable = yield* serveOrchestrationHttp(
+      () => true,
+      () =>
+        Effect.succeed({
+          ...snapshot,
+          projection: {
+            ...snapshot.projection,
+            turnItems: [
+              { ...first!, status: "unknown" } as unknown as OrchestrationV2TurnItem,
+              ...rest,
+            ],
+          },
+        }),
+    );
+    const rejected = yield* read(unencodable.handler, thread.id);
+    expect(rejected.status).toBe(500);
+    expect(yield* Effect.promise(() => rejected.text())).toBe("");
+  }),
+);
+
 it.effect("leaves older settled threads out of the HTTP shell only when asked", () =>
   Effect.gen(function* () {
     const { eventSink, handler } = yield* serveOrchestrationHttp(() => true);
@@ -369,6 +458,8 @@ it.effect("leaves older settled threads out of the HTTP shell only when asked", 
           }),
         );
         return (await response.json()) as {
+          readonly snapshotSequence: number;
+          readonly projectIdentities?: string;
           readonly threads: ReadonlyArray<{ readonly id: string }>;
           readonly olderSettled?: { readonly counts: ReadonlyArray<unknown> };
         };
@@ -382,5 +473,13 @@ it.effect("leaves older settled threads out of the HTTP shell only when asked", 
       [thread.id, ...Array.from({ length: 25 }, (_, index) => `settled-${index + 1}`)].toSorted(),
     );
     expect(cut.olderSettled?.counts).toEqual([{ projectId: thread.projectId, count: 1 }]);
+
+    // A client that holds rows the socket can replay from keeps them; any other cursor reloads.
+    expect(full.projectIdentities).toBeTypeOf("string");
+    expect(yield* shell(`?resumeFrom=${full.snapshotSequence}`)).toEqual({ resumable: true });
+    expect(yield* shell(`?resumeFrom=${full.snapshotSequence - 1}`)).toEqual({ resumable: true });
+    for (const cursor of [full.snapshotSequence + 1, "x"]) {
+      expect((yield* shell(`?omitOlderSettled=1&resumeFrom=${cursor}`)).threads).toHaveLength(26);
+    }
   }),
 );

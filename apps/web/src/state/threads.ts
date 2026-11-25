@@ -32,6 +32,7 @@ export const olderSettledThreads = createOlderSettledThreadAtoms(
 export const threadEnvironment = createThreadEnvironmentAtoms(
   connectionAtomRuntime,
   threadFamilies.snapshotAtom,
+  environmentShell.statusAtom,
 );
 export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
@@ -41,6 +42,7 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
 const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime, {
   threadShellAtom: environmentThreadShells.threadShellAtom,
 });
+export const environmentThreadStateAtom = environmentThreads.stateAtom;
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
   environmentThreads.stateAtom,
 );
