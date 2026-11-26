@@ -23,6 +23,8 @@ Event-loop stalls (>2 s) write `server.eventLoop.stall` spans and append to `eve
 
 At trace level Info or above (the default), with timing enabled, the local server file samples routine spans: SQLite, workflow runs (step code, retry schedules, cleanup and the agent threads a run starts are excluded; spans an author adds in the workflow body itself are sampled), and spans marked with `routineSpan` from `@t3tools/shared/observability` (high-volume lookups and sweeps). A routine span that succeeds in under 10 ms without events is kept only when its own span ID ends in `00` (about one in 256). The key is per span, not per trace or parent, because background fibers share the server's boot trace and recurring ticks reuse one parent span. Counts and averages for these spans in the local file and Settings → Diagnostics are therefore a biased sample. `T3CODE_TRACE_MIN_LEVEL=Debug` keeps everything. This sampling does not apply to OTLP export.
 
+The mobile app sends its connection timings to the server each one is about, which appends them to `client-timings.ndjson` beside the trace file (the current file plus 5 rotated 1 MB files). A reconnect during a send can save a record twice, so count records by `spanId`.
+
 ## Local OTLP stack (Grafana LGTM)
 
 ```sh
