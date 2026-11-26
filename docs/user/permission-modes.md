@@ -72,6 +72,11 @@ In **Full access**, commands that Codex's dangerous-command check would ask abou
 asking. Codex still asks before network access its managed network settings don't allow, unless
 you already allowed commands for the session.
 
+In **Auto**, Claude asks you about the actions its review leaves open. Where Claude's settings turn
+its Auto mode off, the permissions menu shows **Auto** as unavailable for that project, with whose
+settings do it. A Claude thread that is set to **Auto** anyway, or whose model has no Auto mode,
+asks like **Supervised** and says so once in the thread.
+
 Claude asks in **Full access** only when it is not running in bypass permissions, such as when its
 settings disable bypass. In Full access, T3 Code approves the requests Claude still forwards,
 including ask rules from your Claude settings. Dangerous-removal safety checks are the exception:

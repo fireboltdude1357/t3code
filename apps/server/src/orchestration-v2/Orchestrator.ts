@@ -7548,12 +7548,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       projection = applyToProjection(projection, event);
     }
-    // Background wakes and delegated completions continue work the user already snoozed, so
-    // only a message someone actually sent ends the snooze. Automatic compaction only runs
-    // once a snooze has ended and leaves it so the thread still shows that it woke.
+    // Background wakes, delegated completions and scheduled-task runs continue work the user
+    // already snoozed, so only a message someone actually sent ends the snooze. Automatic
+    // compaction only runs once a snooze has ended and leaves it so the thread still shows that
+    // it woke.
     const automaticWake =
       command.notification !== undefined ||
       command.delegatedCompletion !== undefined ||
+      command.scheduledTaskId !== undefined ||
       command.cacheExpiryCompactionOfProviderTurnId !== undefined;
     if (projection.thread.snoozedUntil != null && !automaticWake) {
       const now = yield* DateTime.now;
