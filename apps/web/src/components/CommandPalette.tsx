@@ -1024,8 +1024,10 @@ function OpenCommandPaletteDialog(props: {
     setHighlightedItemValue(null);
   });
 
-  function popView(): void {
+  const popView = useStableCallback((): void => {
     browseNavigation.invalidate();
+    cloneLookupGeneration.current += 1;
+    setIsRemoteProjectLookingUp(false);
     setAddProjectCloneFlow(null);
     setNewProjectFlow(null);
     if (viewStack.length <= 1) {
@@ -1035,7 +1037,7 @@ function OpenCommandPaletteDialog(props: {
     }
     dispatchSearch({ type: "back" });
     setHighlightedItemValue(null);
-  }
+  });
 
   function handleQueryChange(nextQuery: string, source: EventTarget | null): void {
     browseNavigation.invalidate();
