@@ -1040,12 +1040,17 @@ effectIt.effect("stops only a job's own process group", () =>
       { pid: 401, ppid: 400, pgid: 400 },
       { pid: 500, ppid: serverPid, pgid: 500 }, // terminal shell
       { pid: 600, ppid: 500, pgid: 600 }, // terminal job
+      { pid: 700, ppid: serverPid, pgid: 10 }, // spawn host, left in the server's group
+      { pid: 710, ppid: 700, pgid: 710 }, // agent CLI it launched
+      { pid: 720, ppid: 710, pgid: 710 }, // a server that agent spawned without a group of its own
+      { pid: 730, ppid: 710, pgid: 730 }, // agent tool shell job
     ];
     const table = new Map(rows.map((row) => [row.pid, row]));
     expect(PortScanner.stoppableProcessGroup(table, 401, serverPid, launcherPid)).toBe(400);
     expect(PortScanner.stoppableProcessGroup(table, 600, serverPid, launcherPid)).toBe(600);
     expect(PortScanner.stoppableProcessGroup(table, 270, serverPid, launcherPid)).toBe(270);
-    for (const pid of [20, 150, 210, 250, 260, 500, 999]) {
+    expect(PortScanner.stoppableProcessGroup(table, 730, serverPid, launcherPid)).toBe(730);
+    for (const pid of [20, 150, 210, 250, 260, 500, 720, 999]) {
       expect(PortScanner.stoppableProcessGroup(table, pid, serverPid, launcherPid)).toBeNull();
     }
     // The tool shell is the command; its `npm run dev &` job only inherited the name.
