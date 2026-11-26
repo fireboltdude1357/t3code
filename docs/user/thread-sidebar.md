@@ -35,6 +35,15 @@ Enabled by default (**Settings → General → Working section**, per device). U
 
 While enabled, Active is sorted by most recent return (manual reordering is paused until you turn it off).
 
+### Bots
+
+Threads that a bot launches through T3 Code's agent tools collect in a collapsed **Bots**
+section below the active list, grouped by bot, with each row led by the bot's name. They
+don't notify you when they finish or fail. A bot thread moves to the active list and
+notifies you while it waits for your approval, an answer, or a decision on a proposed plan,
+then goes back to Bots once you reply. You can still
+pin, snooze, or settle bot threads like any other thread.
+
 ### Group threads by project (beta)
 
 Enable **Settings → Labs → Boring sidebar (group by project)** on web/desktop (per device) to group active threads into collapsible project folders. Pinned threads stay above; Snoozed and Settled stay below. In this mode, the Working section and sidebar drag-reordering are disabled (dragging a thread onto the composer still works).
