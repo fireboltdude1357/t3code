@@ -8,6 +8,7 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
+  type ScopedThreadRef,
   type ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
 import { boundedSnapshotProjection } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
@@ -26,7 +27,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { HttpClient } from "effect/http";
-import { Atom } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import { observeServerTime } from "../clock.ts";
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
@@ -44,6 +45,7 @@ import {
   subscriptionRetryDelay,
 } from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
+import type { EnvironmentThreadShell } from "./models.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import { THREAD_SNAPSHOT_IDLE_TTL_MS } from "./threadRetention.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
@@ -244,9 +246,14 @@ function hasMissingPendingQuestionCard(projection: OrchestrationV2ThreadProjecti
   return true;
 }
 
+/**
+ * `shellEntry` is the environment shell's entry for this thread, or null while
+ * the shell does not list it. A deleted state retries as soon as it lists one.
+ */
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
   resumeCache?: ThreadResumeCache,
+  shellEntry: Stream.Stream<EnvironmentThreadShell | null> = Stream.never,
 ) {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   const cache = yield* Persistence.EnvironmentCacheStore;
@@ -1069,6 +1076,22 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  // A draft reserves its thread id before the server creates it, so a 404 can
+  // be premature. Resolves once the shell lists the thread with an entry other
+  // than `missed`, the one the last failed retry used, so a stale entry cannot
+  // retry more than once.
+  const awaitListed = Effect.fn("EnvironmentThreadState.awaitListed")(function* (
+    missed: EnvironmentThreadShell | null,
+  ) {
+    const entry = yield* shellEntry.pipe(
+      Stream.filter((entry) => entry !== null && entry !== missed),
+      Stream.runHead,
+    );
+    return Option.isSome(entry) ? entry.value : yield* Effect.never;
+  });
+  // The shell entry the last shell-driven retry used. It outlives resubscriptions.
+  let retriedWith: EnvironmentThreadShell | null = null;
+
   yield* markSynchronizing;
   // A 404 can arrive before the thread exists, so a miss asks HTTP again while mounted.
   let httpMisses = 0;
@@ -1088,9 +1111,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (session) {
         yield* startAttempt;
         let current = yield* SubscriptionRef.get(state);
-        // A delete event already cleared this thread. Park without opening the socket.
+        // A delete event already cleared this thread. Do not open the socket
+        // until the shell lists it.
         if (current.status === "deleted" && httpMisses === 0) {
-          return yield* Effect.never;
+          retriedWith = yield* awaitListed(retriedWith);
         }
 
         const config = yield* Effect.option(session.initialConfig);
@@ -1158,8 +1182,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               if (current.status !== "deleted") yield* setDeleted();
               // A 404 also means "not created yet". Only a delete event may outlive this mount.
               if (resumeCache?.owner === owner) resumeCache.snapshot = undefined;
-              yield* Effect.sleep(
-                subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, httpMisses++),
+              // Ask again after the backoff, or as soon as the shell lists the thread.
+              yield* Effect.race(
+                Effect.sleep(subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, httpMisses++)),
+                awaitListed(retriedWith).pipe(
+                  Effect.map((entry) => {
+                    retriedWith = entry;
+                  }),
+                ),
               );
               yield* Queue.offer(resubscribes, undefined);
               return yield* Effect.never;
@@ -1250,12 +1280,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 function threadStateChanges(
   environmentId: EnvironmentIdType,
   threadId: ThreadIdType,
-  resumeCache?: ThreadResumeCache,
+  resumeCache: ThreadResumeCache,
+  shellEntry: Stream.Stream<EnvironmentThreadShell | null>,
 ) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(
-      makeEnvironmentThreadState(threadId, resumeCache).pipe(Effect.map(SubscriptionRef.changes)),
+      makeEnvironmentThreadState(threadId, resumeCache, shellEntry).pipe(
+        Effect.map(SubscriptionRef.changes),
+      ),
     ),
   );
 }
@@ -1268,6 +1301,10 @@ export function createEnvironmentThreadStateAtoms<R, E>(
     | R,
     E
   >,
+  options: {
+    /** The environment shell's entry for a thread, or null while it is not listed. */
+    readonly threadShellAtom: (ref: ScopedThreadRef) => Atom.Atom<EnvironmentThreadShell | null>;
+  },
 ) {
   // Cache definitions must outlive collectible live-atom definitions. The
   // registry retains these nodes without retaining environment or RPC scopes.
@@ -1288,7 +1325,13 @@ export function createEnvironmentThreadStateAtoms<R, E>(
         (get) => {
           get.mount(resumeAtom);
           const resume = get.once(resumeAtom);
-          const live = threadStateChanges(environmentId, threadId, resume);
+          // `get.stream` would keep each wait's subscription until the atom is
+          // disposed. `toStream` releases it when the wait ends.
+          const shellEntry = AtomRegistry.toStream(
+            get.registry,
+            options.threadShellAtom({ environmentId, threadId }),
+          );
+          const live = threadStateChanges(environmentId, threadId, resume, shellEntry);
           return resume.snapshot === undefined
             ? live
             : Stream.concat(Stream.succeed(cachedThreadState(resume.snapshot.state)), live);
