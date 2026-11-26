@@ -77,10 +77,11 @@ its Auto mode off, the permissions menu shows **Auto** as unavailable for that p
 settings do it. A Claude thread that is set to **Auto** anyway, or whose model has no Auto mode,
 asks like **Supervised** and says so once in the thread.
 
-Claude can still ask in **Full access** when its settings disable bypass permissions or require
-approval for an action. Dangerous-removal safety checks in bypass mode reject the command with
-the original warning. Claude can use a safe rewrite when the warning supplies one; otherwise it
-continues without the removal and tells you what it skipped.
+Claude asks in **Full access** only when it is not running in bypass permissions, such as when its
+settings disable bypass. In Full access, T3 Code approves the requests Claude still forwards,
+including ask rules from your Claude settings. Dangerous-removal safety checks are the exception:
+they reject the command with the original warning. Claude can use a safe rewrite when the warning
+supplies one; otherwise it continues without the removal and tells you what it skipped.
 While a Claude approval is pending, type a text reply to decline that request and give feedback
 directly to the agent that asked, including a subagent. Other pending requests stay unanswered.
 
