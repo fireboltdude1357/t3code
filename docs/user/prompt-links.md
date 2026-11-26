@@ -28,7 +28,7 @@ https://app.t3.codes/new?pr=owner/name/123&prompt=Fix%20the%20failing%20check
 
 Opening a link on `app.t3.codes` asks whether to use the desktop/mobile app, the current browser, or the download page (**Remember my choice** skips this next time).
 
-- **No `repo`**: Opens a no-project draft on your last-used machine.
+- **No `repo`**: Opens a no-project draft on your default machine on web and desktop, and on your last-used machine on mobile.
 - **`repo`**: Opens in your most recent project for that repo (or offers **Clone** / **Use without project**).
 - **`provider` / `model`**: Applied if configured; otherwise falls back to your default with a notice.
 - **`pr`**: Opens the thread linked to that PR, or prepares a new worktree draft on the PR branch after you confirm checkout.
