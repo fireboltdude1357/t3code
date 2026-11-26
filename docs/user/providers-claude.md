@@ -25,6 +25,7 @@ Add a second Claude instance in **Settings → Providers** (or **Add Claude acco
   - **When you return** (default): Shows a **Compact** chip next to Send once Claude's prompt cache expires (~1 hour on subscriptions, 5 min on API/Bedrock/Vertex). Click it to switch to **Keep** if you want full history.
   - **Before the cache expires (beta)**: Automatically sends `/compact` shortly before the cache expires while history is still cached (falls back to **When you return** if missed).
   - **Never**: Disables idle compaction prompts.
+- **Compact before cache expires**: A separate setting in **Settings → Threads** that also covers Codex threads. It sends `/compact` to idle threads at or above the chosen context size (150k tokens by default) shortly before their cache runs out, keeps working across server restarts, and skips snoozed, settled, and archived threads.
 
 ## Steering, usage limits, and tasks
 
