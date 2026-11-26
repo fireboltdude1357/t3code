@@ -134,7 +134,6 @@ describe("subscription widget snapshots", () => {
           }),
         ),
       ),
-      deepLink,
     );
     expect(snapshot.providers[0]?.windows[0]?.accounts?.map((a) => a.name)).toStrictEqual(expected);
   });
