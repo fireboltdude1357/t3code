@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -116,7 +117,7 @@ const adapter = {
 const layerDatabase = SqlitePersistence.layerMemory;
 // No effect worker: the compaction run is created but never reaches a provider.
 const layerOrchestrator = Layer.mergeAll(
-  ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
+  ProjectionStore.layer.pipe(Layer.provide(NodeCrypto.layerDigest), Layer.provide(layerDatabase)),
   ProviderReplayHarness.layerWithRegistry(
     { name: "cache-expiry-compaction" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
