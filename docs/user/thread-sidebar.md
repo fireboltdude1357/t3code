@@ -10,7 +10,7 @@ Use a separate thread for each task. Choose **New worktree** when a task needs i
 
 ### Start without a project
 
-Threads don't require a project. Pick **No project** (or press `mod+alt+n` on web/desktop) to start a scratch thread in `~/.t3/scratch/<date>-<slug>-<id>`.
+Threads don't require a project. Pick **No project** (or press `mod+alt+n` on web/desktop) to start a scratch thread in `~/.t3/scratch/<date>-<slug>-<id>`. On web and desktop it starts on your default machine: this device unless you pick another in **Settings → Threads → New projects → Default machine**, which new projects also use.
 
 - Deleting a scratch thread leaves its folder on disk.
 - Git branch, worktree, and diff controls are hidden (and scratch threads are unavailable if your T3 data directory itself is inside a Git repo).
