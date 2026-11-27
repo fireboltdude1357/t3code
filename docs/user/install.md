@@ -76,6 +76,16 @@ Install from the [App Store](https://apps.apple.com/us/app/t3-code-remote-claude
 - Store builds work with both Stable and Nightly servers. Optional Android beta APKs are under [Android beta releases](https://github.com/pingdotgg/t3code/releases?q=android-beta-).
 - If the mobile app crashes on launch, open **Settings → Diagnostics** on the next launch to copy recent startup crash reports.
 
+If connecting, loading the thread list, or opening a thread is slow, open the same
+screen afterwards. **Connection timings** shows how long each step took since the
+app started. **Copy connection report** copies one line per step. Search the server's
+`server.trace.ndjson` for an HTTP request line's trace ID to find that request on the
+server.
+
+The app also sends each timing to the environment it is about, which saves it in
+`client-timings.ndjson` in its logs directory. **Clear timings** clears only this
+screen. Timings already waiting to be sent are still sent.
+
 ## Providers
 
 Open **Settings → Providers** (web or desktop), select the environment, and enable the providers you use. Installation and sign-in always happen on the **environment's machine**.
