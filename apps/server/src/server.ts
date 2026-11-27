@@ -35,6 +35,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
+import * as SpawnHost from "./process/SpawnHost.ts";
 import * as KeepAwake from "./background/KeepAwake.ts";
 import * as ServerConfig from "./config.ts";
 import { withRootRequestSpans, withUntracedRequests } from "./http.ts";
@@ -377,7 +378,13 @@ const layerRelayClient = Layer.unwrap(
 ).pipe(Layer.provide(ManagedPolicy.layer));
 
 // NodeServices and NodeHttpServer each output Node's own spawner, so each is followed by this one.
-const layerSpawner = SpawnWorker.layerServer.pipe(Layer.provide(NodeServices.layer));
+// ProcessLauncher wraps this on Linux, so SpawnHost spawns only when its launcher cannot start.
+// Other platforms use SpawnWorker.
+const layerSpawner = Layer.unwrap(
+  Effect.map(HostProcess.Platform, (platform) =>
+    platform === "linux" ? SpawnHost.layer : SpawnWorker.layerServer,
+  ),
+).pipe(Layer.provide(NodeServices.layer));
 
 const layerHttpServer = Layer.unwrap(
   Effect.gen(function* () {
@@ -1449,12 +1456,11 @@ const layerMakeServer = Layer.unwrap(
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
       Layer.provideMerge(AgentScopeLive.layer),
-      Layer.provideMerge(layerPlatformServices),
       Layer.provideMerge(FeatureFlags.layer),
       Layer.provide(Layer.succeed(HostProcess.InvokedAs, invokedAs)),
     );
   }),
-).pipe(Layer.provide(ProcessRunner.layer));
+).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(layerPlatformServices));
 
 export const runServer = Layer.launch(
   // For the layers above whose spawner requirement is not met by one of them.
