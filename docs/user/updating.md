@@ -9,6 +9,7 @@ Click the **Update** button at the bottom of the sidebar (web or desktop) to upd
 - Hover to preview what will update; click while running to view per-machine progress or retry failures.
 - Confirmation dialogs show which machines are skipped (offline or manual-only) and how many active threads will pause/resume.
 - Choose **Later** on the desktop restart countdown to restart when ready.
+- Fork builds update servers from the fork's GitHub releases, which carry the CLI for Linux x64 only. Servers on other platforms update by hand or through their desktop app.
 
 ## Switch between Stable and Nightly
 
