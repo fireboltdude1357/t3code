@@ -1,4 +1,5 @@
 import {
+  botThreadId,
   CommandId,
   MessageId,
   type ModelSelection,
@@ -10,6 +11,7 @@ import {
   type Project as ProjectRecord,
   type ServerProvider,
   T3_PROJECT_FILE_NAME,
+  threadOwnerBotName,
 } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
@@ -236,7 +238,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.clientRequestId === undefined
             ? yield* newCommandId()
             : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
-        const threadId = ThreadId.make(commandId);
+        // A bot's own threads launch more bot work, so the marker carries over
+        // unless the caller passes null for ordinary work.
+        const bot =
+          input.bot === undefined
+            ? caller === undefined
+              ? null
+              : threadOwnerBotName(caller)
+            : input.bot;
+        const threadId = ThreadId.make(bot === null ? commandId : botThreadId(bot, commandId));
         const messageId = MessageId.make(commandId);
         const attachments = input.attachments ?? [];
         if (input.generateTitle === true && !input.message?.trim() && attachments.length === 0)
