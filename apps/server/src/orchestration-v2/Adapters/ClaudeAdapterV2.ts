@@ -318,6 +318,11 @@ function claudeMessageInputTokens(usage: {
   );
 }
 
+/**
+ * Maps one root request's usage onto the provider turn.
+ * `knownPromptCacheTtlMs` is the TTL learned earlier in the turn, kept when
+ * this response only read the cache.
+ */
 export function claudeProviderTurnTokenUsage(
   usage: {
     readonly iterations?: SDKAssistantMessage["message"]["usage"]["iterations"] | undefined;
@@ -331,18 +336,22 @@ export function claudeProviderTurnTokenUsage(
   updatedAt: string,
   autoCompactWindow = "",
   requestedAt?: DateTime.Utc,
+  knownPromptCacheTtlMs?: number,
 ) {
   // After an advisor call, the response totals can count the same context twice.
   const sample = usage.iterations?.findLast((iteration) => iteration.type === "message") ?? usage;
   const inputTokens = claudeMessageInputTokens(sample);
   const outputTokens = optionalClaudeUsageTokenCount(sample.output_tokens) ?? 0;
   const cachedInputTokens = optionalClaudeUsageTokenCount(sample.cache_read_input_tokens) ?? 0;
-  const promptCacheTtlMs = claudePromptCacheTtlMs(usage.cache_creation);
+  const revealedPromptCacheTtlMs = claudePromptCacheTtlMs(usage.cache_creation);
+  const promptCacheTtlMs = revealedPromptCacheTtlMs ?? knownPromptCacheTtlMs;
   // The cache lifetime starts with the request, not when its response ends.
+  // Only a TTL this response revealed dates the expiry; a cache-only read
+  // leaves it unknown.
   const promptCacheExpiresAt =
-    promptCacheTtlMs === undefined || requestedAt === undefined
+    revealedPromptCacheTtlMs === undefined || requestedAt === undefined
       ? undefined
-      : DateTime.formatIso(DateTime.add(requestedAt, { milliseconds: promptCacheTtlMs }));
+      : DateTime.formatIso(DateTime.add(requestedAt, { milliseconds: revealedPromptCacheTtlMs }));
   return {
     usedTokens: inputTokens + outputTokens,
     maxTokens,
@@ -5667,6 +5676,9 @@ interface ActiveClaudeTurnContext {
     readonly type: string | null;
     readonly resetAt: string | null;
   } | null;
+  // Last prompt cache TTL a root response revealed. Responses that only read
+  // the cache carry it forward, since the projection replaces tokenUsage.
+  promptCacheTtlMs: number | undefined;
   // Set while this turn's latest compaction status reports a failure, with
   // Claude's error text when it sent one.
   compactionFailure: { readonly message: string | undefined } | null;
@@ -7085,10 +7097,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   DateTime.formatIso(now),
                   context.autoCompactWindow,
                   context.streamUsage?.requestedAt,
+                  context.promptCacheTtlMs,
                 );
           if ("inputTokens" in tokenUsage) {
             if (tokenUsage.inputTokens <= 0) return;
             context.compactionTokens = undefined;
+            if ("promptCacheTtlMs" in tokenUsage)
+              context.promptCacheTtlMs = tokenUsage.promptCacheTtlMs;
           }
           yield* emitProviderEvent({
             type: "provider_turn.updated",
@@ -14706,6 +14721,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               rejectedRateLimitTypes: new Set(),
               rateLimitResetTimes: new Map(),
               latestAssistantRateLimit: null,
+              promptCacheTtlMs: undefined,
               compactionFailure: null,
               nativeSessionTitle: null,
               steeredSegmentUsage: [],
