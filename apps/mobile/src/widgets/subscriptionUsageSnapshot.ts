@@ -49,7 +49,6 @@ export interface WidgetLimitAccount {
 
 export interface SubscriptionUsageSnapshot {
   theme?: WidgetTheme;
-  url?: string;
   text?: SubscriptionUsageText;
   checkedAt: number;
   providers: Array<{
@@ -299,7 +298,6 @@ function subscriptionUsageProps(
 
 export function buildSubscriptionUsageSnapshot(
   presentations: LimitPresentations,
-  url: string,
   maxWindowsPerProvider = 6,
   resolve: MessageResolver = m,
 ): SubscriptionUsageSnapshot {
@@ -325,7 +323,6 @@ export function buildSubscriptionUsageSnapshot(
   );
   return {
     ...props,
-    url,
     // The Android widget counts hidden rows across providers, a note row included.
     text: subscriptionUsageText(
       resolve,
