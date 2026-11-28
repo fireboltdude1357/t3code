@@ -22,7 +22,6 @@ const window = {
   resetsAt: "2026-09-05T12:10:00.000Z",
 } as const;
 const limits = { checkedAt, windows: [window] };
-const deepLink = "t3code-dev://settings/usage?tab=limits";
 function provider(overrides: Partial<ServerProvider> = {}): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make("codex"),
@@ -53,7 +52,6 @@ describe("subscription widget snapshots", () => {
   it("uses provider data and its observation time without exposing account emails", () => {
     const snapshot = buildSubscriptionUsageSnapshot(
       presentations([provider({ displayName: "private@example.com" })]),
-      deepLink,
     );
     expect(snapshot.checkedAt).toBe(now);
     expect(snapshot.providers[0]).toMatchObject({
@@ -61,7 +59,6 @@ describe("subscription widget snapshots", () => {
       windows: [{ remaining: 60 }],
       expiresAt: now + 10 * 60_000,
     });
-    expect(snapshot.url).toBe(deepLink);
     expect(JSON.stringify(snapshot)).not.toContain("private@example.com");
   });
   it("splits a pooled window by account without exposing emails", () => {
@@ -96,7 +93,6 @@ describe("subscription widget snapshots", () => {
           },
         }),
       ]),
-      deepLink,
     );
     const session = snapshot.providers[0]?.windows.find((w) => w.kind === "session");
     expect(session?.accounts).toStrictEqual([
@@ -138,7 +134,6 @@ describe("subscription widget snapshots", () => {
           }),
         ),
       ),
-      deepLink,
     );
     expect(snapshot.providers[0]?.windows[0]?.accounts?.map((a) => a.name)).toStrictEqual(expected);
   });
@@ -170,11 +165,11 @@ describe("subscription widget snapshots", () => {
         },
       ],
     ]);
-    expect(buildSubscriptionUsageSnapshot(input, deepLink).providers[0]?.detail).toBe(
+    expect(buildSubscriptionUsageSnapshot(input).providers[0]?.detail).toBe(
       "Subscription remaining",
     );
     input.get(EnvironmentId.make("env"))!.serverConfig.providers = [];
-    const snapshot = buildSubscriptionUsageSnapshot(input, deepLink);
+    const snapshot = buildSubscriptionUsageSnapshot(input);
     expect(snapshot.providers[0]?.name).toBe("Codex");
     expect(JSON.stringify(snapshot)).not.toContain("example.com");
   });
@@ -186,7 +181,6 @@ describe("subscription widget snapshots", () => {
     }));
     const snapshot = buildSubscriptionUsageSnapshot(
       presentations([provider({ usageLimits: { checkedAt, windows } })]),
-      deepLink,
     );
     expect(snapshot.providers[0]?.windows).toHaveLength(6);
     expect(snapshot.providers[0]?.totalWindows).toBe(20);
@@ -207,7 +201,7 @@ describe("subscription widget snapshots", () => {
         ],
       },
     });
-    const snapshot = buildSubscriptionUsageSnapshot(input, deepLink);
+    const snapshot = buildSubscriptionUsageSnapshot(input);
     expect(snapshot.providers[0]?.detail).toBe("Subscription remaining");
     expect(snapshot.providers[0]?.windows[0]?.remaining).toBe(20);
   });
@@ -218,7 +212,6 @@ describe("subscription widget expiry", () => {
   function single(resetsAt: string) {
     return buildSubscriptionUsageSnapshot(
       presentations([provider({ usageLimits: { checkedAt, windows: [{ ...window, resetsAt }] } })]),
-      deepLink,
     ).providers[0];
   }
 
@@ -261,7 +254,6 @@ describe("subscription widget expiry", () => {
             }),
           ),
         ),
-        deepLink,
       );
       expect(snapshot.providers[0]).toMatchObject({
         detail: "2 accounts · pooled",
