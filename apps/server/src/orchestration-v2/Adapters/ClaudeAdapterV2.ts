@@ -16252,7 +16252,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const installationGate = yield* ProviderInstallationGate.ProviderInstallationGate;
     const baseEnvironment = yield* mergeClaudeProcessEnvironment(
-      config,
+      { ...config, enabled },
       environment,
       hostEnvironment,
     );

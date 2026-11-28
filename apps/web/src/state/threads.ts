@@ -20,6 +20,7 @@ import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { serverEnvironment } from "./server";
 import { environmentShell } from "./shell";
+import { environmentPresentations } from "./presentation";
 
 export const threadFamilies = createThreadFamilyAtoms(
   connectionAtomRuntime,
@@ -36,6 +37,7 @@ export const threadEnvironment = createThreadEnvironmentAtoms(
 );
 export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
+  connectionPhaseAtom: environmentPresentations.connectionPhaseAtom,
   snapshotAtom: threadEnvironment.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
 });
