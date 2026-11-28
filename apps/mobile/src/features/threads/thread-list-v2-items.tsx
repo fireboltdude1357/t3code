@@ -328,6 +328,12 @@ const SHELF_COPY = {
     collapse: msg("Collapses the working threads."),
     expand: msg("Expands the working threads."),
   },
+  bot: {
+    label: "Bots",
+    count: "{count, plural, one {{count} bot thread} other {{count} bot threads}}",
+    collapse: "Collapses the bot threads.",
+    expand: "Expands the bot threads.",
+  },
   snoozed: {
     label: msg("Snoozed", { $context: "thread list section" }),
     count: msg("{count, plural, one {{count} snoozed thread} other {{count} snoozed threads}}"),
@@ -369,6 +375,12 @@ export const ThreadListV2WorkingShelfHeader = memo(function ThreadListV2WorkingS
   props: ThreadListV2ShelfHeaderProps,
 ) {
   return <ThreadListV2ShelfHeader {...props} kind="working" />;
+});
+
+export const ThreadListV2BotShelfHeader = memo(function ThreadListV2BotShelfHeader(
+  props: ThreadListV2ShelfHeaderProps,
+) {
+  return <ThreadListV2ShelfHeader {...props} kind="bot" />;
 });
 
 export const ThreadListV2SnoozedShelfHeader = memo(function ThreadListV2SnoozedShelfHeader(
