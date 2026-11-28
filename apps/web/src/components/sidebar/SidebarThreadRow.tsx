@@ -23,10 +23,7 @@ import {
   resolveThreadActivityTimestamp,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { type EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
-import {
-  formatWorkingDurationLabel,
-  resolveThreadProviderStack,
-} from "@t3tools/client-runtime/state/models";
+import { formatWorkingDurationLabel } from "@t3tools/client-runtime/state/models";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { toServerClock } from "@t3tools/client-runtime/clock";
 import {
@@ -110,6 +107,8 @@ import {
 } from "../Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "../BranchToolbar.logic";
 import {
+  LINKED_ITEMS_PREVIEW_LIMIT,
+  LinkedItemsOverflow,
   ThreadLinkBadge,
   ThreadPullRequestBadgeControl,
   ThreadPullRequestsMiniList,
@@ -227,50 +226,31 @@ function terminalProcessLabel(count: number, resolve: MessageResolver): string {
   );
 }
 
-function SidebarProviderStack(props: {
+function SidebarProviderIcon(props: {
   thread: SidebarThreadSummary;
   providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
 }) {
-  const stack = resolveThreadProviderStack(props.thread);
-  const currentInstanceId = stack[stack.length - 1]!;
-  const currentEntry = props.providerEntryByInstanceId.get(currentInstanceId) ?? null;
+  const currentEntry =
+    props.providerEntryByInstanceId.get(
+      props.thread.runtime?.providerInstanceId ?? props.thread.modelSelection.instanceId,
+    ) ?? null;
   if (currentEntry === null) return null;
   const showInstanceBadge = shouldShowInstanceBadge(
     currentEntry,
     props.providerEntryByInstanceId.values(),
   );
-  const current = (
-    <ProviderInstanceIcon
-      driverKind={currentEntry.driverKind}
-      displayName={currentEntry.displayName}
-      accentColor={currentEntry.accentColor}
-      acpRegistryAgentId={currentEntry.acpRegistryAgentId}
-      acpRegistryIconUrl={currentEntry.acpRegistryIconUrl}
-      showBadge={showInstanceBadge}
-      size="compact"
-      iconClassName="opacity-60"
-    />
-  );
-  if (stack.length === 1) {
-    return <span className="inline-flex shrink-0 items-center">{current}</span>;
-  }
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5">
-      {stack.slice(0, -1).map((instanceId) => {
-        const entry = props.providerEntryByInstanceId.get(instanceId);
-        if (entry === undefined) return null;
-        return (
-          <ProviderInstanceIcon
-            key={instanceId}
-            driverKind={entry.driverKind}
-            displayName={entry.displayName}
-            acpRegistryAgentId={entry.acpRegistryAgentId}
-            acpRegistryIconUrl={entry.acpRegistryIconUrl}
-            iconClassName="size-3 opacity-35 grayscale"
-          />
-        );
-      })}
-      <span className="relative z-10 inline-flex items-center">{current}</span>
+    <span className="inline-flex shrink-0 items-center">
+      <ProviderInstanceIcon
+        driverKind={currentEntry.driverKind}
+        displayName={currentEntry.displayName}
+        accentColor={currentEntry.accentColor}
+        acpRegistryAgentId={currentEntry.acpRegistryAgentId}
+        acpRegistryIconUrl={currentEntry.acpRegistryIconUrl}
+        showBadge={showInstanceBadge}
+        size="compact"
+        iconClassName="opacity-60"
+      />
     </span>
   );
 }
@@ -1164,6 +1144,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         status={prStatus}
         onOpenList={openLinkedItems}
         onOpenPullRequest={handlePrClick}
+        side="right"
       />
     ) : null;
   const firstIssue = thread.issues?.[0];
@@ -1200,15 +1181,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       Icon={issueStatus?.Icon ?? IssueGlyph.issue}
       toneClassName={issueStatus?.toneClassName ?? "text-muted-foreground"}
       text={issueCount === 1 ? firstIssue.displayKey.replace(/^#/, "") : issueCount}
+      side="right"
     >
       <ThreadDetailsIssueRows
-        links={thread.issues ?? []}
+        links={(thread.issues ?? []).slice(0, LINKED_ITEMS_PREVIEW_LIMIT)}
         threadRef={threadRef}
         compact={false}
         mountScope="sidebar-tooltip"
         onOpen={() => {
           if (!props.isRouteThread) onThreadActivate(threadRef);
         }}
+      />
+      <LinkedItemsOverflow
+        hidden={issueCount - LINKED_ITEMS_PREVIEW_LIMIT}
+        onShowAll={openLinkedItems}
       />
     </ThreadLinkBadge>
   ) : null;
@@ -1310,7 +1296,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         aria-hidden
         className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
       >
-        <SidebarProviderStack
+        <SidebarProviderIcon
           thread={thread}
           providerEntryByInstanceId={props.providerEntryByInstanceId}
         />
@@ -1319,7 +1305,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const titleLineIcons = metaLineEmpty ? (
     <span aria-hidden className="inline-flex shrink-0 items-center gap-1">
-      <SidebarProviderStack
+      <SidebarProviderIcon
         thread={thread}
         providerEntryByInstanceId={props.providerEntryByInstanceId}
       />
@@ -1485,6 +1471,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   )
                 ) : !props.settlementSupported ? null : variantAction === "unsettle" ? (
                   <SharedTooltipTrigger
+                    side="right"
                     render={
                       <button
                         type="button"
@@ -1507,6 +1494,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   </SharedTooltipTrigger>
                 ) : (
                   <SharedTooltipTrigger
+                    side="right"
                     render={
                       <button
                         type="button"
@@ -1716,6 +1704,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     ) : null}
                     {props.settlementSupported ? (
                       <SharedTooltipTrigger
+                        side="right"
                         render={
                           <button
                             type="button"
