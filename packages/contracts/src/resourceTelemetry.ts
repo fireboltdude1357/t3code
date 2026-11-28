@@ -76,12 +76,20 @@ export function hostPressureCulprit(
   return pressure.heaviestAgents.find((agent) => agent.threadId === threadId) ?? null;
 }
 
+const CpuShare = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+
 export const HostResourcesSnapshot = Schema.Struct({
   sampledAt: NonNegativeInt,
-  cpuUtilization: Schema.NullOr(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  cpuUtilization: Schema.NullOr(CpuShare),
+  /** One entry per core in `os.cpus()` order, null when that core gave no valid delta. Servers that predate it omit it. */
+  cpuCoreUtilization: Schema.optional(Schema.Array(Schema.NullOr(CpuShare))),
   cpuCount: NonNegativeInt,
   availableMemoryBytes: NonNegativeInt,
   totalMemoryBytes: NonNegativeInt,
+  /** Bytes received and sent since boot, summed over physical network interfaces. Servers that predate it, or can't read the counters, omit it. */
+  network: Schema.optional(
+    Schema.Struct({ receivedBytes: NonNegativeInt, sentBytes: NonNegativeInt }),
+  ),
   /** Absent from older servers. */
   diskFreeBytes: Schema.optionalKey(Schema.NullOr(NonNegativeInt)),
   diskTotalBytes: Schema.optionalKey(Schema.NullOr(NonNegativeInt)),
