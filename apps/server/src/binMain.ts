@@ -11,7 +11,10 @@ export async function runCliCommand() {
     await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
   extendConnectionAttemptTimeout();
-  if (command === "__document-text") {
+  if (command === "__spawn-host") {
+    const { runSpawnHost } = await import("./process/spawnHostProcess.ts");
+    runSpawnHost();
+  } else if (command === "__document-text") {
     const { extractDocumentText } = await import("./provider/documentTextWorker.ts");
     try {
       process.stdout.write(await extractDocumentText(process.argv[3]!, process.argv[4]!));
